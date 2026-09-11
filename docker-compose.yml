@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # ===== PostgreSQL Database =====
+  db:
+    image: postgres:15-alpine
+    container_name: receptra-db
+    environment:
+      POSTGRES_USER: receptra
+      POSTGRES_PASSWORD: receptra
+      POSTGRES_DB: receptra
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U receptra"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - receptra-network
+    restart: unless-stopped
+
+  # ===== Redis Cache/Queue =====
+  redis:
+    image: redis:7-alpine
+    container_name: receptra-redis
+    command: redis-server --appendonly yes --requirepass receptra
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - receptra-network
+    restart: unless-stopped
+
+  # ===== FastAPI Backend =====
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: receptra-backend
+    environment:
+      ENVIRONMENT: development
+      DEBUG: "True"
+      LOG_LEVEL: DEBUG
+      DATABASE_URL: postgresql+asyncpg://receptra:receptra@db:5432/receptra
+      REDIS_URL: redis://:receptra@redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      PAYJP_API_KEY: ${PAYJP_API_KEY}
+      PAYJP_SECRET_KEY: ${PAYJP_SECRET_KEY}
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+      - ./tests:/app/tests
+      - ./requirements.txt:/app/requirements.txt
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "pip install -r requirements.txt &&
+             alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    networks:
+      - receptra-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  receptra-network:
+    driver: bridge

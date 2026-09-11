@@ -1,0 +1,1123 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="RECEPTRA - 24時間対応のAI受付・予約プラットフォーム。飲食店を検索して、スマートに予約。">
+    <meta name="og:title" content="RECEPTRA - AI受付プラットフォーム">
+    <meta name="og:description" content="飲食店を検索して、スマートに予約。24時間対応のAI受付。">
+    <meta name="og:image" content="https://www.bariyon.com/receptra-og.png">
+    <title>RECEPTRA - AI受付・予約プラットフォーム | BARIYON</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&family=Baloo+2:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #FF7A00;
+            --primary-light: #ff9500;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --navy: #0e1430;
+            --white: #ffffff;
+            --error: #ef4444;
+            --success: #10b981;
+            --border: 2px solid var(--dark);
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            line-height: 1.6;
+        }
+
+        /* ナビゲーション */
+        nav {
+            position: sticky;
+            top: 0;
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        }
+
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            color: var(--navy);
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .nav-logo {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--primary), var(--primary-light));
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--white);
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .nav-breadcrumb {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            font-size: 12px;
+            color: #999;
+        }
+
+        .nav-breadcrumb a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .nav-breadcrumb a:hover {
+            text-decoration: underline;
+        }
+
+        /* ページコンテナ */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* ヘッダー */
+        header {
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 24px 20px;
+        }
+
+        .header-content {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header-logo-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .header-logo {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, var(--primary), var(--primary-light));
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--white);
+            font-size: 32px;
+            font-weight: bold;
+        }
+
+        .header-logo-text {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .header-logo-text h1 {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--navy);
+        }
+
+        .header-logo-text p {
+            font-size: 12px;
+            color: var(--primary);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .search-box {
+            display: flex;
+            gap: 12px;
+        }
+
+        .search-box input {
+            flex: 1;
+            padding: 12px 16px;
+            border: var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            background: var(--white);
+            color: var(--navy);
+        }
+
+        .search-box input::placeholder {
+            color: #999;
+        }
+
+        .search-box button {
+            padding: 12px 28px;
+            background: var(--primary);
+            color: var(--white);
+            border: none;
+            border-radius: 8px;
+            font-weight: 700;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.3s;
+            white-space: nowrap;
+        }
+
+        .search-box button:hover {
+            background: var(--primary-dark);
+        }
+
+        .search-box button:active {
+            transform: scale(0.98);
+        }
+
+        /* フィルター */
+        .filters {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .filter-label {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: var(--navy);
+            letter-spacing: 0.5px;
+        }
+
+        .filter-select {
+            padding: 10px 12px;
+            border: var(--border);
+            border-radius: 6px;
+            background: var(--white);
+            font-size: 13px;
+            font-family: inherit;
+            color: var(--navy);
+            cursor: pointer;
+        }
+
+        .filter-select:hover {
+            border-color: var(--primary);
+        }
+
+        /* メインコンテンツ */
+        .main {
+            padding: 24px 20px;
+        }
+
+        /* ローディング */
+        .loading {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            padding: 60px 20px;
+        }
+
+        .loading-spinner {
+            width: 60px;
+            height: 60px;
+            border: 3px solid var(--light);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        .loading-text {
+            color: #666;
+            font-size: 14px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* ショップグリッド */
+        .shop-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+            gap: 16px;
+            margin-top: 24px;
+        }
+
+        .shop-card {
+            background: var(--white);
+            border: var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .shop-card:hover {
+            box-shadow: 0 8px 24px rgba(255, 122, 0, 0.15);
+            transform: translateY(-4px);
+        }
+
+        .shop-image {
+            width: 100%;
+            height: 120px;
+            background: linear-gradient(135deg, #f0e6ff 0%, #e0f7f6 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 48px;
+            color: #999;
+        }
+
+        .shop-info {
+            padding: 12px;
+        }
+
+        .shop-name {
+            font-weight: 700;
+            color: var(--navy);
+            font-size: 14px;
+            margin-bottom: 8px;
+            line-height: 1.3;
+        }
+
+        .shop-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .shop-genre {
+            background: var(--light);
+            color: var(--navy);
+            padding: 3px 8px;
+            border: 1px solid var(--dark);
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .shop-rating {
+            color: var(--primary);
+            font-weight: 700;
+            font-size: 12px;
+        }
+
+        .shop-access {
+            font-size: 11px;
+            color: #999;
+            margin-bottom: 8px;
+        }
+
+        .shop-cta {
+            width: 100%;
+            padding: 8px;
+            background: var(--primary);
+            color: var(--white);
+            border: none;
+            border-radius: 6px;
+            font-weight: 700;
+            font-size: 12px;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .shop-cta:hover {
+            background: var(--primary-dark);
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+        }
+
+        .empty-icon {
+            font-size: 56px;
+            margin-bottom: 16px;
+        }
+
+        .empty-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--navy);
+            margin-bottom: 8px;
+        }
+
+        .empty-text {
+            color: #999;
+            margin-bottom: 24px;
+        }
+
+        .empty-action {
+            padding: 10px 24px;
+            background: var(--primary);
+            color: var(--white);
+            border: none;
+            border-radius: 6px;
+            font-weight: 700;
+            font-family: inherit;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        /* エラーメッセージ */
+        .error-message {
+            background: #fee2e2;
+            border: 2px solid var(--error);
+            border-radius: 8px;
+            padding: 12px 16px;
+            color: #991b1b;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+
+        /* モーダル */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--white);
+            border-radius: 16px;
+            width: 100%;
+            max-width: 600px;
+            max-height: 90vh;
+            overflow-y: auto;
+            animation: slideUp 0.3s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                transform: translateY(20px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .modal-header {
+            padding: 20px;
+            border-bottom: var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--navy);
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #999;
+        }
+
+        .modal-body {
+            padding: 20px;
+        }
+
+        .modal-section {
+            margin-bottom: 24px;
+        }
+
+        .modal-section-title {
+            font-size: 14px;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: var(--navy);
+            margin-bottom: 12px;
+            letter-spacing: 0.5px;
+        }
+
+        .modal-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            font-size: 13px;
+        }
+
+        .modal-info-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .modal-info-label {
+            color: #999;
+            font-weight: 600;
+        }
+
+        .modal-info-value {
+            color: var(--navy);
+            font-weight: 700;
+        }
+
+        /* フォーム */
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--navy);
+            margin-bottom: 6px;
+        }
+
+        .form-input, .form-select {
+            width: 100%;
+            padding: 10px 12px;
+            border: var(--border);
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 13px;
+            color: var(--navy);
+        }
+
+        .form-input:focus, .form-select:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(255, 122, 0, 0.1);
+        }
+
+        .form-button {
+            width: 100%;
+            padding: 12px;
+            background: var(--primary);
+            color: var(--white);
+            border: none;
+            border-radius: 6px;
+            font-weight: 700;
+            font-family: inherit;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .form-button:hover {
+            background: var(--primary-dark);
+        }
+
+        .form-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        /* フッター */
+        footer {
+            background: var(--navy);
+            color: var(--white);
+            padding: 40px 20px 20px;
+            text-align: center;
+            margin-top: 60px;
+        }
+
+        .footer-content {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .footer-text {
+            font-size: 12px;
+            opacity: 0.8;
+        }
+
+        .footer-link {
+            color: var(--white);
+            text-decoration: none;
+            margin: 0 8px;
+        }
+
+        .footer-link:hover {
+            text-decoration: underline;
+        }
+
+        /* レスポンシブ */
+        @media (max-width: 768px) {
+            .header-logo-text h1 {
+                font-size: 18px;
+            }
+
+            .search-box {
+                flex-direction: column;
+            }
+
+            .filters {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .shop-grid {
+                grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            }
+
+            .modal-info {
+                grid-template-columns: 1fr;
+            }
+
+            .nav-breadcrumb {
+                display: none;
+            }
+        }
+
+        /* 状態管理 */
+        [data-state="hidden"] {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <!-- ナビゲーション -->
+    <nav>
+        <a href="https://www.bariyon.com" class="nav-brand">
+            <div class="nav-logo">🌸</div>
+            <span>BARIYON</span>
+        </a>
+        <div class="nav-breadcrumb">
+            <a href="https://www.bariyon.com">ホーム</a>
+            <span>/</span>
+            <span>RECEPTRA</span>
+        </div>
+    </nav>
+
+    <!-- ヘッダー -->
+    <header>
+        <div class="header-content">
+            <div class="header-logo-row">
+                <div class="header-logo">🎙️</div>
+                <div class="header-logo-text">
+                    <h1>RECEPTRA</h1>
+                    <p>AI受付・予約プラットフォーム</p>
+                </div>
+            </div>
+
+            <div class="search-box">
+                <input
+                    type="text"
+                    id="keywordInput"
+                    placeholder="レストラン名を検索..."
+                    autocomplete="off"
+                >
+                <button onclick="searchShops()">検索</button>
+            </div>
+
+            <div class="filters">
+                <div class="filter-group">
+                    <label class="filter-label">エリア</label>
+                    <select id="areaFilter" class="filter-select" onchange="applyFilters()">
+                        <option value="">全て</option>
+                        <option value="naha">那覇市</option>
+                        <option value="urasoe">浦添市</option>
+                        <option value="nago">名護市</option>
+                        <option value="okinawa">沖縄市</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label class="filter-label">ジャンル</label>
+                    <select id="genreFilter" class="filter-select" onchange="applyFilters()">
+                        <option value="">全て</option>
+                        <option value="japanese">日本料理</option>
+                        <option value="okinawan">沖縄料理</option>
+                        <option value="western">洋食</option>
+                        <option value="chinese">中華</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label class="filter-label">評価</label>
+                    <select id="ratingFilter" class="filter-select" onchange="applyFilters()">
+                        <option value="">全て</option>
+                        <option value="4.0">⭐ 4.0以上</option>
+                        <option value="3.5">⭐ 3.5以上</option>
+                        <option value="3.0">⭐ 3.0以上</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label class="filter-label">予約可能</label>
+                    <select id="availabilityFilter" class="filter-select" onchange="applyFilters()">
+                        <option value="">全て</option>
+                        <option value="today">今日</option>
+                        <option value="tomorrow">明日</option>
+                        <option value="week">今週</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- メインコンテンツ -->
+    <main class="main container">
+        <div id="errorMessage" class="error-message" data-state="hidden"></div>
+
+        <div id="loadingState" class="loading">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">店舗を検索中...</div>
+        </div>
+
+        <div id="shopGrid" class="shop-grid" data-state="hidden"></div>
+
+        <div id="emptyState" class="empty-state" data-state="hidden">
+            <div class="empty-icon">🍽️</div>
+            <div class="empty-title">店舗が見つかりません</div>
+            <p class="empty-text">検索条件を変更して、もう一度お試しください。</p>
+            <button class="empty-action" onclick="resetFilters()">フィルターをリセット</button>
+        </div>
+    </main>
+
+    <!-- ショップ詳細モーダル -->
+    <div id="detailModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">店舗詳細</h2>
+                <button class="modal-close" onclick="closeModal()">✕</button>
+            </div>
+
+            <div class="modal-body">
+                <!-- 店舗情報 -->
+                <div class="modal-section">
+                    <div class="modal-section-title">基本情報</div>
+                    <div class="modal-info">
+                        <div class="modal-info-item">
+                            <div class="modal-info-label">ジャンル</div>
+                            <div class="modal-info-value" id="detailGenre">-</div>
+                        </div>
+                        <div class="modal-info-item">
+                            <div class="modal-info-label">評価</div>
+                            <div class="modal-info-value" id="detailRating">-</div>
+                        </div>
+                        <div class="modal-info-item">
+                            <div class="modal-info-label">電話</div>
+                            <div class="modal-info-value" id="detailPhone">-</div>
+                        </div>
+                        <div class="modal-info-item">
+                            <div class="modal-info-label">営業時間</div>
+                            <div class="modal-info-value" id="detailHours">-</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 説明 -->
+                <div class="modal-section">
+                    <div class="modal-section-title">説明</div>
+                    <p id="detailDescription" style="color: #666; font-size: 13px; line-height: 1.6;"></p>
+                </div>
+
+                <!-- メニュー -->
+                <div class="modal-section">
+                    <div class="modal-section-title">メニュー</div>
+                    <div id="detailMenu" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;"></div>
+                </div>
+
+                <!-- 予約フォーム -->
+                <div class="modal-section" style="border-top: var(--border); padding-top: 20px;">
+                    <div class="modal-section-title">予約する</div>
+
+                    <div class="form-group">
+                        <label class="form-label">来店日</label>
+                        <input type="date" id="reservationDate" class="form-input" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">来店時間</label>
+                        <select id="reservationTime" class="form-select" required>
+                            <option value="">選択してください</option>
+                            <option value="11:00">11:00</option>
+                            <option value="11:30">11:30</option>
+                            <option value="12:00">12:00</option>
+                            <option value="12:30">12:30</option>
+                            <option value="17:00">17:00</option>
+                            <option value="17:30">17:30</option>
+                            <option value="18:00">18:00</option>
+                            <option value="18:30">18:30</option>
+                            <option value="19:00">19:00</option>
+                            <option value="19:30">19:30</option>
+                            <option value="20:00">20:00</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">人数</label>
+                        <select id="reservationPartySize" class="form-select" required>
+                            <option value="">選択してください</option>
+                            <option value="1">1名</option>
+                            <option value="2">2名</option>
+                            <option value="3">3名</option>
+                            <option value="4">4名</option>
+                            <option value="5">5名</option>
+                            <option value="6">6名</option>
+                            <option value="7">7名以上</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">特別リクエスト（オプション）</label>
+                        <input
+                            type="text"
+                            id="reservationNotes"
+                            class="form-input"
+                            placeholder="アレルギー対応など..."
+                            maxlength="200"
+                        >
+                    </div>
+
+                    <button class="form-button" onclick="submitReservation()">予約を確定</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- フッター -->
+    <footer>
+        <div class="footer-content">
+            <p class="footer-text">
+                <a href="https://www.bariyon.com" class="footer-link">BARIYON</a>
+                <span>|</span>
+                <a href="https://www.bariyon.com/receptra" class="footer-link">RECEPTRA</a>
+                <span>|</span>
+                <a href="https://www.bariyon.com/privacy" class="footer-link">プライバシー</a>
+            </p>
+            <p class="footer-text" style="margin-top: 12px;">
+                © 2026 BARIYON. Developed with 💚 in Okinawa. テクノロジーで、ちょっと面白く。
+            </p>
+        </div>
+    </footer>
+
+    <script>
+        // ===== グローバル設定 =====
+        const API_BASE = 'https://api.receptra.bariyon.com'; // Cloud Run エンドポイント
+        const STORAGE_KEY = 'receptra_session';
+        const CACHE_EXPIRY = 3600000; // 1時間
+
+        // ===== 状態管理 =====
+        let currentState = {
+            shops: [],
+            selectedShop: null,
+            filters: {
+                keyword: '',
+                area: '',
+                genre: '',
+                rating: '',
+                availability: ''
+            }
+        };
+
+        // ===== 初期化 =====
+        document.addEventListener('DOMContentLoaded', () => {
+            restoreSession();
+            loadShops();
+            setMinDate();
+        });
+
+        // ===== 日付の最小値設定 =====
+        function setMinDate() {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('reservationDate').setAttribute('min', today);
+            document.getElementById('reservationDate').value = today;
+        }
+
+        // ===== セッション管理 =====
+        function restoreSession() {
+            const session = localStorage.getItem(STORAGE_KEY);
+            if (session) {
+                try {
+                    currentState = JSON.parse(session);
+                } catch (e) {
+                    console.error('セッション復元エラー:', e);
+                }
+            }
+        }
+
+        function saveSession() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(currentState));
+        }
+
+        // ===== API 呼び出し =====
+        async function apiCall(endpoint, options = {}) {
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`, {
+                    ...options,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...options.headers
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API Error: ${response.status}`);
+                }
+
+                return await response.json();
+            } catch (error) {
+                console.error('API呼び出しエラー:', error);
+                throw error;
+            }
+        }
+
+        // ===== 店舗検索 =====
+        async function loadShops() {
+            showLoading();
+            hideError();
+
+            try {
+                const params = new URLSearchParams();
+                if (currentState.filters.keyword) params.append('keyword', currentState.filters.keyword);
+                if (currentState.filters.area) params.append('area', currentState.filters.area);
+                if (currentState.filters.rating) params.append('min_rating', parseFloat(currentState.filters.rating));
+
+                // バックエンド API から取得
+                const data = await apiCall(`/api/v1/shops/search?${params}`);
+                currentState.shops = Array.isArray(data) ? data : data.items || [];
+
+                renderShops();
+                saveSession();
+            } catch (error) {
+                showError('店舗の読み込みに失敗しました。もう一度お試しください。');
+                renderShops(); // ダミーデータ表示
+            }
+        }
+
+        // ===== ショップをレンダリング =====
+        function renderShops() {
+            const container = document.getElementById('shopGrid');
+            const emptyState = document.getElementById('emptyState');
+
+            if (currentState.shops.length === 0) {
+                container.setAttribute('data-state', 'hidden');
+                emptyState.removeAttribute('data-state');
+                return;
+            }
+
+            container.innerHTML = currentState.shops.map(shop => `
+                <div class="shop-card" onclick="openDetail('${shop.id}')">
+                    <div class="shop-image">${shop.emoji || '🍽️'}</div>
+                    <div class="shop-info">
+                        <div class="shop-name">${shop.name}</div>
+                        <div class="shop-meta">
+                            <div class="shop-genre">${shop.genre || 'ジャンル未定義'}</div>
+                            <div class="shop-rating">⭐ ${(shop.rating || 4.0).toFixed(1)}</div>
+                        </div>
+                        <div class="shop-access">${shop.area || '沖縄県'} / ${shop.access || 'アクセス情報'}</div>
+                        <button class="shop-cta">詳細を見る</button>
+                    </div>
+                </div>
+            `).join('');
+
+            container.removeAttribute('data-state');
+            emptyState.setAttribute('data-state', 'hidden');
+        }
+
+        // ===== フィルター適用 =====
+        function applyFilters() {
+            currentState.filters.area = document.getElementById('areaFilter').value;
+            currentState.filters.genre = document.getElementById('genreFilter').value;
+            currentState.filters.rating = document.getElementById('ratingFilter').value;
+            currentState.filters.availability = document.getElementById('availabilityFilter').value;
+            loadShops();
+        }
+
+        // ===== 検索実行 =====
+        function searchShops() {
+            currentState.filters.keyword = document.getElementById('keywordInput').value;
+            loadShops();
+        }
+
+        // ===== フィルターリセット =====
+        function resetFilters() {
+            document.getElementById('keywordInput').value = '';
+            document.getElementById('areaFilter').value = '';
+            document.getElementById('genreFilter').value = '';
+            document.getElementById('ratingFilter').value = '';
+            document.getElementById('availabilityFilter').value = '';
+            currentState.filters = {
+                keyword: '',
+                area: '',
+                genre: '',
+                rating: '',
+                availability: ''
+            };
+            loadShops();
+        }
+
+        // ===== 詳細表示 =====
+        async function openDetail(shopId) {
+            try {
+                const shop = currentState.shops.find(s => s.id === shopId);
+                if (!shop) return;
+
+                currentState.selectedShop = shop;
+                document.getElementById('modalTitle').textContent = shop.name;
+                document.getElementById('detailGenre').textContent = shop.genre || '-';
+                document.getElementById('detailRating').textContent = `⭐ ${(shop.rating || 4.0).toFixed(1)} (${shop.review_count || 0}件)`;
+                document.getElementById('detailPhone').textContent = shop.phone || '-';
+                document.getElementById('detailHours').textContent = shop.hours || '11:00～20:00';
+                document.getElementById('detailDescription').textContent = shop.description || '創業以来、地元に愛される店舗です。';
+
+                // メニュー表示
+                const menuItems = shop.menu || [
+                    { name: 'そば', price: '¥800' },
+                    { name: 'ラーメン', price: '¥900' },
+                    { name: '定食', price: '¥1200' },
+                    { name: 'ドリンク', price: '¥500' }
+                ];
+
+                document.getElementById('detailMenu').innerHTML = menuItems.map(item => `
+                    <div style="padding: 8px; border: 1px solid #ddd; border-radius: 6px;">
+                        <div style="font-weight: 700; color: var(--navy); margin-bottom: 4px;">${item.name}</div>
+                        <div style="color: var(--primary); font-weight: 700;">${item.price}</div>
+                    </div>
+                `).join('');
+
+                document.getElementById('detailModal').classList.add('active');
+            } catch (error) {
+                showError('店舗情報の読み込みに失敗しました。');
+            }
+        }
+
+        // ===== モーダル閉じる =====
+        function closeModal() {
+            document.getElementById('detailModal').classList.remove('active');
+        }
+
+        // ===== 予約送信 =====
+        async function submitReservation() {
+            if (!currentState.selectedShop) return;
+
+            const date = document.getElementById('reservationDate').value;
+            const time = document.getElementById('reservationTime').value;
+            const partySize = document.getElementById('reservationPartySize').value;
+            const notes = document.getElementById('reservationNotes').value;
+
+            if (!date || !time || !partySize) {
+                showError('必須項目を入力してください。');
+                return;
+            }
+
+            try {
+                const button = event.target;
+                button.disabled = true;
+                button.textContent = '送信中...';
+
+                const reservation = {
+                    shop_id: currentState.selectedShop.id,
+                    customer_id: 'guest', // TODO: 認証実装後に真のcustomer_idに置き換え
+                    reservation_time: `${date}T${time}`,
+                    party_size: parseInt(partySize),
+                    notes: notes
+                };
+
+                await apiCall('/api/v1/reservations/create', {
+                    method: 'POST',
+                    body: JSON.stringify(reservation)
+                });
+
+                alert('予約が確定しました！確認メールをお送りします。');
+                closeModal();
+                button.disabled = false;
+                button.textContent = '予約を確定';
+            } catch (error) {
+                showError('予約に失敗しました。もう一度お試しください。');
+                event.target.disabled = false;
+                event.target.textContent = '予約を確定';
+            }
+        }
+
+        // ===== UI ヘルパー =====
+        function showLoading() {
+            document.getElementById('loadingState').removeAttribute('data-state');
+            document.getElementById('shopGrid').setAttribute('data-state', 'hidden');
+            document.getElementById('emptyState').setAttribute('data-state', 'hidden');
+        }
+
+        function showError(message) {
+            const el = document.getElementById('errorMessage');
+            el.textContent = message;
+            el.removeAttribute('data-state');
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').setAttribute('data-state', 'hidden');
+        }
+
+        // ===== キーボード操作 =====
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+            if (e.key === 'Enter' && e.target.id === 'keywordInput') searchShops();
+        });
+        // 初期化（すべての関数定義後に実行）
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeTestAccounts();
+            restoreUserSession();
+            checkOwnerLoginStatus();
+            setMinDate();
+            renderRegions();
+            renderGenres();
+            initializeStarRating();
+        });
+        // 初期化（すべての関数定義後に実行）
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeTestAccounts();
+            restoreUserSession();
+            checkOwnerLoginStatus();
+            setMinDate();
+            renderRegions();
+            renderGenres();
+            initializeStarRating();
+        });
+    </script>
+</body>
+</html>
