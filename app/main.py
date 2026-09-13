@@ -4,9 +4,11 @@ BARIYON Receptra - FastAPI Main Application
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import get_settings
@@ -29,7 +31,7 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """アプリケーションのライフサイクル管理"""
     # Startup
-    logger.info("🚀 BARIYON Receptra API starting up...")
+    logger.info("�� BARIYON Receptra API starting up...")
 
     # Database initialization
     try:
@@ -88,6 +90,12 @@ def create_app() -> FastAPI:
     app.include_router(shops_router)  # shops_router has its own prefix and tags
     app.include_router(reservations_router)  # reservations_router has its own prefix and tags
     app.include_router(customers_router)  # customers_router has its own prefix and tags
+
+    # 静的ファイル配信設定 - /receptra/ ルート
+    frontend_path = os.path.join(os.path.dirname(__file__), "../frontend")
+    if os.path.exists(frontend_path):
+        app.mount("/receptra", StaticFiles(directory=frontend_path, html=True), name="receptra")
+        logger.info(f"✅ Static files mounted at /receptra from {frontend_path}")
 
     # ヘルスチェック
     @app.get("/health", tags=["health"])
