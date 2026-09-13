@@ -6,7 +6,11 @@ All SQLAlchemy ORM models for BARIYON Receptra
 from app.models.user import Tenant, User
 
 # Shop models
-from app.models.shop import Shop, ShopHours, ShopCategory
+from app.models.shop import Shop, ShopHours, ShopCategory, BusinessType
+
+# Service & Staff models (NEW)
+from app.models.service import Service
+from app.models.staff import Staff, StaffService
 
 # Reservation models
 from app.models.reservation import Reservation, ReservationStatus
@@ -36,6 +40,12 @@ __all__ = [
     "Shop",
     "ShopHours",
     "ShopCategory",
+    "BusinessType",
+    
+    # Service & Staff (NEW)
+    "Service",
+    "Staff",
+    "StaffService",
     
     # Reservation
     "Reservation",

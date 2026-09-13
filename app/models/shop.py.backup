@@ -1,6 +1,6 @@
 """
-Shop (店舗) モデル - 拡張版
-業種別対応のため business_type を追加
+Shop (店舗) モデル
+業者が登録する店舗情報
 """
 
 from datetime import datetime, time
@@ -13,41 +13,22 @@ from app.database import Base
 import enum
 
 
-class BusinessType(str, enum.Enum):
-    """業種タイプ"""
-    RESTAURANT = "restaurant"      # 飲食店
-    BEAUTY = "beauty"             # 美容院
-    HOTEL = "hotel"               # ホテル
-    SCHOOL = "school"             # スクール
-    CRAM_SCHOOL = "cram_school"   # 塾
-    CLINIC = "clinic"             # 医院
-    GYM = "gym"                   # ジム
+class ShopCategory(str, enum.Enum):
+    """店舗カテゴリ"""
+    RESTAURANT = "restaurant"      # レストラン
+    CAFE = "cafe"                  # カフェ
+    RAMEN = "ramen"               # ラーメン
+    SUSHI = "sushi"               # 寿司
+    IZAKAYA = "izakaya"           # 居酒屋
+    BAR = "bar"                   # バー
+    BEAUTY = "beauty"             # 美容
+    SALON = "salon"               # サロン
+    CLINIC = "clinic"             # クリニック
     OTHER = "other"               # その他
 
 
-class ShopCategory(str, enum.Enum):
-    """店舗カテゴリ（細分類）"""
-    # Restaurant
-    RAMEN = "ramen"
-    SUSHI = "sushi"
-    IZAKAYA = "izakaya"
-    CAFE = "cafe"
-    BAR = "bar"
-    # Beauty
-    SALON = "salon"
-    NAIL = "nail"
-    SPA = "spa"
-    # Hotel
-    RESORT = "resort"
-    BUSINESS = "business"
-    # Other
-    CLINIC = "clinic"
-    GYM = "gym"
-    OTHER = "other"
-
-
 class Shop(Base):
-    """店舗情報 - 業種対応版"""
+    """店舗情報"""
 
     __tablename__ = "shops"
 
@@ -57,11 +38,6 @@ class Shop(Base):
     # 基本情報
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    
-    # ★★★ 新規: 業種タイプ（主分類）
-    business_type = Column(String(50), nullable=True)  # BusinessType enum
-    
-    # 既存: カテゴリ（細分類）
     category = Column(String(50), nullable=False)  # ShopCategory
     
     # 住所・位置情報
@@ -98,20 +74,16 @@ class Shop(Base):
     reviews = relationship("Review", back_populates="shop", cascade="all, delete-orphan")
     promotions = relationship("Promotion", back_populates="shop", cascade="all, delete-orphan")
     analytics = relationship("ShopAnalytics", back_populates="shop", cascade="all, delete-orphan")
-    # ★★★ 新規リレーション
-    services = relationship("Service", back_populates="shop", cascade="all, delete-orphan")
-    staff = relationship("Staff", back_populates="shop", cascade="all, delete-orphan")
 
     # インデックス
     __table_args__ = (
         Index("ix_shops_tenant", "tenant_id"),
-        Index("ix_shops_business_type", "business_type"),  # ★★★ 新規
         Index("ix_shops_category", "category"),
         Index("ix_shops_is_active", "is_active"),
     )
 
     def __repr__(self):
-        return f"<Shop(id={self.id}, name={self.name}, business_type={self.business_type})>"
+        return f"<Shop(id={self.id}, name={self.name}, tenant_id={self.tenant_id})>"
 
 
 class ShopHours(Base):
