@@ -1,0 +1,11 @@
+[build]
+builder = "dockerfile"
+dockerfile = "docker/Dockerfile"
+
+[deploy]
+startCommand = "gunicorn -w 4 -b 0.0.0.0:$PORT backend.receptra_backend_extended:app"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 10
+
+[services.postgres]
+image = "postgres:15"

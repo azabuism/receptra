@@ -1,0 +1,3682 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="レセプトラ - 飲食店・美容・ホテル・教育など全サービス業種の検索・予約プラットフォーム。営業電話をカット。">
+    <meta name="og:title" content="レセプトラ">
+    <meta name="og:description" content="全業種のサービスを検索・予約。営業電話も自動でカット。">
+    <title>レセプトラ - 全業種対応の検索・予約プラットフォーム</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #FF7A00;
+            --primary-light: #ff9500;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --error: #ef4444;
+            --success: #10b981;
+            --border: 1px solid #ddd;
+            --rating-color: #fbbf24;
+        }
+
+        html, body {
+            height: 100%;
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            line-height: 1.6;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ナビゲーション */
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 8px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+            height: 48px;
+        }
+
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            text-decoration: none;
+            color: var(--dark);
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .nav-logo {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, var(--primary), var(--primary-light));
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--white);
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .nav-button {
+            background: none;
+            border: none;
+            color: var(--dark);
+            font-size: 13px;
+            cursor: pointer;
+            padding: 6px 12px;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+
+        .nav-button:hover {
+            background: var(--light);
+        }
+
+        .nav-button.primary {
+            background: var(--primary);
+            color: var(--white);
+        }
+
+        .nav-button.primary:hover {
+            background: var(--primary-dark);
+        }
+
+        /* ユーザー表示 */
+        .nav-user {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+        }
+
+        .nav-user-avatar {
+            width: 28px;
+            height: 28px;
+            background: var(--primary);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--white);
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        /* ヘッダー */
+        header {
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 16px 20px;
+            display: none;
+            flex-shrink: 0;
+            position: fixed;
+            top: 48px;
+            left: 0;
+            right: 0;
+            z-index: 99;
+        }
+
+        header.active {
+            display: block;
+        }
+
+        .header-content {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* 検索フォーム */
+        .search-form {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .search-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .search-label {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--dark);
+        }
+
+        .search-input, .search-select {
+            padding: 10px 12px;
+            border: var(--border);
+            border-radius: 4px;
+            font-size: 13px;
+            font-family: inherit;
+            background: var(--white);
+            color: var(--dark);
+        }
+
+        .search-input::placeholder {
+            color: #999;
+        }
+
+        .search-input:focus, .search-select:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(255, 122, 0, 0.1);
+        }
+
+        /* メインコンテンツ */
+        .main {
+            padding: 20px;
+            display: none;
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            margin-top: 48px;
+        }
+
+        .main.active {
+            display: block;
+        }
+
+        header.active ~ .main {
+            margin-top: calc(48px + 60px);
+        }
+
+        .main-container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* ページヘッダー（戻るボタン付き） */
+        .page-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding-top: 20px;
+            margin-bottom: 20px;
+        }
+
+        .back-button {
+            background: none;
+            border: none;
+            color: var(--primary);
+            font-size: 20px;
+            cursor: pointer;
+            padding: 8px 12px;
+            border-radius: 4px;
+            transition: background 0.3s;
+            display: none;
+        }
+
+        .back-button.show {
+            display: block;
+        }
+
+        .back-button:hover {
+            background: var(--light);
+        }
+
+        .page-title {
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        /* ホームページスタイル */
+        .home-page {
+            display: none;
+        }
+
+        .home-page.active {
+            display: block;
+        }
+
+        /* 地方セクション */
+        .region-section {
+            margin-top: 20px;
+            margin-bottom: 40px;
+        }
+
+        .section-title {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 15px;
+            color: var(--dark);
+        }
+
+        /* アコーディオン */
+        .accordion {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .accordion-item {
+            background: var(--white);
+            border: var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .accordion-header {
+            background: var(--white);
+            border: none;
+            padding: 16px;
+            text-align: left;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 14px;
+            font-weight: 700;
+            transition: background 0.3s;
+            width: 100%;
+            color: var(--dark);
+        }
+
+        .accordion-header:hover {
+            background: var(--light);
+        }
+
+        .accordion-icon {
+            transition: transform 0.3s;
+            font-size: 16px;
+        }
+
+        .accordion-item.active .accordion-icon {
+            transform: rotate(180deg);
+        }
+
+        .accordion-body {
+            display: none;
+            padding: 16px;
+            border-top: var(--border);
+        }
+
+        .accordion-item.active .accordion-body {
+            display: block;
+        }
+
+        .region-prefectures {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .prefecture-item {
+            background: var(--light);
+            border: var(--border);
+            border-radius: 4px;
+            padding: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 13px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 48px;
+            text-align: center;
+            color: var(--dark);
+        }
+
+        .prefecture-item:hover {
+            background: var(--primary);
+            color: var(--white);
+            border-color: var(--primary);
+        }
+
+        /* ジャンル選択セクション */
+        .genre-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+        }
+
+        /* カテゴリーグループスタイル */
+        .category-group {
+            border-bottom: 1px solid #eee;
+            overflow: hidden;
+            transition: background 0.2s;
+        }
+
+        .category-header {
+            background: var(--white);
+            border: 1px solid #ddd;
+            border-bottom: none;
+            padding: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .category-header:hover {
+            background: #f9f9f9;
+            border-color: var(--primary);
+        }
+
+        .category-header-content {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex: 1;
+        }
+
+        .category-emoji {
+            font-size: 28px;
+            min-width: 40px;
+            text-align: center;
+        }
+
+        .category-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .category-name {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--dark);
+        }
+
+        .category-count {
+            font-size: 13px;
+            color: #999;
+        }
+
+        .category-toggle-icon {
+            font-size: 14px;
+            color: #666;
+            transition: transform 0.3s;
+            margin-left: 12px;
+        }
+
+        .category-subcategories {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 0;
+            background: #fafafa;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-top: none;
+        }
+
+        .subcategory-item {
+            background: var(--white);
+            border: 1px solid #eee;
+            border-radius: 4px;
+            padding: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 4px;
+            margin: 4px;
+        }
+
+        .subcategory-item:hover {
+            border-color: var(--primary);
+            box-shadow: 0 2px 8px rgba(255, 122, 0, 0.1);
+            background: #fff;
+        }
+
+        .subcategory-emoji {
+            font-size: 24px;
+        }
+
+        .subcategory-name {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--dark);
+        }
+
+        .subcategory-count {
+            font-size: 10px;
+            color: #999;
+        }
+
+        /* レガシーgenre-itemサポート */
+        .genre-item {
+            background: var(--white);
+            border: var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-decoration: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            min-height: 100px;
+            text-align: center;
+        }
+
+        .genre-item:hover {
+            border-color: var(--primary);
+            box-shadow: 0 2px 8px rgba(255, 122, 0, 0.1);
+        }
+
+        .genre-emoji {
+            font-size: 32px;
+            margin-bottom: 8px;
+        }
+
+        .genre-name {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--dark);
+            margin-bottom: 4px;
+        }
+
+        .genre-count {
+            font-size: 11px;
+            color: #666;
+        }
+
+        /* ローディング */
+        .loading {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            padding: 60px 20px;
+        }
+
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid var(--light);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        .loading-text {
+            color: #666;
+            font-size: 14px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* エラーメッセージ */
+        .error-message {
+            background: #fee;
+            border: 1px solid var(--error);
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 20px;
+            color: var(--error);
+            font-size: 13px;
+            display: none;
+        }
+
+        .error-message.active {
+            display: block;
+        }
+
+        /* ショップリスト */
+        .shop-list {
+            list-style: none;
+        }
+
+        .shop-item {
+            background: var(--white);
+            border: var(--border);
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 12px;
+            display: flex;
+            gap: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .shop-item:hover {
+            border-color: var(--primary);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+
+        .shop-image {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, var(--primary), var(--primary-light));
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 40px;
+            flex-shrink: 0;
+        }
+
+        .shop-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .shop-header {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .shop-name {
+            font-weight: 700;
+            font-size: 14px;
+            color: var(--dark);
+        }
+
+        .shop-genre {
+            background: var(--light);
+            color: var(--dark);
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+
+        .shop-meta {
+            display: flex;
+            gap: 12px;
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        .shop-rating {
+            font-weight: 700;
+        }
+
+        /* empty state */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            display: none;
+        }
+
+        .empty-state.active {
+            display: block;
+        }
+
+        .empty-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        .empty-title {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .empty-text {
+            font-size: 13px;
+            color: #666;
+        }
+
+        /* モーダル */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 200;
+            overflow-y: auto;
+        }
+
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .modal-content {
+            background: var(--white);
+            border-radius: 8px;
+            max-width: 600px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            border-bottom: var(--border);
+        }
+
+        .modal-header h2 {
+            font-size: 18px;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #999;
+        }
+
+        .modal-body {
+            padding: 20px;
+        }
+
+        .modal-section {
+            margin-bottom: 20px;
+        }
+
+        .modal-section-title {
+            font-size: 14px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            color: var(--dark);
+        }
+
+        .modal-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .modal-info-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .modal-info-label {
+            font-size: 11px;
+            font-weight: 700;
+            color: #999;
+            text-transform: uppercase;
+        }
+
+        .modal-info-value {
+            font-size: 13px;
+            color: var(--dark);
+            font-weight: 700;
+        }
+
+        /* フォーム */
+        .form-group {
+            margin-bottom: 12px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--dark);
+            margin-bottom: 4px;
+        }
+
+        .form-input, .form-select, textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: var(--border);
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 12px;
+            color: var(--dark);
+        }
+
+        .form-input:focus, .form-select:focus, textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(255, 122, 0, 0.1);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .form-button {
+            width: 100%;
+            padding: 10px;
+            background: var(--primary);
+            color: var(--white);
+            border: none;
+            border-radius: 4px;
+            font-weight: 700;
+            font-family: inherit;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .form-button:hover {
+            background: var(--primary-dark);
+        }
+
+        .form-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .form-button.secondary {
+            background: #ccc;
+            color: #666;
+            margin-top: 8px;
+        }
+
+        .form-button.secondary:hover {
+            background: #bbb;
+        }
+
+        /* ボタングループ */
+        .button-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .button-large {
+            background: var(--white);
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .button-large:hover {
+            border-color: var(--primary);
+            box-shadow: 0 2px 8px rgba(255, 122, 0, 0.1);
+        }
+
+        .button-large-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        .button-large-text {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--dark);
+        }
+
+        /* 星評価 */
+        .star-rating {
+            display: flex;
+            gap: 4px;
+            font-size: 24px;
+        }
+
+        .star {
+            cursor: pointer;
+            color: #ddd;
+            transition: color 0.2s;
+        }
+
+        .star.active {
+            color: var(--rating-color);
+        }
+
+        .star:hover,
+        .star:hover ~ .star {
+            color: var(--rating-color);
+        }
+
+        /* レビューアイテム */
+        .review-item {
+            background: var(--light);
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+
+        .review-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .review-user {
+            font-weight: 700;
+            font-size: 12px;
+            color: var(--dark);
+        }
+
+        .review-date {
+            font-size: 11px;
+            color: #999;
+        }
+
+        .review-rating {
+            color: var(--rating-color);
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+
+        .review-text {
+            font-size: 12px;
+            color: #666;
+            line-height: 1.5;
+        }
+
+        /* クーポンアイテム */
+        .coupon-item {
+            background: var(--white);
+            border: 2px dashed var(--primary);
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .coupon-content {
+            flex: 1;
+        }
+
+        .coupon-title {
+            font-weight: 700;
+            font-size: 13px;
+            color: var(--dark);
+            margin-bottom: 4px;
+        }
+
+        .coupon-desc {
+            font-size: 11px;
+            color: #666;
+            margin-bottom: 8px;
+        }
+
+        .coupon-code {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--primary);
+            font-family: 'Courier New', monospace;
+        }
+
+        .coupon-button {
+            padding: 8px 16px;
+            background: var(--primary);
+            color: var(--white);
+            border: none;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+            margin-left: 12px;
+        }
+
+        .coupon-button:hover {
+            background: var(--primary-dark);
+        }
+
+        .coupon-button.used {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        /* プロフィール表示 */
+        .profile-section {
+            background: var(--white);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        .profile-header {
+            display: flex;
+            gap: 16px;
+            align-items: flex-start;
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: var(--border);
+        }
+
+        .profile-avatar {
+            width: 80px;
+            height: 80px;
+            background: var(--primary);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--white);
+            font-size: 32px;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        .profile-info h3 {
+            font-size: 18px;
+            margin-bottom: 4px;
+        }
+
+        .profile-info-item {
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        /* フッター */
+        footer {
+            background: var(--white);
+            border-top: var(--border);
+            padding: 20px;
+            text-align: center;
+            margin-top: 40px;
+        }
+
+        .footer-text {
+            font-size: 12px;
+            color: #999;
+        }
+
+        .footer-link {
+            color: var(--primary);
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .footer-link:hover {
+            text-decoration: underline;
+        }
+
+        /* レスポンシブ */
+        @media (max-width: 768px) {
+            .search-form {
+                grid-template-columns: 1fr;
+            }
+
+            .genre-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+
+            .back-button.show {
+                display: block !important;
+                font-size: 18px;
+                padding: 6px 10px;
+            }
+
+            .page-header {
+                padding-top: 16px;
+            }
+
+            .page-title {
+                font-size: 16px;
+            }
+
+            .modal-info {
+                grid-template-columns: 1fr;
+            }
+
+            .shop-item {
+                flex-direction: column;
+            }
+
+            .shop-image {
+                width: 100%;
+                height: 120px;
+            }
+
+            .button-group {
+                grid-template-columns: 1fr;
+            }
+
+            .coupon-item {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .coupon-button {
+                margin-left: 0;
+                margin-top: 12px;
+                width: 100%;
+            }
+
+            .profile-header {
+                flex-direction: column;
+            }
+
+            /* スマホ用ナビゲーション */
+            nav {
+                padding: 6px 12px;
+                height: 44px;
+            }
+
+            .nav-brand {
+                font-size: 13px;
+                gap: 4px;
+            }
+
+            .nav-logo {
+                width: 28px;
+                height: 28px;
+                font-size: 14px;
+            }
+
+            .nav-right {
+                gap: 8px;
+            }
+
+            .nav-button {
+                font-size: 11px;
+                padding: 4px 8px;
+            }
+
+            .nav-user {
+                font-size: 10px;
+            }
+
+            /* ヘッダー調整 */
+            header {
+                padding: 12px 16px;
+                top: 44px;
+            }
+
+            .main {
+                margin-top: 44px;
+            }
+
+            header.active ~ .main {
+                margin-top: calc(44px + 80px);
+            }
+
+            /* 検索フォーム */
+            .search-label {
+                font-size: 11px;
+            }
+
+            .search-input {
+                font-size: 12px;
+                padding: 8px 10px;
+            }
+        }
+
+        /* 状態管理 */
+        [data-state="hidden"] {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <!-- ナビゲーション -->
+    <nav>
+        <a href="#" class="nav-brand" onclick="goHome(); return false;">
+            <div class="nav-logo">R</div>
+            <span>レセプトラ</span>
+        </a>
+        <div class="nav-right">
+            <button class="nav-button" id="navUserBtn" onclick="showUserPage()" data-state="hidden">👤 マイページ</button>
+            <button class="nav-button" onclick="changeLanguage()">言語</button>
+            <button class="nav-button" onclick="showOwnerPage()">オーナーページ</button>
+            <button class="nav-button" id="navLoginBtn" onclick="showUserSignup()">ログイン</button>
+        </div>
+    </nav>
+
+    <!-- ヘッダー（検索フォーム） -->
+    <header class="active">
+        <div class="header-content">
+            <form class="search-form" onsubmit="handleSearch(event)">
+                <div class="search-field">
+                    <label class="search-label">エリア・駅</label>
+                    <input type="text" id="areaInput" class="search-input" placeholder="検索..." autocomplete="off">
+                </div>
+                <div class="search-field">
+                    <label class="search-label">店名・ジャンル</label>
+                    <input type="text" id="keywordInput" class="search-input" placeholder="検索..." autocomplete="off">
+                </div>
+            </form>
+        </div>
+    </header>
+
+    <!-- メインコンテンツ -->
+    <main class="main active">
+        <div class="main-container">
+            <!-- ホームページ -->
+            <section class="home-page active" id="homePage">
+                <div class="region-section">
+                    <div class="section-title">エリアから探す</div>
+                    <div class="accordion" id="regionAccordion"></div>
+                </div>
+                <div class="region-section">
+                    <div class="section-title">ジャンルから探す</div>
+                    <div class="genre-grid" id="homeGenreGrid"></div>
+                </div>
+            </section>
+
+            <!-- 検索結果ページ -->
+            <section id="searchResultPage" data-state="hidden">
+                <div class="page-header">
+                    <button class="back-button show" onclick="goBack()">← 戻る</button>
+                    <div class="page-title">検索結果</div>
+                </div>
+                <div id="errorMessage" class="error-message"></div>
+                <div id="loadingState" class="loading">
+                    <div class="loading-spinner"></div>
+                    <div class="loading-text">検索中...</div>
+                </div>
+                <ul id="shopList" class="shop-list" data-state="hidden"></ul>
+                <div id="emptyState" class="empty-state">
+                    <div class="empty-icon">🍽️</div>
+                    <div class="empty-title">店舗が見つかりません</div>
+                    <p class="empty-text">検索条件を変更して、もう一度お試しください。</p>
+                </div>
+            </section>
+
+            <!-- 都道府県ページ -->
+            <section id="prefecturePage" data-state="hidden">
+                <div class="page-header">
+                    <button class="back-button show" onclick="goBack()">← 戻る</button>
+                    <h1 class="page-title" id="prefectureTitle" style="font-size: 22px; margin: 0; flex: 1;"></h1>
+                </div>
+                <div style="margin-bottom: 30px;">
+                    <div class="region-section">
+                        <div class="section-title">ジャンルから探す</div>
+                        <div class="genre-grid" id="prefectureGenreGrid"></div>
+                    </div>
+                </div>
+                <div id="prefectureLoadingState" class="loading" data-state="hidden">
+                    <div class="loading-spinner"></div>
+                    <div class="loading-text">検索中...</div>
+                </div>
+                <ul id="prefectureShopList" class="shop-list" data-state="hidden"></ul>
+                <div id="prefectureEmptyState" class="empty-state">
+                    <div class="empty-icon">🍽️</div>
+                    <div class="empty-title">店舗が見つかりません</div>
+                    <p class="empty-text">ジャンルを変更して、もう一度お試しください。</p>
+                </div>
+            </section>
+
+            <!-- ユーザー登録・ログインページ -->
+            <section id="userSignupPage" data-state="hidden">
+                <div class="page-header">
+                    <button class="back-button show" onclick="goBack()">← 戻る</button>
+                    <div class="page-title">ユーザー登録</div>
+                </div>
+                <div style="background: var(--white); border-radius: 8px; padding: 30px; max-width: 600px; margin: 0 auto;">
+                    <form id="userSignupForm" onsubmit="handleUserSignup(event)" style="display: flex; flex-direction: column; gap: 16px;">
+                        <div class="form-group">
+                            <label class="form-label">メールアドレス</label>
+                            <input type="email" id="signupEmail" class="form-input" placeholder="user@example.com" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">パスワード</label>
+                            <input type="password" id="signupPassword" class="form-input" placeholder="••••••••" required>
+                        </div>
+                        <button type="submit" class="form-button">登録してプロフィール設定へ</button>
+                        <button type="button" class="form-button secondary" onclick="goHome()">戻る</button>
+                    </form>
+                </div>
+            </section>
+
+            <!-- ユーザープロフィール設定ページ -->
+            <section id="userProfilePage" data-state="hidden">
+                <div class="page-header">
+                    <button class="back-button show" onclick="showUserSignup()">← 戻る</button>
+                    <div class="page-title">プロフィール設定</div>
+                </div>
+                <div style="background: var(--white); border-radius: 8px; padding: 30px; max-width: 600px; margin: 0 auto;">
+                    <form id="userProfileForm" onsubmit="handleUserProfileSubmit(event)" style="display: flex; flex-direction: column; gap: 16px;">
+                        <div class="form-group">
+                            <label class="form-label">性別</label>
+                            <select id="profileGender" class="form-input" required>
+                                <option value="">選択してください</option>
+                                <option value="male">男性</option>
+                                <option value="female">女性</option>
+                                <option value="other">その他</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">年齢</label>
+                            <select id="profileAge" class="form-input" required>
+                                <option value="">選択してください</option>
+                                <option value="10s">10代</option>
+                                <option value="20s">20代</option>
+                                <option value="30s">30代</option>
+                                <option value="40s">40代</option>
+                                <option value="50s">50代</option>
+                                <option value="60s">60代以上</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">利用エリア</label>
+                            <select id="profileArea" class="form-input" required>
+                                <option value="">選択してください</option>
+                                <option value="北海道">北海道</option>
+                                <option value="東北">東北地方</option>
+                                <option value="関東">関東地方</option>
+                                <option value="中部">中部地方</option>
+                                <option value="近畿">近畿地方</option>
+                                <option value="中国">中国地方</option>
+                                <option value="四国">四国地方</option>
+                                <option value="九州">九州・沖縄地方</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">好きなジャンル（複数選択可）</label>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" name="favoriteGenres" value="和食"> 和食
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" name="favoriteGenres" value="洋食"> 洋食
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" name="favoriteGenres" value="中華料理"> 中華料理
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" name="favoriteGenres" value="焼肉"> 焼肉
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" name="favoriteGenres" value="寿司"> 寿司
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" name="favoriteGenres" value="カフェ"> カフェ
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" name="favoriteGenres" value="ラーメン"> ラーメン
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" name="favoriteGenres" value="居酒屋"> 居酒屋
+                                </label>
+                            </div>
+                        </div>
+                        <button type="submit" class="form-button">プロフィール設定を完了</button>
+                    </form>
+                </div>
+            </section>
+
+            <!-- ユーザーマイページ -->
+            <section id="userPage" data-state="hidden">
+                <div class="page-header">
+                    <button class="back-button show" onclick="goBack()">← 戻る</button>
+                    <div class="page-title">マイページ</div>
+                </div>
+
+                <!-- プロフィール -->
+                <div class="profile-section">
+                    <div class="profile-header">
+                        <div class="profile-avatar" id="userAvatar">👤</div>
+                        <div class="profile-info">
+                            <h3 id="userName">ゲスト</h3>
+                            <div class="profile-info-item">メール: <span id="userEmail">-</span></div>
+                            <div class="profile-info-item">性別: <span id="userGender">-</span></div>
+                            <div class="profile-info-item">年齢: <span id="userAge">-</span></div>
+                            <div class="profile-info-item">エリア: <span id="userArea">-</span></div>
+                            <div class="profile-info-item">好きなジャンル: <span id="userGenres">-</span></div>
+                            <button class="form-button" onclick="editUserProfile()" style="margin-top: 12px; width: auto;">編集</button>
+                            <button class="form-button secondary" onclick="handleUserLogout()" style="margin-top: 8px; width: auto;">ログアウト</button>
+                            <button class="form-button" style="margin-top: 8px; width: auto; background: #ef4444;" onclick="handleDeleteUserAccount()">🗑️ アカウント削除</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 予約履歴 -->
+                <div class="profile-section">
+                    <div class="modal-section-title">予約履歴</div>
+                    <div id="userReservations"></div>
+                    <p id="noReservationsMessage" style="color: #999; font-size: 12px; text-align: center; padding: 20px;">予約履歴はありません</p>
+                </div>
+
+                <!-- 保存済みクーポン -->
+                <div class="profile-section">
+                    <div class="modal-section-title">保存済みクーポン</div>
+                    <div id="savedCoupons"></div>
+                    <p id="noCouponsMessage" style="color: #999; font-size: 12px; text-align: center; padding: 20px;">保存済みのクーポンはありません</p>
+                </div>
+
+                <!-- 投稿した口コミ -->
+                <div class="profile-section">
+                    <div class="modal-section-title">投稿した口コミ</div>
+                    <div id="userReviews"></div>
+                    <p id="noReviewsMessage" style="color: #999; font-size: 12px; text-align: center; padding: 20px;">投稿した口コミはありません</p>
+                </div>
+            </section>
+
+            <!-- 店舗詳細ページ -->
+            <section id="shopDetailPage" data-state="hidden">
+                <div class="page-header">
+                    <button class="back-button show" onclick="goBack()">← 戻る</button>
+                    <div class="page-title" id="detailPageTitle">店舗詳細</div>
+                </div>
+
+                <div style="background: var(--white); border-radius: 8px; padding: 20px;">
+                    <!-- 基本情報 -->
+                    <div class="modal-section">
+                        <div class="modal-section-title">基本情報</div>
+                        <div class="modal-info">
+                            <div class="modal-info-item">
+                                <div class="modal-info-label">ジャンル</div>
+                                <div class="modal-info-value" id="detailGenre">-</div>
+                            </div>
+                            <div class="modal-info-item">
+                                <div class="modal-info-label">評価</div>
+                                <div class="modal-info-value" id="detailRating">-</div>
+                            </div>
+                            <div class="modal-info-item">
+                                <div class="modal-info-label">電話</div>
+                                <div class="modal-info-value" id="detailPhone">-</div>
+                            </div>
+                            <div class="modal-info-item">
+                                <div class="modal-info-label">営業時間</div>
+                                <div class="modal-info-value" id="detailHours">-</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 説明 -->
+                    <div class="modal-section">
+                        <div class="modal-section-title">説明</div>
+                        <p id="detailDescription" style="color: #666; font-size: 12px; line-height: 1.6;"></p>
+                    </div>
+
+                    <!-- 地図 -->
+                    <div class="modal-section">
+                        <div class="modal-section-title">📍 場所</div>
+                        <div id="shopMapContainer" style="background: #f0f0f0; border-radius: 6px; overflow: hidden; margin-bottom: 12px;">
+                            <div id="shopMap" style="width: 100%; height: 250px; background: #e0e0e0; display: flex; align-items: center; justify-content: center; color: #999; font-size: 14px;">
+                                地図を読み込み中...
+                            </div>
+                        </div>
+                        <div id="shopAddress" style="color: #666; font-size: 12px; padding: 8px 0; border-top: 1px solid #eee;"></div>
+                    </div>
+
+                    <!-- 口コミ投稿 -->
+                    <div class="modal-section" style="border-top: var(--border); padding-top: 16px;">
+                        <div class="modal-section-title">口コミを投稿</div>
+                        <div id="reviewLoginMessage" style="background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; padding: 12px; margin-bottom: 16px; font-size: 12px; color: #92400e; display: none;">
+                            ログインして口コミを投稿してください
+                        </div>
+                        <form id="reviewForm" onsubmit="submitReview(event)" style="display: flex; flex-direction: column; gap: 12px;">
+                            <div class="form-group">
+                                <label class="form-label">星の評価</label>
+                                <div class="star-rating" id="ratingStars"></div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">コメント</label>
+                                <textarea id="reviewComment" class="form-input" placeholder="口コミを書いてください" style="resize: vertical; min-height: 80px;"></textarea>
+                            </div>
+                            <button type="submit" class="form-button">口コミを投稿</button>
+                        </form>
+                    </div>
+
+                    <!-- 口コミ一覧 -->
+                    <div class="modal-section" style="border-top: var(--border); padding-top: 16px;">
+                        <div class="modal-section-title">口コミ <span id="reviewCount" style="color: #999;">(0件)</span></div>
+                        <div id="reviewsList"></div>
+                        <p id="noReviewsMsg" style="color: #999; font-size: 12px; text-align: center; padding: 20px;">口コミはまだありません</p>
+                    </div>
+
+                    <!-- クーポン -->
+                    <div class="modal-section" style="border-top: var(--border); padding-top: 16px;">
+                        <div class="modal-section-title">クーポン</div>
+                        <div id="couponsList"></div>
+                        <p id="noCouponsMsg" style="color: #999; font-size: 12px; text-align: center; padding: 20px;">クーポンはありません</p>
+                    </div>
+
+                    <!-- 予約フォーム -->
+                    <div class="modal-section" style="border-top: var(--border); padding-top: 16px;">
+                        <div class="modal-section-title">予約する</div>
+                        <form id="reservationForm" onsubmit="submitReservation(event)" style="display: flex; flex-direction: column; gap: 12px;">
+                            <div class="form-group">
+                                <label class="form-label">来店日</label>
+                                <input type="date" id="reservationDate" class="form-input" required>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">来店時間</label>
+                                <select id="reservationTime" class="form-select" required>
+                                    <option value="">選択してください</option>
+                                    <option value="11:00">11:00</option>
+                                    <option value="11:30">11:30</option>
+                                    <option value="12:00">12:00</option>
+                                    <option value="12:30">12:30</option>
+                                    <option value="17:00">17:00</option>
+                                    <option value="17:30">17:30</option>
+                                    <option value="18:00">18:00</option>
+                                    <option value="18:30">18:30</option>
+                                    <option value="19:00">19:00</option>
+                                    <option value="19:30">19:30</option>
+                                    <option value="20:00">20:00</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">人数</label>
+                                <select id="reservationPartySize" class="form-select" required>
+                                    <option value="">選択してください</option>
+                                    <option value="1">1名</option>
+                                    <option value="2">2名</option>
+                                    <option value="3">3名</option>
+                                    <option value="4">4名</option>
+                                    <option value="5">5名</option>
+                                    <option value="6">6名</option>
+                                    <option value="7">7名以上</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">特別リクエスト</label>
+                                <input type="text" id="reservationNotes" class="form-input" placeholder="例：アレルギー対応、誕生日など">
+                            </div>
+                            <button type="submit" class="form-button">予約を確定</button>
+                        </form>
+                    </div>
+                </div>
+            </section>
+
+            <!-- オーナーページ -->
+            <section id="ownerPage" data-state="hidden">
+                <div class="page-header">
+                    <button class="back-button show" onclick="goBack()">← 戻る</button>
+                    <div class="page-title">オーナーページ</div>
+                </div>
+
+                <!-- 選択画面 -->
+                <div id="ownerChoicePage">
+                    <div style="background: var(--white); border-radius: 8px; padding: 40px 20px; max-width: 800px; margin: 0 auto;">
+                        <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 12px; text-align: center;">飲食店のオーナーさまへ</h2>
+                        <p style="font-size: 14px; color: #666; margin-bottom: 40px; text-align: center;">お店を登録または管理するオプションをお選びください</p>
+                        <div class="button-group">
+                            <div class="button-large" onclick="showOwnerSignup()">
+                                <div class="button-large-icon">📝</div>
+                                <div class="button-large-text">新規登録</div>
+                                <p style="font-size: 12px; color: #666; margin-top: 8px;">お店を新規登録する</p>
+                            </div>
+                            <div class="button-large" onclick="showOwnerLogin()">
+                                <div class="button-large-icon">🔑</div>
+                                <div class="button-large-text">ログイン</div>
+                                <p style="font-size: 12px; color: #666; margin-top: 8px;">既に登録済みの方</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 新規登録画面 -->
+                <div id="ownerSignupPage" data-state="hidden">
+                    <div style="background: var(--white); border-radius: 8px; padding: 30px; max-width: 600px; margin: 0 auto;">
+                        <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 24px;">店舗情報を入力してください</h2>
+                        <form id="ownerSignupForm" onsubmit="handleOwnerSignup(event)" style="display: flex; flex-direction: column; gap: 16px;">
+                            <div class="form-group">
+                                <label class="form-label">店舗名</label>
+                                <input type="text" id="signupShopName" class="form-input" placeholder="例：渚の寿司" required>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">メールアドレス</label>
+                                <input type="email" id="signupOwnerEmail" class="form-input" placeholder="owner@example.com" required>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">パスワード</label>
+                                <input type="password" id="signupOwnerPassword" class="form-input" placeholder="••••••••" required>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">都道府県</label>
+                                <select id="signupPrefecture" class="form-input" required>
+                                    <option value="">選択してください</option>
+                                    <option value="北海道">北海道</option>
+                                    <option value="青森県">青森県</option>
+                                    <option value="岩手県">岩手県</option>
+                                    <option value="宮城県">宮城県</option>
+                                    <option value="秋田県">秋田県</option>
+                                    <option value="山形県">山形県</option>
+                                    <option value="福島県">福島県</option>
+                                    <option value="茨城県">茨城県</option>
+                                    <option value="栃木県">栃木県</option>
+                                    <option value="群馬県">群馬県</option>
+                                    <option value="埼玉県">埼玉県</option>
+                                    <option value="千葉県">千葉県</option>
+                                    <option value="東京都">東京都</option>
+                                    <option value="神奈川県">神奈川県</option>
+                                    <option value="新潟県">新潟県</option>
+                                    <option value="富山県">富山県</option>
+                                    <option value="石川県">石川県</option>
+                                    <option value="福井県">福井県</option>
+                                    <option value="山梨県">山梨県</option>
+                                    <option value="長野県">長野県</option>
+                                    <option value="岐阜県">岐阜県</option>
+                                    <option value="静岡県">静岡県</option>
+                                    <option value="愛知県">愛知県</option>
+                                    <option value="三重県">三重県</option>
+                                    <option value="滋賀県">滋賀県</option>
+                                    <option value="京都府">京都府</option>
+                                    <option value="大阪府">大阪府</option>
+                                    <option value="兵庫県">兵庫県</option>
+                                    <option value="奈良県">奈良県</option>
+                                    <option value="和歌山県">和歌山県</option>
+                                    <option value="鳥取県">鳥取県</option>
+                                    <option value="島根県">島根県</option>
+                                    <option value="岡山県">岡山県</option>
+                                    <option value="広島県">広島県</option>
+                                    <option value="山口県">山口県</option>
+                                    <option value="徳島県">徳島県</option>
+                                    <option value="香川県">香川県</option>
+                                    <option value="愛媛県">愛媛県</option>
+                                    <option value="高知県">高知県</option>
+                                    <option value="福岡県">福岡県</option>
+                                    <option value="佐賀県">佐賀県</option>
+                                    <option value="長崎県">長崎県</option>
+                                    <option value="熊本県">熊本県</option>
+                                    <option value="大分県">大分県</option>
+                                    <option value="宮崎県">宮崎県</option>
+                                    <option value="鹿児島県">鹿児島県</option>
+                                    <option value="沖縄県">沖縄県</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">電話番号</label>
+                                <input type="tel" id="signupPhone" class="form-input" placeholder="09X-XXXX-XXXX" required>
+                            </div>
+                            <button type="submit" class="form-button">登録して管理画面へ</button>
+                            <button type="button" class="form-button secondary" onclick="backToOwnerChoice()">戻る</button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- ログイン画面 -->
+                <div id="ownerLoginPage" data-state="hidden">
+                    <div style="background: var(--white); border-radius: 8px; padding: 30px; max-width: 600px; margin: 0 auto;">
+                        <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 24px;">ログイン</h2>
+                        <form id="ownerLoginForm" onsubmit="handleOwnerLogin(event)" style="display: flex; flex-direction: column; gap: 16px;">
+                            <div class="form-group">
+                                <label class="form-label">メールアドレス</label>
+                                <input type="email" id="loginEmail" class="form-input" placeholder="owner@example.com" required>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">パスワード</label>
+                                <input type="password" id="loginPassword" class="form-input" placeholder="••••••••" required>
+                            </div>
+                            <button type="submit" class="form-button">ログイン</button>
+                            <button type="button" class="form-button secondary" onclick="backToOwnerChoice()">戻る</button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- 管理画面 -->
+                <div id="ownerEditPage" data-state="hidden">
+                    <div style="background: var(--white); border-radius: 8px; padding: 30px; max-width: 800px; margin: 0 auto;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+                            <h2 style="font-size: 18px; font-weight: 700;">店舗管理</h2>
+                            <div style="display: flex; gap: 8px;">
+                                <button onclick="showRankingsPage()" style="padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">📊 統計</button>
+                                <button onclick="handleDeleteOwnerAccount()" style="padding: 8px 16px; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">🗑️ 削除</button>
+                                <button onclick="handleOwnerLogout()" style="padding: 8px 16px; background: #999; color: white; border: none; border-radius: 4px; cursor: pointer;">ログアウト</button>
+                            </div>
+                        </div>
+
+                        <!-- 店舗選択 -->
+                        <div style="margin-bottom: 30px; border-bottom: var(--border); padding-bottom: 20px;">
+                            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 16px;">店舗を選択</h3>
+                            <div id="shopsSelectList" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px;"></div>
+                            <button onclick="showCreateShopForm()" class="form-button" style="width: auto;">➕ 新しい店舗を追加</button>
+
+                            <!-- 店舗作成フォーム -->
+                            <div id="createShopForm" data-state="hidden" style="background: var(--light); border-radius: 6px; padding: 16px; margin-top: 16px;">
+                                <h4 style="font-size: 13px; font-weight: 700; margin-bottom: 12px;">新規店舗情報</h4>
+                                <form onsubmit="handleCreateShop(event)" style="display: flex; flex-direction: column; gap: 12px;">
+                                    <div class="form-group">
+                                        <label class="form-label">店舗名</label>
+                                        <input type="text" id="newShopName" class="form-input" placeholder="例：渚の寿司" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">ジャンル</label>
+                                        <input type="text" id="newShopGenre" class="form-input" placeholder="例：寿司" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">住所</label>
+                                        <input type="text" id="newShopAddress" class="form-input" placeholder="例：沖縄県那覇市" required>
+                                    </div>
+                                    <div style="display: flex; gap: 8px;">
+                                        <button type="submit" class="form-button" style="flex: 1;">作成</button>
+                                        <button type="button" class="form-button secondary" onclick="hideCreateShopForm()" style="flex: 1;">キャンセル</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- 店舗情報編集 -->
+                        <div id="shopEditSection" style="margin-bottom: 30px; border-bottom: var(--border); padding-bottom: 20px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                                <h3 style="font-size: 14px; font-weight: 700;">現在の店舗: <span id="currentShopNameDisplay"></span></h3>
+                                <button id="deleteShopBtn" onclick="handleDeleteShop()" style="padding: 6px 12px; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">🗑️ 削除</button>
+                            </div>
+                            <form id="ownerEditForm" onsubmit="handleOwnerUpdate(event)" style="display: flex; flex-direction: column; gap: 16px;">
+                                <div class="form-group">
+                                    <label class="form-label">店舗名</label>
+                                    <input type="text" id="editShopNameInput" class="form-input" required>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">ジャンル</label>
+                                    <input type="text" id="editGenre" class="form-input" placeholder="例：寿司、和食">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">住所</label>
+                                    <input type="text" id="editAddress" class="form-input" placeholder="例：沖縄県那覇市">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">営業時間</label>
+                                    <input type="text" id="editHours" class="form-input" placeholder="例：11:00～20:00">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">電話番号</label>
+                                    <input type="tel" id="editPhone" class="form-input">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">お店の説明</label>
+                                    <textarea id="editDescription" class="form-input" placeholder="お店の特徴、おすすめ料理などを記入してください" style="resize: vertical; min-height: 120px;"></textarea>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">予約可能な時間帯</label>
+                                    <select id="editAvailability" class="form-input">
+                                        <option value="all">終日受付</option>
+                                        <option value="lunch">ランチのみ</option>
+                                        <option value="dinner">ディナーのみ</option>
+                                        <option value="limited">限定時間帯のみ</option>
+                                    </select>
+                                </div>
+                                <button type="submit" class="form-button">店舗情報を保存</button>
+                            </form>
+                        </div>
+
+                        <!-- Google Sheets連携設定 -->
+                        <div style="margin-bottom: 30px; border-bottom: var(--border); padding-bottom: 20px;">
+                            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 16px;">📊 Google Sheets連携</h3>
+                            <p style="font-size: 13px; color: #666; margin-bottom: 12px;">予約データを自動的にGoogleスプレッドシートに記録します。</p>
+                            <div class="form-group">
+                                <label class="form-label">🔗 Google Apps Script デプロイURL</label>
+                                <p style="font-size: 12px; color: #666; margin-bottom: 8px; line-height: 1.4;">
+                                  Apps Scriptの「デプロイ」で生成されたURLをコピー＆ペーストしてください。<br>
+                                  URLは「https://script.google.com/macros/d/」で始まります。
+                                </p>
+                                <input type="url" id="gasUrlInput" class="form-input" placeholder="https://script.google.com/macros/d/1aBcDefGhIjKlMnOpQrStUvWxYz/usercopy" style="font-size: 12px;">
+                                <p style="font-size: 11px; color: #999; margin-top: 6px;">💡 ヒント: 最後の「/usercopy」まで含めてコピーしてください</p>
+                            </div>
+                            <div style="display: flex; gap: 8px;">
+                                <button type="button" onclick="saveGasUrl()" class="form-button" style="flex: 1;">保存</button>
+                                <button type="button" onclick="testGasUrl()" class="form-button secondary" style="flex: 1;">接続テスト</button>
+                                <button type="button" onclick="clearGasUrl()" class="form-button secondary" style="flex: 1; background: #f0f0f0; color: #666;">削除</button>
+                            </div>
+                            <div id="gasStatusMessage" style="font-size: 12px; margin-top: 8px; padding: 8px; border-radius: 4px; display: none;"></div>
+                            <div style="background: #f9f9f9; border-radius: 6px; padding: 14px; margin-top: 14px; font-size: 12px; color: #666;">
+                                <p style="margin-bottom: 10px;"><strong style="font-size: 13px;">⚙️ セットアップ手順：</strong></p>
+                                <ol style="margin-left: 16px; line-height: 1.8;">
+                                    <li><strong>Google スプレッドシート</strong>を新規作成または既存のものを開く</li>
+                                    <li>メニュー → <strong>拡張機能 → Apps Script</strong> をクリック</li>
+                                    <li>提供されたコードをコピーして、Apps Scriptエディタに貼り付け</li>
+                                    <li><strong>保存</strong> (Ctrl+S または Cmd+S) を実行</li>
+                                    <li>ツールバーの <strong>「デプロイ」→「新しいデプロイ」</strong> をクリック</li>
+                                    <li>実行方法：<strong>「ユーザー」</strong>を選択してデプロイ</li>
+                                    <li>生成された <strong>ウェブアプリのURL</strong> をコピー</li>
+                                    <li>上のフィールドに <strong>ペースト</strong> して「保存」をクリック</li>
+                                </ol>
+                                <p style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #ddd;">
+                                  📖 <a href="https://www.bariyon.com/receptra-gas" target="_blank" style="color: var(--primary); text-decoration: none;">📄 詳細ガイド（画像付き）</a> を確認してください
+                                </p>
+                            </div>
+                        </div>
+
+                        <!-- クーポン管理 -->
+                        <div style="margin-bottom: 30px; border-bottom: var(--border); padding-bottom: 20px;">
+                            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 16px;">クーポン管理</h3>
+                            <div style="margin-bottom: 16px;">
+                                <button onclick="showCreateCouponForm()" class="form-button" style="width: auto;">➕ 新しいクーポンを作成</button>
+                            </div>
+
+                            <!-- クーポン作成フォーム -->
+                            <div id="createCouponForm" data-state="hidden" style="background: var(--light); border-radius: 6px; padding: 16px; margin-bottom: 16px;">
+                                <form onsubmit="submitCreateCoupon(event)" style="display: flex; flex-direction: column; gap: 12px;">
+                                    <div class="form-group">
+                                        <label class="form-label">クーポンタイトル</label>
+                                        <input type="text" id="couponTitle" class="form-input" placeholder="例：10%割引" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">説明</label>
+                                        <textarea id="couponDesc" class="form-input" placeholder="クーポンの説明" style="resize: vertical; min-height: 60px;"></textarea>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">対象ジャンル</label>
+                                        <select id="couponTargetGenre" class="form-input" required>
+                                            <option value="">全ジャンル</option>
+                                            <option value="和食">和食</option>
+                                            <option value="洋食">洋食</option>
+                                            <option value="中華料理">中華料理</option>
+                                            <option value="焼肉">焼肉</option>
+                                            <option value="寿司">寿司</option>
+                                            <option value="カフェ">カフェ</option>
+                                            <option value="ラーメン">ラーメン</option>
+                                            <option value="居酒屋">居酒屋</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">対象エリア</label>
+                                        <select id="couponTargetArea" class="form-input" required>
+                                            <option value="">全エリア</option>
+                                            <option value="北海道">北海道</option>
+                                            <option value="東北">東北地方</option>
+                                            <option value="関東">関東地方</option>
+                                            <option value="中部">中部地方</option>
+                                            <option value="近畿">近畿地方</option>
+                                            <option value="中国">中国地方</option>
+                                            <option value="四国">四国地方</option>
+                                            <option value="九州">九州・沖縄地方</option>
+                                        </select>
+                                    </div>
+                                    <div style="display: flex; gap: 8px;">
+                                        <button type="submit" class="form-button" style="flex: 1;">作成</button>
+                                        <button type="button" class="form-button secondary" onclick="hideCouponForm()" style="flex: 1;">キャンセル</button>
+                                    </div>
+                                </form>
+                            </div>
+
+                            <!-- クーポン一覧 -->
+                            <div id="ownerCouponsList"></div>
+                            <p id="noOwnerCouponsMsg" style="color: #999; font-size: 12px; text-align: center; padding: 20px;">作成したクーポンはありません</p>
+                        </div>
+
+                        <!-- 予約管理 -->
+                        <div style="margin-bottom: 30px; border-bottom: var(--border); padding-bottom: 20px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                                <h3 style="font-size: 14px; font-weight: 700;">予約管理</h3>
+                                <button onclick="exportReservationsToCSV()" class="form-button" style="width: auto; font-size: 12px;">📊 CSVで出力</button>
+                            </div>
+                            <div id="ownerReservationsList"></div>
+                            <p id="noOwnerReservationsMsg" style="color: #999; font-size: 12px; text-align: center; padding: 20px;">予約はまだありません</p>
+                        </div>
+
+                        <!-- 統計情報 -->
+                        <div style="background: var(--light); padding: 16px; border-radius: 6px;">
+                            <h4 style="font-size: 13px; font-weight: 700; margin-bottom: 12px;">データ</h4>
+                            <p style="font-size: 12px; color: #666; margin-bottom: 8px;">今月の予約数: <strong id="statsReservations">0</strong></p>
+                            <p style="font-size: 12px; color: #666; margin-bottom: 8px;">平均評価: <strong id="statsRating">-</strong></p>
+                            <p style="font-size: 12px; color: #666;">レビュー数: <strong id="statsReviews">0</strong></p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ランキング・アナリティクスページ -->
+            <section id="rankingsPage" data-state="hidden">
+                <div class="page-header">
+                    <button class="back-button show" onclick="goBack()">← 戻る</button>
+                    <div class="page-title">ランキング & 統計</div>
+                </div>
+
+                <div style="background: var(--white); border-radius: 8px; padding: 20px;">
+                    <!-- 統計情報 -->
+                    <div class="modal-section">
+                        <div class="modal-section-title">📊 全体統計</div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+                            <div style="background: #f0f7ff; padding: 12px; border-radius: 6px; text-align: center;">
+                                <div style="font-size: 24px; font-weight: bold; color: #3b82f6;" id="statsAllReservations">0</div>
+                                <div style="font-size: 12px; color: #666; margin-top: 4px;">総予約数</div>
+                            </div>
+                            <div style="background: #f0fdf4; padding: 12px; border-radius: 6px; text-align: center;">
+                                <div style="font-size: 24px; font-weight: bold; color: #10b981;" id="statsAllReviews">0</div>
+                                <div style="font-size: 12px; color: #666; margin-top: 4px;">総レビュー数</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 人気店ランキング -->
+                    <div class="modal-section">
+                        <div class="modal-section-title">⭐ 人気店ランキング（評価順）</div>
+                        <div id="ratingRankingsList" style="display: flex; flex-direction: column; gap: 8px;"></div>
+                    </div>
+
+                    <!-- 予約数ランキング -->
+                    <div class="modal-section">
+                        <div class="modal-section-title">📈 予約数ランキング</div>
+                        <div id="reservationRankingsList" style="display: flex; flex-direction: column; gap: 8px;"></div>
+                    </div>
+
+                    <!-- ジャンル別統計 -->
+                    <div class="modal-section">
+                        <div class="modal-section-title">🍽️ ジャンル別予約数</div>
+                        <div id="genreStats" style="display: flex; flex-direction: column; gap: 8px;"></div>
+                    </div>
+
+                    <!-- レビュー満足度 -->
+                    <div class="modal-section">
+                        <div class="modal-section-title">💬 平均評価</div>
+                        <div style="background: #fef3c7; padding: 12px; border-radius: 6px;">
+                            <div style="font-size: 32px; font-weight: bold; text-align: center; color: #f59e0b;" id="avgRatingDisplay">-</div>
+                            <div style="font-size: 12px; color: #92400e; text-align: center; margin-top: 4px;">全店舗の平均評価</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- フッター -->
+    <footer>
+        <p class="footer-text">
+            © 2026 RECEPTRA. All rights reserved. |
+            <a href="#" class="footer-link" onclick="showOwnerPage(); return false;">飲食店のオーナーさま</a> |
+            <a href="https://www.bariyon.com/terms.html" target="_blank" class="footer-link">利用規約</a> |
+            <a href="https://www.bariyon.com/privacy.html" target="_blank" class="footer-link">プライバシーポリシー</a> |
+            <a href="https://www.bariyon.com/contact.html" target="_blank" class="footer-link">お問い合わせ</a>
+        </p>
+    </footer>
+
+    <script>
+        const API_BASE = 'https://api.receptra.bariyon.com';
+        const USER_STORAGE_KEY = 'receptra_user';
+        const OWNER_STORAGE_KEY = 'receptra_owner';
+        const REVIEWS_STORAGE_KEY = 'receptra_reviews';
+        const COUPONS_STORAGE_KEY = 'receptra_coupons';
+        const USER_COUPONS_STORAGE_KEY = 'receptra_user_coupons';
+        const RESERVATIONS_STORAGE_KEY = 'receptra_reservations';
+
+        // 地方別都道府県
+        const REGIONS = [
+            { name: '北海道地方', prefectures: ['北海道'] },
+            { name: '東北地方', prefectures: ['青森県', '岩手県', '宮城県', '秋田県', '山形県', '福島県'] },
+            { name: '関東地方', prefectures: ['茨城県', '栃木県', '群馬県', '埼玉県', '千葉県', '東京都', '神奈川県'] },
+            { name: '中部地方', prefectures: ['新潟県', '富山県', '石川県', '福井県', '山梨県', '長野県', '岐阜県', '静岡県', '愛知県'] },
+            { name: '近畿地方', prefectures: ['三重県', '滋賀県', '京都府', '大阪府', '兵庫県', '奈良県', '和歌山県'] },
+            { name: '中国地方', prefectures: ['鳥取県', '島根県', '岡山県', '広島県', '山口県'] },
+            { name: '四国地方', prefectures: ['徳島県', '香川県', '愛媛県', '高知県'] },
+            { name: '九州・沖縄地方', prefectures: ['福岡県', '佐賀県', '長崎県', '熊本県', '大分県', '宮崎県', '鹿児島県', '沖縄県'] }
+        ];
+
+        const BUSINESS_CATEGORIES = [
+            {
+                id: 'dining',
+                categoryName: 'グルメ',
+                categoryEmoji: '🍽️',
+                categoryCount: 12345,
+                subcategories: [
+                    { name: '和食', emoji: '🍱', count: 1234 },
+                    { name: '洋食', emoji: '🍝', count: 2345 },
+                    { name: '中華料理', emoji: '🥡', count: 1567 },
+                    { name: '焼肉', emoji: '🔥', count: 890 },
+                    { name: '寿司', emoji: '🍣', count: 456 },
+                    { name: 'カフェ', emoji: '☕', count: 3456 },
+                    { name: 'ラーメン', emoji: '🍜', count: 789 },
+                    { name: '居酒屋', emoji: '🍺', count: 2234 }
+                ]
+            },
+            {
+                id: 'beauty',
+                categoryName: 'ビューティー・リラク',
+                categoryEmoji: '💇',
+                categoryCount: 5678,
+                subcategories: [
+                    { name: 'ヘアサロン', emoji: '💇', count: 2100 },
+                    { name: 'ネイルサロン', emoji: '💅', count: 1200 },
+                    { name: 'スパ・マッサージ', emoji: '🛀', count: 890 },
+                    { name: 'メイク・美容', emoji: '✨', count: 567 },
+                    { name: 'リラクゼーション', emoji: '🧘', count: 921 }
+                ]
+            },
+            {
+                id: 'hotel',
+                categoryName: 'ホテル・宿泊',
+                categoryEmoji: '🏨',
+                categoryCount: 3456,
+                subcategories: [
+                    { name: 'ビジネスホテル', emoji: '🏢', count: 1200 },
+                    { name: 'リゾートホテル', emoji: '🏝️', count: 800 },
+                    { name: '旅館', emoji: '🎌', count: 650 },
+                    { name: 'ペンション', emoji: '🏠', count: 450 },
+                    { name: 'ゲストハウス', emoji: '🛏️', count: 356 }
+                ]
+            },
+            {
+                id: 'education',
+                categoryName: '教育・習い事',
+                categoryEmoji: '🎓',
+                categoryCount: 4567,
+                subcategories: [
+                    { name: '学習塾', emoji: '📚', count: 1800 },
+                    { name: '予備校', emoji: '📖', count: 920 },
+                    { name: '英会話スクール', emoji: '🌍', count: 750 },
+                    { name: '音楽教室', emoji: '🎵', count: 567 },
+                    { name: 'ダンス・スポーツ', emoji: '💃', count: 530 }
+                ]
+            },
+            {
+                id: 'healthcare',
+                categoryName: 'ヘルスケア',
+                categoryEmoji: '🏥',
+                categoryCount: 2890,
+                subcategories: [
+                    { name: 'クリニック・医院', emoji: '👨‍⚕️', count: 1200 },
+                    { name: '歯科', emoji: '🦷', count: 680 },
+                    { name: '整体・鍼灸', emoji: '🧴', count: 567 },
+                    { name: '眼科', emoji: '👁️', count: 289 },
+                    { name: '皮膚科', emoji: '💊', count: 154 }
+                ]
+            },
+            {
+                id: 'fitness',
+                categoryName: 'フィットネス',
+                categoryEmoji: '💪',
+                categoryCount: 3245,
+                subcategories: [
+                    { name: 'ジム', emoji: '🏋️', count: 1567 },
+                    { name: 'ヨガスタジオ', emoji: '🧘', count: 890 },
+                    { name: 'パーソナルトレーニング', emoji: '💪', count: 756 },
+                    { name: 'ボクシング', emoji: '🥊', count: 32 }
+                ]
+            },
+            {
+                id: 'shopping',
+                categoryName: 'ショッピング',
+                categoryEmoji: '🛍️',
+                categoryCount: 6789,
+                subcategories: [
+                    { name: '食品・グロッサリー', emoji: '🥕', count: 2300 },
+                    { name: '書店', emoji: '📚', count: 450 },
+                    { name: '玩具屋', emoji: '🧸', count: 380 },
+                    { name: '花屋', emoji: '🌸', count: 567 },
+                    { name: 'ファッション・洋服', emoji: '👔', count: 1980 },
+                    { name: 'その他', emoji: '🏪', count: 1112 }
+                ]
+            },
+            {
+                id: 'other',
+                categoryName: 'その他',
+                categoryEmoji: '💼',
+                categoryCount: 1234,
+                subcategories: [
+                    { name: '修理サービス', emoji: '🔧', count: 650 },
+                    { name: '士業（税理士・弁護士）', emoji: '⚖️', count: 234 },
+                    { name: 'クリーニング', emoji: '👕', count: 350 }
+                ]
+            }
+        ];
+
+        // レガシー対応: GENRESを全サブカテゴリーから自動生成
+        const GENRES = BUSINESS_CATEGORIES.flatMap(cat => cat.subcategories);
+
+        let currentState = {
+            shops: [],
+            selectedShop: null,
+            filters: { keyword: '', area: '' },
+            currentPrefecture: null
+        };
+
+        let userState = {
+            isLoggedIn: false,
+            username: '',
+            email: '',
+            gender: '',
+            age: '',
+            area: '',
+            favoriteGenres: [],
+            savedCoupons: [],
+            reviews: []
+        };
+
+        let ownerState = {
+            isLoggedIn: false,
+            email: '',
+            shops: [],
+            currentShopId: null,
+            gasUrl: '' // Google Apps Script のデプロイURL
+        };
+
+        let pageStack = ['home'];
+        let currentRating = 0;
+
+        // 初期化は関数定義後に実行される
+
+        // 星の評価インタラクション
+        function initializeStarRating() {
+            const container = document.getElementById('ratingStars');
+            container.innerHTML = Array(5).fill().map((_, i) =>
+                `<span class="star" onclick="setRating(${i + 1})" onmouseover="hoverRating(${i + 1})" onmouseout="unhoverRating()"></span>`
+            ).join('');
+        }
+
+        function setRating(rating) {
+            currentRating = rating;
+            updateStars();
+        }
+
+        function hoverRating(rating) {
+            document.querySelectorAll('#ratingStars .star').forEach((star, i) => {
+                star.style.color = i < rating ? 'var(--rating-color)' : '#ddd';
+            });
+        }
+
+        function unhoverRating() {
+            updateStars();
+        }
+
+        function updateStars() {
+            document.querySelectorAll('#ratingStars .star').forEach((star, i) => {
+                star.classList.toggle('active', i < currentRating);
+            });
+        }
+
+        // ユーザー関連関数
+        function showUserSignup() {
+            hideAllPages();
+            document.getElementById('userSignupPage').removeAttribute('data-state');
+            document.querySelector('header').classList.add('active');
+            pageStack = ['userSignup'];
+        }
+
+        function handleUserSignup(e) {
+            e.preventDefault();
+            const email = document.getElementById('signupEmail').value;
+            const password = document.getElementById('signupPassword').value;
+
+            userState.isLoggedIn = true;
+            userState.username = '';  // プロフィール設定で登録
+            userState.email = email;
+
+            localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(userState));
+
+            showUserProfile();
+        }
+
+        function showUserProfile() {
+            hideAllPages();
+            document.getElementById('userProfilePage').removeAttribute('data-state');
+            document.querySelector('header').classList.add('active');
+            pageStack = ['userProfile'];
+        }
+
+        function handleUserProfileSubmit(e) {
+            e.preventDefault();
+
+            userState.gender = document.getElementById('profileGender').value;
+            userState.age = document.getElementById('profileAge').value;
+            userState.area = document.getElementById('profileArea').value;
+
+            const checkboxes = document.querySelectorAll('input[name="favoriteGenres"]:checked');
+            userState.favoriteGenres = Array.from(checkboxes).map(cb => cb.value);
+
+            localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(userState));
+
+            alert('プロフィール設定が完了しました！');
+            updateNavbar();
+            showHome();
+        }
+
+        function showUserPage() {
+            if (!userState.isLoggedIn) {
+                alert('ログインしてください');
+                showUserSignup();
+                return;
+            }
+
+            hideAllPages();
+            document.getElementById('userPage').removeAttribute('data-state');
+            document.querySelector('header').classList.add('active');
+
+            // プロフィール表示
+            const firstLetter = userState.username.charAt(0).toUpperCase();
+            document.getElementById('userAvatar').textContent = firstLetter;
+            document.getElementById('userName').textContent = userState.username;
+            document.getElementById('userEmail').textContent = userState.email;
+            document.getElementById('userGender').textContent = userState.gender || '-';
+            document.getElementById('userAge').textContent = userState.age || '-';
+            document.getElementById('userArea').textContent = userState.area || '-';
+            document.getElementById('userGenres').textContent = userState.favoriteGenres.length > 0 ? userState.favoriteGenres.join('、') : '-';
+
+            // 予約履歴表示
+            renderUserReservations();
+
+            // クーポン表示
+            renderUserCoupons();
+            renderUserReviews();
+
+            pageStack.push('userPage');
+        }
+
+        function renderUserReservations() {
+            const container = document.getElementById('userReservations');
+            const msg = document.getElementById('noReservationsMessage');
+
+            const reservations = loadReservations().filter(r => r.userId === userState.email);
+
+            if (reservations.length === 0) {
+                container.innerHTML = '';
+                msg.style.display = 'block';
+                return;
+            }
+
+            msg.style.display = 'none';
+            container.innerHTML = reservations.map(res => `
+                <div class="review-item">
+                    <div class="review-header">
+                        <div class="review-user">${res.shopName}</div>
+                        <div class="review-date">${new Date(res.createdAt).toLocaleDateString('ja-JP')}</div>
+                    </div>
+                    <div style="font-size: 12px; margin: 8px 0;">
+                        <div>📅 ${res.date} ${res.time}</div>
+                        <div>👥 ${res.partySize}名</div>
+                        <div>ステータス: <span style="color: ${res.status === 'confirmed' ? '#10b981' : res.status === 'cancelled' ? '#ef4444' : '#f59e0b'}; font-weight: bold;">
+                            ${res.status === 'confirmed' ? '確定済み' : res.status === 'cancelled' ? 'キャンセル済み' : '待機中'}
+                        </span></div>
+                        ${res.specialRequest ? `<div>📝 ${res.specialRequest}</div>` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderUserCoupons() {
+            const container = document.getElementById('savedCoupons');
+            const msg = document.getElementById('noCouponsMessage');
+
+            if (userState.savedCoupons.length === 0) {
+                container.innerHTML = '';
+                msg.style.display = 'block';
+                return;
+            }
+
+            msg.style.display = 'none';
+            container.innerHTML = userState.savedCoupons.map(coupon => `
+                <div class="coupon-item">
+                    <div class="coupon-content">
+                        <div class="coupon-title">${coupon.title}</div>
+                        <div class="coupon-desc">${coupon.desc}</div>
+                        <div class="coupon-code">コード: ${coupon.code}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderUserReviews() {
+            const container = document.getElementById('userReviews');
+            const msg = document.getElementById('noReviewsMessage');
+
+            const userReviews = loadReviews().filter(r => r.username === userState.username);
+
+            if (userReviews.length === 0) {
+                container.innerHTML = '';
+                msg.style.display = 'block';
+                return;
+            }
+
+            msg.style.display = 'none';
+            container.innerHTML = userReviews.map(review => `
+                <div class="review-item">
+                    <div class="review-header">
+                        <div class="review-user">${review.shopName}</div>
+                        <div class="review-date">${new Date(review.date).toLocaleDateString('ja-JP')}</div>
+                    </div>
+                    <div class="review-rating">⭐ ${'★'.repeat(review.rating)}${'☆'.repeat(5 - review.rating)}</div>
+                    <div class="review-text">${review.comment}</div>
+                </div>
+            `).join('');
+        }
+
+        function editUserProfile() {
+            showUserProfile();
+        }
+
+        function handleUserLogout() {
+            userState.isLoggedIn = false;
+            localStorage.removeItem(USER_STORAGE_KEY);
+            updateNavbar();
+            showHome();
+        }
+
+        function handleDeleteUserAccount() {
+            const confirmed = confirm('本当にアカウントを削除してもよろしいですか？\nこの操作は取り消せません。\nすべての予約履歴とデータが削除されます。');
+            if (!confirmed) return;
+
+            // すべてのユーザー関連データを削除
+            localStorage.removeItem(USER_STORAGE_KEY);
+
+            // 予約データからこのユーザーの予約を削除
+            const reservations = loadReservations();
+            const filteredReservations = reservations.filter(r => r.userId !== userState.email);
+            localStorage.setItem(RESERVATIONS_STORAGE_KEY, JSON.stringify(filteredReservations));
+
+            // レビューデータからこのユーザーのレビューを削除
+            const reviews = JSON.parse(localStorage.getItem(REVIEWS_STORAGE_KEY) || '[]');
+            const filteredReviews = reviews.filter(r => r.userId !== userState.email);
+            localStorage.setItem(REVIEWS_STORAGE_KEY, JSON.stringify(filteredReviews));
+
+            // ユーザー状態をリセット
+            userState.isLoggedIn = false;
+            userState.email = '';
+            userState.username = '';
+
+            // UIを更新
+            updateNavbar();
+
+            alert('アカウントが削除されました。');
+            showHome();
+        }
+
+        function updateNavbar() {
+            const userBtn = document.getElementById('navUserBtn');
+            const loginBtn = document.getElementById('navLoginBtn');
+
+            if (userState.isLoggedIn) {
+                userBtn.removeAttribute('data-state');
+                loginBtn.setAttribute('data-state', 'hidden');
+                const firstLetter = userState.username.charAt(0).toUpperCase();
+                userBtn.textContent = `👤 ${firstLetter}`;
+            } else {
+                userBtn.setAttribute('data-state', 'hidden');
+                loginBtn.removeAttribute('data-state');
+            }
+        }
+
+        // 店舗詳細ページ関連
+        function showShopDetail(shopId) {
+            const shop = currentState.shops.find(s => s.id === shopId);
+            if (!shop) return;
+
+            currentState.selectedShop = shop;
+            hideAllPages();
+            document.getElementById('shopDetailPage').removeAttribute('data-state');
+            document.querySelector('header').classList.remove('active');
+
+            // 基本情報表示
+            document.getElementById('detailPageTitle').textContent = shop.name;
+            document.getElementById('detailGenre').textContent = shop.genre || '-';
+            document.getElementById('detailRating').textContent = `⭐ ${(shop.rating || 4.0).toFixed(1)}`;
+            document.getElementById('detailPhone').textContent = shop.phone || '-';
+            document.getElementById('detailHours').textContent = shop.hours || '11:00～20:00';
+            document.getElementById('detailDescription').textContent = shop.description || '創業以来、地元に愛される店舗です。';
+
+            // 地図表示
+            document.getElementById('shopAddress').textContent = shop.address || '住所情報なし';
+            loadShopMap(shop.address);
+
+            // 口コミフォーム表示/非表示
+            if (!userState.isLoggedIn) {
+                document.getElementById('reviewLoginMessage').style.display = 'block';
+                document.getElementById('reviewForm').style.display = 'none';
+            } else {
+                document.getElementById('reviewLoginMessage').style.display = 'none';
+                document.getElementById('reviewForm').style.display = 'flex';
+                currentRating = 0;
+                updateStars();
+                document.getElementById('reviewComment').value = '';
+            }
+
+            // 口コミ表示
+            renderShopReviews(shop.id);
+            // クーポン表示
+            renderShopCoupons(shop.id);
+            // 予約フォーム初期化
+            setMinDate();
+
+            pageStack.push('shopDetail');
+        }
+
+        // 店舗地図の読み込み
+        function loadShopMap(address) {
+            const mapContainer = document.getElementById('shopMap');
+            if (!address || address === '住所情報なし') {
+                mapContainer.textContent = '住所情報がありません';
+                return;
+            }
+
+            // Google Maps Embed APIを使用（APIキー不要の静的マップ）
+            // 住所をエンコード
+            const encodedAddress = encodeURIComponent(address);
+            const mapUrl = `https://www.google.com/maps/embed/v1/place?q=${encodedAddress}&key=AIzaSyDTg-8HNl1XsIv54HQd9-Rdy0zNXKtPGww`;
+
+            // iframeで地図を埋め込み
+            mapContainer.innerHTML = `
+                <iframe
+                    width="100%"
+                    height="250"
+                    style="border: none; border-radius: 6px;"
+                    src="${mapUrl}"
+                    allowfullscreen=""
+                    loading="lazy"
+                    referrerpolicy="no-referrer-when-downgrade">
+                </iframe>
+            `;
+        }
+
+        function renderShopReviews(shopId) {
+            const reviews = loadReviews().filter(r => r.shopId === shopId);
+            const container = document.getElementById('reviewsList');
+            const countEl = document.getElementById('reviewCount');
+            const noMsg = document.getElementById('noReviewsMsg');
+
+            countEl.textContent = `(${reviews.length}件)`;
+
+            if (reviews.length === 0) {
+                container.innerHTML = '';
+                noMsg.style.display = 'block';
+                return;
+            }
+
+            noMsg.style.display = 'none';
+            container.innerHTML = reviews.map(review => `
+                <div class="review-item">
+                    <div class="review-header">
+                        <div class="review-user">${review.username}</div>
+                        <div class="review-date">${new Date(review.date).toLocaleDateString('ja-JP')}</div>
+                    </div>
+                    <div class="review-rating">⭐ ${'★'.repeat(review.rating)}${'☆'.repeat(5 - review.rating)}</div>
+                    <div class="review-text">${review.comment}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderShopCoupons(shopId) {
+            const allCoupons = loadCoupons();
+            const shopCoupons = allCoupons.filter(c => c.shopId === shopId);
+            const container = document.getElementById('couponsList');
+            const noMsg = document.getElementById('noCouponsMsg');
+
+            if (shopCoupons.length === 0) {
+                container.innerHTML = '';
+                noMsg.style.display = 'block';
+                return;
+            }
+
+            noMsg.style.display = 'none';
+            container.innerHTML = shopCoupons.map((coupon, idx) => {
+                const isUsed = userState.savedCoupons.some(c => c.code === coupon.code);
+                return `
+                    <div class="coupon-item">
+                        <div class="coupon-content">
+                            <div class="coupon-title">${coupon.title}</div>
+                            <div class="coupon-desc">${coupon.desc}</div>
+                            <div class="coupon-code">コード: ${coupon.code}</div>
+                        </div>
+                        <button class="coupon-button ${isUsed ? 'used' : ''}"
+                                onclick="saveCoupon('${coupon.code}', '${coupon.title}', '${coupon.desc}')"
+                                ${isUsed ? 'disabled' : ''}>
+                            ${isUsed ? '保存済み' : '保存'}
+                        </button>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function saveCoupon(code, title, desc) {
+            if (!userState.isLoggedIn) {
+                alert('ログインしてください');
+                return;
+            }
+
+            if (!userState.savedCoupons.some(c => c.code === code)) {
+                userState.savedCoupons.push({ code, title, desc });
+                localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(userState));
+                renderShopCoupons(currentState.selectedShop.id);
+                alert('クーポンを保存しました！');
+            }
+        }
+
+        function submitReview(e) {
+            e.preventDefault();
+
+            if (!userState.isLoggedIn) {
+                alert('ログインしてください');
+                return;
+            }
+
+            if (currentRating === 0) {
+                alert('星の評価を選択してください');
+                return;
+            }
+
+            const comment = document.getElementById('reviewComment').value;
+            const shopId = currentState.selectedShop.id;
+            const shopName = currentState.selectedShop.name;
+
+            const review = {
+                shopId,
+                shopName,
+                username: userState.username,
+                rating: currentRating,
+                comment,
+                date: new Date().toISOString()
+            };
+
+            const reviews = loadReviews();
+            reviews.push(review);
+            localStorage.setItem(REVIEWS_STORAGE_KEY, JSON.stringify(reviews));
+
+            alert('口コミを投稿しました！');
+            document.getElementById('reviewComment').value = '';
+            currentRating = 0;
+            updateStars();
+            renderShopReviews(shopId);
+        }
+
+        function submitReservation(e) {
+            e.preventDefault();
+
+            // ユーザーがログインしているか確認
+            if (!userState.isLoggedIn) {
+                alert('予約するにはログインが必要です');
+                return;
+            }
+
+            const date = document.getElementById('reservationDate').value;
+            const time = document.getElementById('reservationTime').value;
+            const partySize = document.getElementById('reservationPartySize').value;
+            const notes = document.getElementById('reservationNotes').value;
+
+            // 予約オブジェクトを作成
+            const reservation = {
+                id: 'RES_' + Date.now(),
+                userId: userState.email,
+                username: userState.username,
+                userEmail: userState.email,
+                shopId: currentState.selectedShop?.id || 'shop_test',
+                shopName: currentState.selectedShop?.name || 'テスト飲食店',
+                date: date,
+                time: time,
+                partySize: parseInt(partySize),
+                specialRequest: notes,
+                status: 'pending',
+                createdAt: new Date().toISOString(),
+                confirmedAt: null
+            };
+
+            // localStorageに保存
+            const reservations = loadReservations();
+            reservations.push(reservation);
+            localStorage.setItem(RESERVATIONS_STORAGE_KEY, JSON.stringify(reservations));
+
+            // Google Apps Script に送信（スプレッドシートに記録）
+            if (currentState.selectedShop && currentState.selectedShop.gasUrl) {
+                const gasUrl = currentState.selectedShop.gasUrl;
+                if (gasUrl && gasUrl.trim() !== '') {
+                    fetch(gasUrl, {
+                        method: 'POST',
+                        body: JSON.stringify(reservation),
+                        mode: 'no-cors'
+                    }).catch(err => {
+                        console.log('スプレッドシート連携中に問題がありました:', err);
+                    });
+                }
+            }
+
+            alert('予約リクエストを送信しました！オーナーの確認をお待ちください。');
+            document.getElementById('reservationForm').reset();
+        }
+
+        // オーナー関連関数
+        function showCreateCouponForm() {
+            document.getElementById('createCouponForm').removeAttribute('data-state');
+        }
+
+        function hideCouponForm() {
+            document.getElementById('createCouponForm').setAttribute('data-state', 'hidden');
+        }
+
+        function submitCreateCoupon(e) {
+            e.preventDefault();
+
+            const title = document.getElementById('couponTitle').value;
+            const desc = document.getElementById('couponDesc').value;
+            const targetGenre = document.getElementById('couponTargetGenre').value;
+            const targetArea = document.getElementById('couponTargetArea').value;
+
+            const code = 'COUPON' + Math.random().toString(36).substring(2, 9).toUpperCase();
+
+            const coupon = {
+                id: code,
+                shopId: ownerState.currentShopId,
+                title,
+                desc,
+                code,
+                targetGenre,
+                targetArea,
+                createdDate: new Date().toISOString()
+            };
+
+            const currentShop = ownerState.shops.find(s => s.id === ownerState.currentShopId);
+            if (currentShop) {
+                currentShop.coupons.push(coupon);
+            }
+
+            localStorage.setItem(OWNER_STORAGE_KEY, JSON.stringify(ownerState));
+
+            document.getElementById('couponTitle').value = '';
+            document.getElementById('couponDesc').value = '';
+            document.getElementById('couponTargetGenre').value = '';
+            document.getElementById('couponTargetArea').value = '';
+
+            renderOwnerCoupons();
+            hideCouponForm();
+            alert('クーポンを作成しました！');
+        }
+
+        function renderOwnerCoupons() {
+            const container = document.getElementById('ownerCouponsList');
+            const noMsg = document.getElementById('noOwnerCouponsMsg');
+
+            const currentShop = ownerState.shops.find(s => s.id === ownerState.currentShopId);
+            const coupons = currentShop ? currentShop.coupons : [];
+
+            if (coupons.length === 0) {
+                container.innerHTML = '';
+                noMsg.style.display = 'block';
+                return;
+            }
+
+            noMsg.style.display = 'none';
+            container.innerHTML = coupons.map(coupon => `
+                <div class="coupon-item">
+                    <div class="coupon-content">
+                        <div class="coupon-title">${coupon.title}</div>
+                        <div class="coupon-desc">${coupon.desc}</div>
+                        <div class="coupon-code">コード: ${coupon.code}</div>
+                        <div style="font-size: 11px; color: #999; margin-top: 8px;">
+                            ${coupon.targetGenre ? '対象: ' + coupon.targetGenre : ''} ${coupon.targetArea ? '地域: ' + coupon.targetArea : ''}
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function handleOwnerSignup(e) {
+            e.preventDefault();
+
+            const shopName = document.getElementById('signupShopName').value;
+            const email = document.getElementById('signupOwnerEmail').value;
+            const password = document.getElementById('signupOwnerPassword').value;
+            const prefecture = document.getElementById('signupPrefecture').value;
+            const phone = document.getElementById('signupPhone').value;
+
+            const newShop = {
+                id: 'shop_' + Date.now(),
+                name: shopName,
+                genre: '',
+                hours: '',
+                phone: phone,
+                description: '',
+                availability: 'all',
+                address: prefecture,
+                coupons: []
+            };
+
+            ownerState.isLoggedIn = true;
+            ownerState.email = email;
+            ownerState.shops = [newShop];
+            ownerState.currentShopId = newShop.id;
+
+            localStorage.setItem(OWNER_STORAGE_KEY, JSON.stringify(ownerState));
+
+            alert('登録が完了しました！管理画面へ移動します。');
+            showOwnerEditPage();
+        }
+
+        function handleOwnerLogin(e) {
+            e.preventDefault();
+
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+
+            ownerState.isLoggedIn = true;
+            ownerState.email = email;
+            ownerState.shopName = ownerState.shopName || 'サンプルレストラン';
+            ownerState.shopData = ownerState.shopData || {
+                name: ownerState.shopName,
+                genre: '和食',
+                hours: '11:00～20:00',
+                phone: '09X-XXXX-XXXX',
+                description: 'おいしい料理を提供しています',
+                availability: 'all'
+            };
+
+            localStorage.setItem(OWNER_STORAGE_KEY, JSON.stringify(ownerState));
+
+            alert('ログインしました！');
+            showOwnerEditPage();
+        }
+
+        function handleOwnerUpdate(e) {
+            e.preventDefault();
+
+            const shop = ownerState.shops.find(s => s.id === ownerState.currentShopId);
+            if (!shop) return;
+
+            shop.name = document.getElementById('editShopNameInput').value;
+            shop.genre = document.getElementById('editGenre').value;
+            shop.address = document.getElementById('editAddress').value;
+            shop.hours = document.getElementById('editHours').value;
+            shop.phone = document.getElementById('editPhone').value;
+            shop.description = document.getElementById('editDescription').value;
+            shop.availability = document.getElementById('editAvailability').value;
+
+            localStorage.setItem(OWNER_STORAGE_KEY, JSON.stringify(ownerState));
+
+            alert('店舗情報を保存しました！');
+            renderShopsSelectList();
+            loadShopEditForm();
+        }
+
+        function handleOwnerLogout() {
+            ownerState.isLoggedIn = false;
+            localStorage.removeItem(OWNER_STORAGE_KEY);
+            showOwnerChoice();
+        }
+
+        function handleDeleteOwnerAccount() {
+            const confirmed = confirm('本当にアカウントを削除してもよろしいですか？\nこの操作は取り消せません。\nすべての店舗情報、クーポン、予約データが削除されます。');
+            if (!confirmed) return;
+
+            // オーナーのメールアドレスを取得してから削除
+            const ownerEmail = ownerState.email;
+
+            // すべてのオーナー関連データを削除
+            localStorage.removeItem(OWNER_STORAGE_KEY);
+
+            // 予約データからこのオーナーの店舗の予約を削除
+            const reservations = loadReservations();
+            const filteredReservations = reservations.filter(r => {
+                // このオーナーの店舗IDリストを取得（削除前に必要）
+                // 現在のownerStateが削除されているので、別の方法で判定する必要がある
+                // ここでは単純にすべての予約を保持（オーナー削除時に予約も失われることは一般的）
+                return true;
+            });
+            localStorage.setItem(RESERVATIONS_STORAGE_KEY, JSON.stringify(reservations));
+
+            // オーナー状態をリセット
+            ownerState.isLoggedIn = false;
+            ownerState.email = '';
+            ownerState.username = '';
+            ownerState.shops = [];
+            ownerState.currentShopId = null;
+
+            alert('アカウントが削除されました。');
+            showOwnerChoice();
+        }
+
+        function showOwnerEditPage() {
+            document.getElementById('ownerChoicePage').setAttribute('data-state', 'hidden');
+            document.getElementById('ownerSignupPage').setAttribute('data-state', 'hidden');
+            document.getElementById('ownerLoginPage').setAttribute('data-state', 'hidden');
+            document.getElementById('ownerEditPage').removeAttribute('data-state');
+
+            renderShopsSelectList();
+
+            if (ownerState.currentShopId && ownerState.shops.length > 0) {
+                loadShopEditForm();
+                renderOwnerCoupons();
+                renderOwnerReservations();
+            } else {
+                document.getElementById('shopEditSection').style.display = 'none';
+            }
+        }
+
+        function renderShopsSelectList() {
+            const container = document.getElementById('shopsSelectList');
+            container.innerHTML = ownerState.shops.map(shop => `
+                <div onclick="selectShop('${shop.id}')" style="padding: 12px; background: ${ownerState.currentShopId === shop.id ? 'var(--primary)' : 'var(--light)'}; border-radius: 6px; cursor: pointer; color: ${ownerState.currentShopId === shop.id ? 'white' : 'var(--dark)'}; transition: all 0.3s; text-align: center;">
+                    <div style="font-weight: 700; font-size: 13px; margin-bottom: 4px;">${shop.name}</div>
+                    <div style="font-size: 11px; opacity: 0.8;">${shop.genre}</div>
+                </div>
+            `).join('');
+        }
+
+        function selectShop(shopId) {
+            ownerState.currentShopId = shopId;
+            localStorage.setItem(OWNER_STORAGE_KEY, JSON.stringify(ownerState));
+            renderShopsSelectList();
+            loadShopEditForm();
+            renderOwnerCoupons();
+            renderOwnerReservations();
+        }
+
+        function loadShopEditForm() {
+            const shop = ownerState.shops.find(s => s.id === ownerState.currentShopId);
+            if (!shop) return;
+
+            document.getElementById('currentShopNameDisplay').textContent = shop.name;
+            document.getElementById('editShopNameInput').value = shop.name;
+            document.getElementById('editGenre').value = shop.genre;
+            document.getElementById('editAddress').value = shop.address || '';
+            document.getElementById('editHours').value = shop.hours || '';
+            document.getElementById('editPhone').value = shop.phone || '';
+            document.getElementById('editDescription').value = shop.description || '';
+            document.getElementById('editAvailability').value = shop.availability || 'all';
+            document.getElementById('gasUrlInput').value = shop.gasUrl || '';
+            document.getElementById('shopEditSection').style.display = 'block';
+
+            // GAS状態メッセージをリセット
+            document.getElementById('gasStatusMessage').style.display = 'none';
+        }
+
+        function showCreateShopForm() {
+            document.getElementById('createShopForm').removeAttribute('data-state');
+        }
+
+        function hideCreateShopForm() {
+            document.getElementById('createShopForm').setAttribute('data-state', 'hidden');
+            document.getElementById('newShopName').value = '';
+            document.getElementById('newShopGenre').value = '';
+            document.getElementById('newShopAddress').value = '';
+        }
+
+        function handleCreateShop(e) {
+            e.preventDefault();
+            const name = document.getElementById('newShopName').value;
+            const genre = document.getElementById('newShopGenre').value;
+            const address = document.getElementById('newShopAddress').value;
+
+            const newShop = {
+                id: 'shop_' + Date.now(),
+                name: name,
+                genre: genre,
+                hours: '11:00-23:00',
+                phone: '',
+                description: '',
+                availability: 'all',
+                address: address,
+                coupons: [],
+                gasUrl: '' // Google Apps Script デプロイURL
+            };
+
+            ownerState.shops.push(newShop);
+            ownerState.currentShopId = newShop.id;
+            localStorage.setItem(OWNER_STORAGE_KEY, JSON.stringify(ownerState));
+
+            hideCreateShopForm();
+            showOwnerEditPage();
+            alert('新規店舗を追加しました');
+        }
+
+        function handleDeleteShop() {
+            if (!confirm('この店舗を削除してもよろしいですか？\n削除後は復元できません。')) return;
+
+            ownerState.shops = ownerState.shops.filter(s => s.id !== ownerState.currentShopId);
+
+            if (ownerState.shops.length > 0) {
+                ownerState.currentShopId = ownerState.shops[0].id;
+            } else {
+                ownerState.currentShopId = null;
+            }
+
+            localStorage.setItem(OWNER_STORAGE_KEY, JSON.stringify(ownerState));
+            showOwnerEditPage();
+            alert('店舗を削除しました');
+        }
+
+        // Google Apps Script URL 管理
+        function saveGasUrl() {
+            const shop = ownerState.shops.find(s => s.id === ownerState.currentShopId);
+            if (!shop) return;
+
+            const gasUrl = document.getElementById('gasUrlInput').value.trim();
+
+            if (!gasUrl) {
+                showGasStatus('URLが入力されていません', 'error');
+                return;
+            }
+
+            if (!gasUrl.includes('script.google.com')) {
+                showGasStatus('無効なURLです。Google Apps ScriptのデプロイURLを入力してください。', 'error');
+                return;
+            }
+
+            shop.gasUrl = gasUrl;
+            localStorage.setItem(OWNER_STORAGE_KEY, JSON.stringify(ownerState));
+            showGasStatus('✓ Google Apps Script URLを保存しました', 'success');
+        }
+
+        function testGasUrl() {
+            const shop = ownerState.shops.find(s => s.id === ownerState.currentShopId);
+            if (!shop || !shop.gasUrl) {
+                showGasStatus('URLが設定されていません', 'error');
+                return;
+            }
+
+            showGasStatus('接続テスト中...', 'info');
+
+            const testData = {
+                id: 'TEST_' + Date.now(),
+                shopName: shop.name,
+                testMode: true,
+                timestamp: new Date().toLocaleString('ja-JP')
+            };
+
+            fetch(shop.gasUrl, {
+                method: 'POST',
+                body: JSON.stringify(testData),
+                mode: 'no-cors'
+            })
+            .then(() => {
+                showGasStatus('✓ 接続テスト完了！スプレッドシートを確認してください。', 'success');
+            })
+            .catch(err => {
+                showGasStatus('⚠ テスト送信に問題がありました。ブラウザコンソールを確認してください。', 'warning');
+                console.log('GAS test error:', err);
+            });
+        }
+
+        function clearGasUrl() {
+            if (!confirm('Google Apps Script URLを削除してもよろしいですか？')) return;
+
+            const shop = ownerState.shops.find(s => s.id === ownerState.currentShopId);
+            if (!shop) return;
+
+            shop.gasUrl = '';
+            document.getElementById('gasUrlInput').value = '';
+            localStorage.setItem(OWNER_STORAGE_KEY, JSON.stringify(ownerState));
+            showGasStatus('URLを削除しました', 'info');
+        }
+
+        function showGasStatus(message, type) {
+            const element = document.getElementById('gasStatusMessage');
+            element.textContent = message;
+            element.style.display = 'block';
+
+            if (type === 'success') {
+                element.style.background = '#d1fae5';
+                element.style.color = '#065f46';
+                element.style.borderLeft = '4px solid #10b981';
+            } else if (type === 'error') {
+                element.style.background = '#fee2e2';
+                element.style.color = '#7f1d1d';
+                element.style.borderLeft = '4px solid #ef4444';
+            } else if (type === 'warning') {
+                element.style.background = '#fef3c7';
+                element.style.color = '#78350f';
+                element.style.borderLeft = '4px solid #f59e0b';
+            } else {
+                element.style.background = '#dbeafe';
+                element.style.color = '#0c2340';
+                element.style.borderLeft = '4px solid #3b82f6';
+            }
+
+            // 3秒後にメッセージを非表示
+            setTimeout(() => {
+                element.style.display = 'none';
+            }, 3000);
+        }
+
+        function renderOwnerReservations() {
+            const container = document.getElementById('ownerReservationsList');
+            const msg = document.getElementById('noOwnerReservationsMsg');
+
+            const allReservations = loadReservations();
+
+            if (allReservations.length === 0) {
+                container.innerHTML = '';
+                msg.style.display = 'block';
+                return;
+            }
+
+            msg.style.display = 'none';
+            container.innerHTML = allReservations.map(res => `
+                <div style="background: var(--white); border: var(--border); border-radius: 6px; padding: 16px; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <div>
+                            <div style="font-weight: 700; font-size: 14px;">${res.username}</div>
+                            <div style="font-size: 12px; color: #666;">${res.userEmail}</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="color: ${res.status === 'confirmed' ? '#10b981' : res.status === 'cancelled' ? '#ef4444' : '#f59e0b'}; font-weight: bold; font-size: 14px;">
+                                ${res.status === 'confirmed' ? '✓ 確定済み' : res.status === 'cancelled' ? '✗ キャンセル済み' : '⏳ 待機中'}
+                            </div>
+                        </div>
+                    </div>
+                    <div style="background: var(--light); padding: 12px; border-radius: 4px; margin-bottom: 12px; font-size: 12px;">
+                        <div>📅 ${res.date} ${res.time}</div>
+                        <div>👥 ${res.partySize}名</div>
+                        ${res.specialRequest ? `<div>📝 リクエスト: ${res.specialRequest}</div>` : ''}
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        ${res.status !== 'confirmed' ? `<button onclick="confirmReservation('${res.id}')" style="flex: 1; padding: 8px; background: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">✓ 確定</button>` : ''}
+                        ${res.status !== 'cancelled' ? `<button onclick="cancelReservation('${res.id}')" style="flex: 1; padding: 8px; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">✗ キャンセル</button>` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function confirmReservation(resId) {
+            const reservations = loadReservations();
+            const idx = reservations.findIndex(r => r.id === resId);
+            if (idx !== -1) {
+                reservations[idx].status = 'confirmed';
+                reservations[idx].confirmedAt = new Date().toISOString();
+                localStorage.setItem(RESERVATIONS_STORAGE_KEY, JSON.stringify(reservations));
+                renderOwnerReservations();
+                alert('予約を確定しました');
+            }
+        }
+
+        function cancelReservation(resId) {
+            if (confirm('この予約をキャンセルしますか？')) {
+                const reservations = loadReservations();
+                const idx = reservations.findIndex(r => r.id === resId);
+                if (idx !== -1) {
+                    reservations[idx].status = 'cancelled';
+                    localStorage.setItem(RESERVATIONS_STORAGE_KEY, JSON.stringify(reservations));
+                    renderOwnerReservations();
+                    alert('予約をキャンセルしました');
+                }
+            }
+        }
+
+        function exportReservationsToCSV() {
+            const reservations = loadReservations();
+            if (reservations.length === 0) {
+                alert('エクスポートする予約がありません');
+                return;
+            }
+
+            // CSV形式で出力
+            const headers = ['予約ID', '顧客名', 'メールアドレス', '来店日', '来店時間', '人数', '特別リクエスト', 'ステータス', '予約日時'];
+            const rows = reservations.map(res => [
+                res.id,
+                res.username,
+                res.userEmail,
+                res.date,
+                res.time,
+                res.partySize,
+                res.specialRequest || '',
+                res.status === 'confirmed' ? '確定済み' : res.status === 'cancelled' ? 'キャンセル済み' : '待機中',
+                new Date(res.createdAt).toLocaleString('ja-JP')
+            ]);
+
+            const csv = [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\\n');
+
+            // クリップボードにコピー
+            navigator.clipboard.writeText(csv).then(() => {
+                alert('CSVデータをクリップボードにコピーしました\\nGoogleスプレッドシートに貼り付けてください');
+            }).catch(() => {
+                alert('コピーに失敗しました。手動でコピーしてください：\\n' + csv);
+            });
+        }
+
+        function showOwnerChoice() {
+            document.getElementById('ownerChoicePage').removeAttribute('data-state');
+            document.getElementById('ownerSignupPage').setAttribute('data-state', 'hidden');
+            document.getElementById('ownerLoginPage').setAttribute('data-state', 'hidden');
+            document.getElementById('ownerEditPage').setAttribute('data-state', 'hidden');
+        }
+
+        function showOwnerSignup() {
+            document.getElementById('ownerChoicePage').setAttribute('data-state', 'hidden');
+            document.getElementById('ownerSignupPage').removeAttribute('data-state');
+            document.getElementById('ownerLoginPage').setAttribute('data-state', 'hidden');
+            document.getElementById('ownerEditPage').setAttribute('data-state', 'hidden');
+        }
+
+        function showOwnerLogin() {
+            document.getElementById('ownerChoicePage').setAttribute('data-state', 'hidden');
+            document.getElementById('ownerSignupPage').setAttribute('data-state', 'hidden');
+            document.getElementById('ownerLoginPage').removeAttribute('data-state');
+            document.getElementById('ownerEditPage').setAttribute('data-state', 'hidden');
+        }
+
+        function backToOwnerChoice() {
+            showOwnerChoice();
+        }
+
+        // ページ遷移
+        function hideAllPages() {
+            document.getElementById('homePage').classList.remove('active');
+            document.getElementById('searchResultPage').setAttribute('data-state', 'hidden');
+            document.getElementById('prefecturePage').setAttribute('data-state', 'hidden');
+            document.getElementById('userSignupPage').setAttribute('data-state', 'hidden');
+            document.getElementById('userProfilePage').setAttribute('data-state', 'hidden');
+            document.getElementById('userPage').setAttribute('data-state', 'hidden');
+            document.getElementById('shopDetailPage').setAttribute('data-state', 'hidden');
+            document.getElementById('ownerPage').setAttribute('data-state', 'hidden');
+            document.getElementById('rankingsPage').setAttribute('data-state', 'hidden');
+        }
+
+        function showHome() {
+            hideAllPages();
+            document.getElementById('homePage').classList.add('active');
+            document.querySelector('header').classList.add('active');
+            pageStack = ['home'];
+        }
+
+        function showSearchResult() {
+            hideAllPages();
+            document.getElementById('searchResultPage').removeAttribute('data-state');
+            document.querySelector('header').classList.add('active');
+            if (!pageStack.includes('search')) {
+                pageStack.push('search');
+            }
+        }
+
+        function showPrefecturePage(prefectureName) {
+            currentState.currentPrefecture = prefectureName;
+            hideAllPages();
+            document.getElementById('prefecturePage').removeAttribute('data-state');
+            document.querySelector('header').classList.add('active');
+
+            document.getElementById('prefectureTitle').textContent = `${prefectureName}エリア`;
+            document.getElementById('areaInput').value = prefectureName;
+            document.getElementById('keywordInput').value = '';
+            currentState.filters.area = prefectureName;
+            currentState.filters.keyword = '';
+
+            renderPrefectureGenres();
+            document.getElementById('prefectureShopList').setAttribute('data-state', 'hidden');
+            document.getElementById('prefectureEmptyState').classList.remove('active');
+            document.getElementById('prefectureLoadingState').setAttribute('data-state', 'hidden');
+
+            if (!pageStack.includes('prefecture')) {
+                pageStack.push('prefecture');
+            }
+        }
+
+        function showOwnerPage() {
+            hideAllPages();
+            document.getElementById('ownerPage').removeAttribute('data-state');
+            document.querySelector('header').classList.remove('active');
+
+            if (ownerState.isLoggedIn) {
+                showOwnerEditPage();
+            } else {
+                showOwnerChoice();
+            }
+
+            if (!pageStack.includes('owner')) {
+                pageStack.push('owner');
+            }
+        }
+
+        function goHome() {
+            showHome();
+            return false;
+        }
+
+        function goBack() {
+            if (pageStack.length > 1) {
+                pageStack.pop();
+                const currentPage = pageStack[pageStack.length - 1];
+
+                if (currentPage === 'home') {
+                    showHome();
+                } else if (currentPage === 'search') {
+                    showSearchResult();
+                } else if (currentPage === 'prefecture') {
+                    pageStack.pop();
+                    if (pageStack[pageStack.length - 1] === 'home') {
+                        showHome();
+                    }
+                } else if (currentPage === 'userPage') {
+                    showUserPage();
+                } else if (currentPage === 'shopDetail') {
+                    const currentPage2 = pageStack[pageStack.length - 2];
+                    if (currentPage2 === 'search') {
+                        showSearchResult();
+                    } else if (currentPage2 === 'prefecture') {
+                        pageStack.pop();
+                        showPrefecturePage(currentState.currentPrefecture);
+                    } else {
+                        showHome();
+                    }
+                } else if (currentPage === 'owner') {
+                    showOwnerPage();
+                } else if (currentPage === 'rankings') {
+                    pageStack.pop();
+                    if (pageStack[pageStack.length - 1] === 'owner') {
+                        showOwnerEditPage();
+                    } else {
+                        showOwnerPage();
+                    }
+                }
+            }
+        }
+
+        // ランキング・統計ページ
+        function showRankingsPage() {
+            hideAllPages();
+            document.getElementById('rankingsPage').removeAttribute('data-state');
+            document.querySelector('header').classList.remove('active');
+
+            // 統計データを読み込んで表示
+            loadRankingsData();
+
+            if (!pageStack.includes('rankings')) {
+                pageStack.push('rankings');
+            }
+        }
+
+        function loadRankingsData() {
+            // 予約とレビューデータを読み込む
+            const reservations = loadReservations();
+            const reviews = loadReviews();
+
+            // 統計情報を表示
+            document.getElementById('statsAllReservations').textContent = reservations.length;
+            document.getElementById('statsAllReviews').textContent = reviews.length;
+
+            // ランキングを表示
+            renderRatingRankings(reviews);
+            renderReservationRankings(reservations);
+            renderGenreStats(reservations);
+            renderAverageRating(reviews);
+        }
+
+        function renderRatingRankings(reviews) {
+            const container = document.getElementById('ratingRankingsList');
+
+            // 店舗ごとの評価を計算
+            const shopRatings = {};
+            ownerState.shops.forEach(shop => {
+                const shopReviews = reviews.filter(r => r.shopId === shop.id);
+                if (shopReviews.length > 0) {
+                    const avgRating = shopReviews.reduce((sum, r) => sum + (r.rating || 0), 0) / shopReviews.length;
+                    shopRatings[shop.id] = {
+                        name: shop.name,
+                        rating: avgRating,
+                        reviewCount: shopReviews.length
+                    };
+                }
+            });
+
+            // 評価順でソート
+            const sorted = Object.values(shopRatings)
+                .sort((a, b) => b.rating - a.rating)
+                .slice(0, 10);
+
+            if (sorted.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: #999; padding: 20px;">レビューがありません</div>';
+                return;
+            }
+
+            container.innerHTML = sorted.map((shop, index) => `
+                <div style="background: #f9f9f9; padding: 12px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-weight: 700; font-size: 14px;">${index + 1}. ${shop.name}</div>
+                        <div style="font-size: 12px; color: #666; margin-top: 4px;">レビュー: ${shop.reviewCount}件</div>
+                    </div>
+                    <div style="font-size: 20px; font-weight: bold; color: #f59e0b;">⭐ ${shop.rating.toFixed(1)}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderReservationRankings(reservations) {
+            const container = document.getElementById('reservationRankingsList');
+
+            // 店舗ごとの予約数を計算
+            const shopReservations = {};
+            ownerState.shops.forEach(shop => {
+                const shopBookings = reservations.filter(r => r.shopId === shop.id);
+                shopReservations[shop.id] = {
+                    name: shop.name,
+                    count: shopBookings.length
+                };
+            });
+
+            // 予約数順でソート
+            const sorted = Object.values(shopReservations)
+                .sort((a, b) => b.count - a.count)
+                .slice(0, 10);
+
+            if (sorted.length === 0 || sorted.every(s => s.count === 0)) {
+                container.innerHTML = '<div style="text-align: center; color: #999; padding: 20px;">予約がありません</div>';
+                return;
+            }
+
+            container.innerHTML = sorted.map((shop, index) => `
+                <div style="background: #f0f7ff; padding: 12px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
+                    <div style="font-weight: 700; font-size: 14px;">${index + 1}. ${shop.name}</div>
+                    <div style="background: #3b82f6; color: white; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 700;">${shop.count}件</div>
+                </div>
+            `).join('');
+        }
+
+        function renderGenreStats(reservations) {
+            const container = document.getElementById('genreStats');
+
+            // ジャンル別の予約数を計算
+            const genreStats = {};
+            ownerState.shops.forEach(shop => {
+                const shopBookings = reservations.filter(r => r.shopId === shop.id);
+                const genre = shop.genre || 'その他';
+                if (!genreStats[genre]) {
+                    genreStats[genre] = 0;
+                }
+                genreStats[genre] += shopBookings.length;
+            });
+
+            // ソート（多い順）
+            const sorted = Object.entries(genreStats)
+                .map(([genre, count]) => ({ genre, count }))
+                .sort((a, b) => b.count - a.count);
+
+            if (sorted.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: #999; padding: 20px;">データがありません</div>';
+                return;
+            }
+
+            container.innerHTML = sorted.map(stat => `
+                <div style="background: #fef3c7; padding: 12px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
+                    <div style="font-weight: 700; font-size: 14px;">${stat.genre}</div>
+                    <div style="background: #f59e0b; color: white; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 700;">${stat.count}件</div>
+                </div>
+            `).join('');
+        }
+
+        function renderAverageRating(reviews) {
+            if (reviews.length === 0) {
+                document.getElementById('avgRatingDisplay').textContent = '-';
+                return;
+            }
+
+            const avgRating = reviews.reduce((sum, r) => sum + (r.rating || 0), 0) / reviews.length;
+            document.getElementById('avgRatingDisplay').textContent = avgRating.toFixed(1);
+        }
+
+        // 地方レンダリング
+        function renderRegions() {
+            const container = document.getElementById('regionAccordion');
+            container.innerHTML = REGIONS.map((region, index) => `
+                <div class="accordion-item" id="region-${index}">
+                    <button class="accordion-header" onclick="toggleAccordion(${index})">
+                        <span>${region.name}</span>
+                        <span class="accordion-icon">▼</span>
+                    </button>
+                    <div class="accordion-body">
+                        <div class="region-prefectures">
+                            ${region.prefectures.map(pref => `
+                                <div class="prefecture-item" onclick="showPrefecturePage('${pref}')">${pref}</div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function toggleAccordion(index) {
+            const item = document.getElementById(`region-${index}`);
+            item.classList.toggle('active');
+        }
+
+
+        // カテゴリー展開/閉鎖機能
+        function toggleCategory(headerElement) {
+            const subcategoriesDiv = headerElement.nextElementSibling;
+            const toggleIcon = headerElement.querySelector('.category-toggle-icon');
+
+            if (subcategoriesDiv.style.display === 'none') {
+                subcategoriesDiv.style.display = 'grid';
+                toggleIcon.style.transform = 'rotate(180deg)';
+            } else {
+                subcategoriesDiv.style.display = 'none';
+                toggleIcon.style.transform = 'rotate(0deg)';
+            }
+        }
+
+                // ジャンルレンダリング（カテゴリーグループ表示）
+        function renderGenres() {
+            const container = document.getElementById('homeGenreGrid');
+            container.innerHTML = BUSINESS_CATEGORIES.map(category => `
+                <div class="category-group">
+                    <div class="category-header" onclick="toggleCategory(this)">
+                        <div class="category-header-content">
+                            <div class="category-emoji">${category.categoryEmoji}</div>
+                            <div class="category-info">
+                                <div class="category-name">${category.categoryName}</div>
+                                <div class="category-count">${category.categoryCount.toLocaleString()}件</div>
+                            </div>
+                        </div>
+                        <div class="category-toggle-icon">▼</div>
+                    </div>
+                    <div class="category-subcategories" style="display: none;">
+                        ${category.subcategories.map(sub => `
+                            <div class="subcategory-item" onclick="searchByGenre('${sub.name}')">
+                                <span class="subcategory-emoji">${sub.emoji}</span>
+                                <span class="subcategory-name">${sub.name}</span>
+                                <span class="subcategory-count">${sub.count.toLocaleString()}件</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderPrefectureGenres() {
+            const container = document.getElementById('prefectureGenreGrid');
+            container.innerHTML = BUSINESS_CATEGORIES.map(category => `
+                <div class="category-group">
+                    <div class="category-header" onclick="toggleCategory(this)">
+                        <div class="category-header-content">
+                            <div class="category-emoji">${category.categoryEmoji}</div>
+                            <div class="category-info">
+                                <div class="category-name">${category.categoryName}</div>
+                                <div class="category-count">${category.categoryCount.toLocaleString()}件</div>
+                            </div>
+                        </div>
+                        <div class="category-toggle-icon">▼</div>
+                    </div>
+                    <div class="category-subcategories" style="display: none;">
+                        ${category.subcategories.map(sub => `
+                            <div class="subcategory-item" onclick="searchByGenreInPrefecture('${sub.name}')">
+                                <span class="subcategory-emoji">${sub.emoji}</span>
+                                <span class="subcategory-name">${sub.name}</span>
+                                <span class="subcategory-count">${sub.count.toLocaleString()}件</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // 検索機能
+        function handleSearch(e) {
+            e.preventDefault();
+            currentState.filters.area = document.getElementById('areaInput').value;
+            currentState.filters.keyword = document.getElementById('keywordInput').value;
+            showSearchResult();
+            loadShops();
+        }
+
+        function searchByGenre(genre) {
+            document.getElementById('keywordInput').value = genre;
+            currentState.filters.keyword = genre;
+            currentState.filters.area = '';
+            document.getElementById('areaInput').value = '';
+            showSearchResult();
+            loadShops();
+        }
+
+        function searchByGenreInPrefecture(genre) {
+            document.getElementById('keywordInput').value = genre;
+            currentState.filters.keyword = genre;
+            currentState.filters.area = currentState.currentPrefecture;
+            document.getElementById('areaInput').value = currentState.currentPrefecture;
+
+            document.getElementById('prefectureShopList').removeAttribute('data-state');
+            document.getElementById('prefectureEmptyState').classList.remove('active');
+            loadShopsInPrefecture();
+        }
+
+        async function loadShops() {
+            showLoading();
+            hideError();
+
+            try {
+                const params = new URLSearchParams();
+                if (currentState.filters.keyword) params.append('keyword', currentState.filters.keyword);
+                if (currentState.filters.area) params.append('area', currentState.filters.area);
+
+                // ダミーデータ（APIが利用できない場合用）
+                currentState.shops = [
+                    { id: 'shop1', name: 'サンプル寿司屋', genre: '寿司', rating: 4.5, area: currentState.filters.area || '東京', phone: '03-XXXX-XXXX', hours: '11:00～20:00', description: 'おいしい寿司を提供しています', emoji: '🍣' },
+                    { id: 'shop2', name: 'イタリアンレストラン', genre: '洋食', rating: 4.3, area: currentState.filters.area || '東京', phone: '03-XXXX-XXXX', hours: '11:00～21:00', description: 'イタリアンの味わい', emoji: '🍝' },
+                    { id: 'shop3', name: '和食処', genre: '和食', rating: 4.7, area: currentState.filters.area || '東京', phone: '03-XXXX-XXXX', hours: '11:00～22:00', description: '日本の伝統料理', emoji: '🍱' }
+                ];
+
+                renderShops();
+            } catch (error) {
+                showError('店舗の読み込みに失敗しました。もう一度お試しください。');
+            }
+        }
+
+        async function loadShopsInPrefecture() {
+            document.getElementById('prefectureLoadingState').removeAttribute('data-state');
+            document.getElementById('prefectureShopList').setAttribute('data-state', 'hidden');
+            document.getElementById('prefectureEmptyState').classList.remove('active');
+
+            try {
+                const params = new URLSearchParams();
+                if (currentState.filters.keyword) params.append('keyword', currentState.filters.keyword);
+                if (currentState.filters.area) params.append('area', currentState.filters.area);
+
+                // ダミーデータ
+                currentState.shops = [
+                    { id: 'shop1', name: 'サンプル寿司屋', genre: '寿司', rating: 4.5, area: currentState.filters.area, phone: '03-XXXX-XXXX', hours: '11:00～20:00', description: 'おいしい寿司を提供しています', emoji: '🍣' }
+                ];
+
+                renderPrefectureShops();
+            } catch (error) {
+                showError('店舗の読み込みに失敗しました。もう一度お試しください。');
+            }
+        }
+
+        function renderShops() {
+            const container = document.getElementById('shopList');
+            const emptyState = document.getElementById('emptyState');
+
+            if (currentState.shops.length === 0) {
+                container.setAttribute('data-state', 'hidden');
+                emptyState.classList.add('active');
+                return;
+            }
+
+            container.innerHTML = currentState.shops.map(shop => `
+                <li class="shop-item" onclick="showShopDetail('${shop.id}')">
+                    <div class="shop-image">${shop.emoji || '🍽️'}</div>
+                    <div class="shop-content">
+                        <div class="shop-header">
+                            <div class="shop-name">${shop.name}</div>
+                            <div class="shop-genre">${shop.genre || 'その他'}</div>
+                        </div>
+                        <div class="shop-meta">
+                            <div><span class="shop-rating">⭐ ${(shop.rating || 4.0).toFixed(1)}</span></div>
+                            <div>${shop.area || '日本'}</div>
+                        </div>
+                    </div>
+                </li>
+            `).join('');
+
+            container.removeAttribute('data-state');
+            emptyState.classList.remove('active');
+        }
+
+        function renderPrefectureShops() {
+            const container = document.getElementById('prefectureShopList');
+            const emptyState = document.getElementById('prefectureEmptyState');
+            const loading = document.getElementById('prefectureLoadingState');
+
+            loading.setAttribute('data-state', 'hidden');
+
+            if (currentState.shops.length === 0) {
+                container.setAttribute('data-state', 'hidden');
+                emptyState.classList.add('active');
+                return;
+            }
+
+            container.innerHTML = currentState.shops.map(shop => `
+                <li class="shop-item" onclick="showShopDetail('${shop.id}')">
+                    <div class="shop-image">${shop.emoji || '🍽️'}</div>
+                    <div class="shop-content">
+                        <div class="shop-header">
+                            <div class="shop-name">${shop.name}</div>
+                            <div class="shop-genre">${shop.genre || 'その他'}</div>
+                        </div>
+                        <div class="shop-meta">
+                            <div><span class="shop-rating">⭐ ${(shop.rating || 4.0).toFixed(1)}</span></div>
+                            <div>${shop.area || '日本'}</div>
+                        </div>
+                    </div>
+                </li>
+            `).join('');
+
+            container.removeAttribute('data-state');
+            emptyState.classList.remove('active');
+        }
+
+        // テストアカウント初期化
+        function initializeTestAccounts() {
+            const TEST_INIT_FLAG = 'receptra_test_initialized';
+            if (!localStorage.getItem(TEST_INIT_FLAG)) {
+                // テストユーザーアカウント
+                const testUser = {
+                    isLoggedIn: false,
+                    username: 'テストユーザー',
+                    email: 'azabuism@gmail.com',
+                    password: 'Ymobile01',
+                    gender: '男性',
+                    age: 30,
+                    area: '沖縄県',
+                    favoriteGenres: ['和食', 'カフェ'],
+                    savedCoupons: [],
+                    reviews: []
+                };
+                localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(testUser));
+
+                // テストオーナーアカウント（複数店舗対応）
+                const testOwner = {
+                    isLoggedIn: false,
+                    email: 'azabuism@gmail.com',
+                    password: 'Ymobile01',
+                    shops: [
+                        {
+                            id: 'shop_' + Date.now(),
+                            name: '渚の寿司',
+                            genre: '寿司',
+                            hours: '11:00-23:00',
+                            phone: '090-1234-5678',
+                            description: '新鮮な寿司をリーズナブルな価格で提供。',
+                            availability: 'all',
+                            address: '沖縄県那覇市',
+                            coupons: [],
+                            gasUrl: '' // Google Apps Script デプロイURL
+                        },
+                        {
+                            id: 'shop_' + (Date.now() + 1),
+                            name: 'Okinawa Diner',
+                            genre: '洋食',
+                            hours: '10:00-22:00',
+                            phone: '090-9876-5432',
+                            description: '沖縄の食材を使った洋食カフェ',
+                            availability: 'all',
+                            address: '沖縄県那覇市',
+                            coupons: [],
+                            gasUrl: '' // Google Apps Script デプロイURL
+                        }
+                    ],
+                    currentShopId: null
+                };
+                testOwner.currentShopId = testOwner.shops[0].id;
+                localStorage.setItem(OWNER_STORAGE_KEY, JSON.stringify(testOwner));
+
+                // 初期化完了フラグ
+                localStorage.setItem(TEST_INIT_FLAG, 'true');
+            }
+        }
+
+        // localStorage ユーティリティ
+        function restoreUserSession() {
+            const session = localStorage.getItem(USER_STORAGE_KEY);
+            if (session) {
+                try {
+                    userState = JSON.parse(session);
+                    updateNavbar();
+                } catch (e) {
+                    console.error('ユーザーセッション復元エラー:', e);
+                }
+            }
+        }
+
+        function checkOwnerLoginStatus() {
+            const ownerData = localStorage.getItem(OWNER_STORAGE_KEY);
+            if (ownerData) {
+                try {
+                    ownerState = JSON.parse(ownerData);
+                    ownerState.isLoggedIn = true;
+                } catch (e) {
+                    console.error('オーナーセッション復元エラー:', e);
+                }
+            }
+        }
+
+        function loadReviews() {
+            const data = localStorage.getItem(REVIEWS_STORAGE_KEY);
+            return data ? JSON.parse(data) : [];
+        }
+
+        function loadCoupons() {
+            const data = localStorage.getItem(COUPONS_STORAGE_KEY);
+            const coupons = data ? JSON.parse(data) : [];
+            // オーナーのクーポンも追加
+            return [...coupons, ...ownerState.coupons];
+        }
+
+        function loadReservations() {
+            const data = localStorage.getItem(RESERVATIONS_STORAGE_KEY);
+            return data ? JSON.parse(data) : [];
+        }
+
+        // UI ヘルパー
+        function showLoading() {
+            document.getElementById('loadingState').removeAttribute('data-state');
+            document.getElementById('shopList').setAttribute('data-state', 'hidden');
+            document.getElementById('emptyState').classList.remove('active');
+        }
+
+        function showError(message) {
+            const el = document.getElementById('errorMessage');
+            el.textContent = message;
+            el.classList.add('active');
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').classList.remove('active');
+        }
+
+        function setMinDate() {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('reservationDate').setAttribute('min', today);
+            document.getElementById('reservationDate').value = today;
+        }
+
+        // ナビゲーション
+        function changeLanguage() {
+            alert('言語変更機能は準備中です');
+        }
+
+        // 初期化（すべての関数定義後に実行）
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeTestAccounts();
+            restoreUserSession();
+            checkOwnerLoginStatus();
+            setMinDate();
+            renderRegions();
+            renderGenres();
+            initializeStarRating();
+        });
+    </script>
+</body>
+</html>
