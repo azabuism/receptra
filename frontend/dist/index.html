@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RECEPTRA - 飲食店予約プラットフォーム</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+            background-color: #f8f9fa;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        header {
+            background: white;
+            padding: 20px 0;
+            border-bottom: 1px solid #e0e0e0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: bold;
+            color: #d32f2f;
+            text-decoration: none;
+        }
+
+        nav {
+            display: flex;
+            gap: 30px;
+        }
+
+        nav a {
+            text-decoration: none;
+            color: #333;
+            font-size: 14px;
+            font-weight: 500;
+            transition: color 0.3s;
+        }
+
+        nav a:hover {
+            color: #d32f2f;
+        }
+
+        .hero {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 100px 0;
+            text-align: center;
+            margin-bottom: 60px;
+        }
+
+        .hero h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            font-weight: 700;
+        }
+
+        .hero p {
+            font-size: 18px;
+            margin-bottom: 30px;
+        }
+
+        .cta-button {
+            display: inline-block;
+            background: white;
+            color: #667eea;
+            padding: 15px 40px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: transform 0.3s, box-shadow 0.3s;
+            cursor: pointer;
+            border: none;
+            font-size: 16px;
+        }
+
+        .cta-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        .categories {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 30px;
+            margin-bottom: 60px;
+        }
+
+        .category-card {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+
+        .category-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
+        }
+
+        .category-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+
+        .category-card h3 {
+            font-size: 18px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .category-card p {
+            font-size: 14px;
+            color: #666;
+            line-height: 1.6;
+        }
+
+        .section-title {
+            font-size: 36px;
+            margin-bottom: 40px;
+            text-align: center;
+            color: #333;
+        }
+
+        footer {
+            background: #333;
+            color: white;
+            padding: 40px 0;
+            text-align: center;
+            margin-top: 60px;
+        }
+
+        footer p {
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 32px;
+            }
+
+            .hero p {
+                font-size: 16px;
+            }
+
+            nav {
+                display: none;
+            }
+
+            .section-title {
+                font-size: 28px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <a href="/" class="logo">🍽️ RECEPTRA</a>
+                <nav>
+                    <a href="#categories">カテゴリー</a>
+                    <a href="#about">について</a>
+                    <a href="#contact">お問い合わせ</a>
+                </nav>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div class="hero">
+            <div class="container">
+                <h1>飲食店予約プラットフォーム</h1>
+                <p>RECEPTRAで、お気に入りの飲食店を簡単に予約できます</p>
+                <button class="cta-button">今すぐ予約する</button>
+            </div>
+        </div>
+
+        <div class="container">
+            <h2 class="section-title" id="categories">カテゴリー一覧</h2>
+            <div class="categories">
+                <div class="category-card">
+                    <div class="category-icon">🏨</div>
+                    <h3>ホテル</h3>
+                    <p>高級ホテルから民宿まで、様々な宿泊施設が利用できます</p>
+                </div>
+                <div class="category-card">
+                    <div class="category-icon">🏥</div>
+                    <h3>医療</h3>
+                    <p>病院やクリニックの予約が簡単にできます</p>
+                </div>
+                <div class="category-card">
+                    <div class="category-icon">🍽️</div>
+                    <h3>レストラン</h3>
+                    <p>和食、洋食、中華など様々な料理が選べます</p>
+                </div>
+                <div class="category-card">
+                    <div class="category-icon">💇</div>
+                    <h3>美容</h3>
+                    <p>サロンやエステの予約が簡単です</p>
+                </div>
+                <div class="category-card">
+                    <div class="category-icon">🎓</div>
+                    <h3>教育</h3>
+                    <p>各種教室の予約が可能です</p>
+                </div>
+                <div class="category-card">
+                    <div class="category-icon">🎬</div>
+                    <h3>エンタメ</h3>
+                    <p>映画館やコンサートのチケット予約ができます</p>
+                </div>
+                <div class="category-card">
+                    <div class="category-icon">💪</div>
+                    <h3>フィットネス</h3>
+                    <p>ジムやヨガスタジオの予約が簡単です</p>
+                </div>
+                <div class="category-card">
+                    <div class="category-icon">🎯</div>
+                    <h3>その他</h3>
+                    <p>様々なサービスが利用可能です</p>
+                </div>
+            </div>
+        </div>
+
+        <div style="background: #f0f0f0; padding: 60px 0; margin: 60px 0;">
+            <div class="container">
+                <h2 class="section-title" id="about">RECEPTRAについて</h2>
+                <p style="text-align: center; font-size: 16px; color: #666; line-height: 1.8;">
+                    RECEPTRAは、飲食店やホテル、医療施設など、様々なサービス業界向けの予約プラットフォームです。<br>
+                    顧客は簡単に予約ができ、サービス提供者は予約管理が効率化できます。<br>
+                    RECEPTRAを使って、ビジネスを次のレベルへ!
+                </p>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2024 RECEPTRA. All rights reserved.</p>
+            <p>BARIYON Platform - 飲食店予約プラットフォーム</p>
+        </div>
+    </footer>
+</body>
+</html>
