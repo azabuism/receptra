@@ -87,7 +87,7 @@ def create_app() -> FastAPI:
 
     # 静的ファイル配信設定 - /receptra/ ルート
     base_dir = pathlib.Path(__file__).parent.parent
-    frontend_path = base_dir / "frontend"
+    frontend_path = base_dir / "frontend" / "dist"
 
     logger.info(f"🔍 Looking for frontend at: {frontend_path}")
     logger.info(f"📁 Path exists: {frontend_path.exists()}")
