@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { reservationAPI, customerAPI, reviewAPI, promotionAPI } from '../services/api';
-import type { Reservation, Customer, Review, Promotion } from '../types';
+import { reservationAPI } from '../services/api';
+import type { Reservation } from '../types';
 
 export default function Dashboard() {
   const [stats, setStats] = useState({

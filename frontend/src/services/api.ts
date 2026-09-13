@@ -3,7 +3,6 @@ import type {
   Shop, Customer, Reservation, Review, Promotion, Notification,
   ShopRegisterRequest, CustomerRegisterRequest, ReservationCreateRequest,
   ReviewCreateRequest, PromotionCreateRequest, NotificationCreateRequest,
-  ApiResponse
 } from '../types';
 
 const api = axios.create({
