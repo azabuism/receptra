@@ -5,6 +5,7 @@ BARIYON Receptra - FastAPI Main Application
 
 import logging
 import os
+import pathlib
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.config import get_settings
 from app.database import init_db
 from app.models.user import Base
-from app.models import receptionist, visitor  # SQLAlchemy base for metadata
+from app.models import receptionist, visitor
 from app.routers.users import router as users_router
 from app.routers.receptionists import router as receptionists_router
 from app.routers.auth import router as auth_router
@@ -30,10 +31,8 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """アプリケーションのライフサイクル管理"""
-    # Startup
-    logger.info("�� BARIYON Receptra API starting up...")
+    logger.info("🚀 BARIYON Receptra API starting up...")
 
-    # Database initialization
     try:
         database_url = settings.DATABASE_URL
         engine = create_async_engine(
@@ -42,14 +41,12 @@ async def lifespan(app: FastAPI):
             future=True,
         )
 
-        # Create all tables
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 
-        # Initialize AsyncSessionLocal for dependency injection
         init_db(database_url)
         logger.info("✅ Database session factory initialized")
     except Exception as e:
@@ -57,7 +54,6 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
     logger.info("🛑 BARIYON Receptra API shutting down...")
 
 
@@ -73,7 +69,6 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS設定
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS if hasattr(settings, 'CORS_ORIGINS') else ["*"],
@@ -82,22 +77,27 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # ルーター登録
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(users_router, prefix="/api/v1/users", tags=["users"])
     app.include_router(receptionists_router, prefix="/api/v1/receptionists", tags=["receptionists"])
     app.include_router(visitors_router, prefix="/api/v1/visitors", tags=["visitors"])
-    app.include_router(shops_router)  # shops_router has its own prefix and tags
-    app.include_router(reservations_router)  # reservations_router has its own prefix and tags
-    app.include_router(customers_router)  # customers_router has its own prefix and tags
+    app.include_router(shops_router)
+    app.include_router(reservations_router)
+    app.include_router(customers_router)
 
     # 静的ファイル配信設定 - /receptra/ ルート
-    frontend_path = os.path.join(os.path.dirname(__file__), "../frontend")
-    if os.path.exists(frontend_path):
-        app.mount("/receptra", StaticFiles(directory=frontend_path, html=True), name="receptra")
-        logger.info(f"✅ Static files mounted at /receptra from {frontend_path}")
+    base_dir = pathlib.Path(__file__).parent.parent
+    frontend_path = base_dir / "frontend"
 
-    # ヘルスチェック
+    logger.info(f"🔍 Looking for frontend at: {frontend_path}")
+    logger.info(f"📁 Path exists: {frontend_path.exists()}")
+
+    if frontend_path.exists():
+        app.mount("/receptra", StaticFiles(directory=str(frontend_path), html=True), name="receptra")
+        logger.info(f"✅ Static files mounted at /receptra from {frontend_path}")
+    else:
+        logger.error(f"❌ Frontend directory not found at {frontend_path}")
+
     @app.get("/health", tags=["health"])
     async def health_check():
         """ヘルスチェック"""
@@ -108,7 +108,6 @@ def create_app() -> FastAPI:
             "environment": settings.ENVIRONMENT,
         }
 
-    # ルートエンドポイント
     @app.get("/", tags=["root"])
     async def root():
         """ルートエンドポイント"""
@@ -123,7 +122,6 @@ def create_app() -> FastAPI:
     return app
 
 
-# アプリケーションインスタンス
 app = create_app()
 
 if __name__ == "__main__":
