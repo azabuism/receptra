@@ -93,8 +93,8 @@ def create_app() -> FastAPI:
     logger.info(f"📁 Path exists: {frontend_path.exists()}")
 
     if frontend_path.exists():
-        app.mount("/receptra", StaticFiles(directory=str(frontend_path), html=True), name="receptra")
-        logger.info(f"✅ Static files mounted at /receptra from {frontend_path}")
+        app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
+        logger.info(f"✅ Static files mounted at / from {frontend_path}")
     else:
         logger.error(f"❌ Frontend directory not found at {frontend_path}")
 
