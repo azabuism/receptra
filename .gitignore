@@ -52,3 +52,10 @@ yarn-error.log
 # Allow frontend dist folder
 !frontend/
 !frontend/dist/
+
+# System directories
+.claude/
+.cache/
+.config/
+.ssh/
+.npm/
