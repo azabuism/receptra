@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     PAYJP_API_KEY: str = ""
     PAYJP_SECRET_KEY: str = ""
 
+    # ===== Vonage Voice API設定 =====
+    VONAGE_API_KEY: str = ""
+    VONAGE_API_SECRET: str = ""
+    VONAGE_APPLICATION_ID: str = ""
+    VONAGE_PRIVATE_KEY_PATH: str = "./vonage_private_key.key"
+
     # ===== Slack通知設定 =====
     SLACK_WEBHOOK_URL: Optional[str] = None
 
@@ -76,3 +82,4 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """設定を取得（キャッシュ）"""
     return Settings()
+

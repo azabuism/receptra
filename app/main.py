@@ -19,6 +19,7 @@ from app.models import receptionist, visitor
 from app.routers.users import router as users_router
 from app.routers.receptionists import router as receptionists_router
 from app.routers.auth import router as auth_router
+from app.routers.vonage_voice import router as vonage_voice_router
 from app.routers.visitors import router as visitors_router
 from app.routers.shops import router as shops_router
 from app.routers.reservations import router as reservations_router
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(shops_router)
     app.include_router(reservations_router)
     app.include_router(customers_router)
+    app.include_router(vonage_voice_router)
 
     # 静的ファイル配信設定 - /receptra/ ルート
     base_dir = pathlib.Path(__file__).parent.parent
