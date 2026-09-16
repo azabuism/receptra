@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request, HTTPException
 from app.config import get_settings
-import vonage
+from vonage import Vonage, Auth
 import logging
 
 logger = logging.getLogger(__name__)
@@ -10,7 +10,7 @@ router = APIRouter(
     tags=["vonage_voice"]
 )
 
-# Vonage クライアント初期化
+# Vonage クライアント初期化 (Vonage 4.x API format)
 vonage_client = None
 try:
     settings = get_settings()
@@ -23,13 +23,14 @@ try:
             except FileNotFoundError:
                 logger.warning(f"⚠️ Private key file not found: {settings.VONAGE_PRIVATE_KEY_PATH}")
 
-        vonage_client = vonage.Vonage(
+        # Vonage 4.x uses Auth() wrapper for credentials
+        auth = Auth(
             api_key=settings.VONAGE_API_KEY,
-            api_secret=settings.VONAGE_API_SECRET,
-            application_id=settings.VONAGE_APPLICATION_ID,
-            private_key=private_key
+            api_secret=settings.VONAGE_API_SECRET
         )
-        logger.info("✅ Vonage client initialized successfully")
+
+        vonage_client = Vonage(auth)
+        logger.info("✅ Vonage client initialized successfully (Vonage 4.x)")
     else:
         logger.info("ℹ️ Vonage credentials not configured in environment")
 except Exception as e:
