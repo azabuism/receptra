@@ -120,6 +120,10 @@
         }
 
         /* ヒーローセクション */
+        .hero-wrapper {
+            position: relative;
+        }
+
         .hero {
             background-image: url('/images/receptra-bg.jpg');
             background-size: cover;
@@ -129,7 +133,6 @@
             text-align: center;
             min-height: 450px;
             aspect-ratio: 2048 / 768;
-            position: relative;
         }
 
         .sr-only {
@@ -409,6 +412,18 @@
         }
 
         @media (max-width: 768px) {
+            .hero {
+                min-height: 0;
+                padding: 0;
+            }
+
+            .hero-buttons {
+                position: static;
+                transform: none;
+                margin-top: 20px;
+                padding: 0 20px;
+            }
+
             .hero h1 {
                 font-size: 32px;
             }
@@ -456,13 +471,15 @@
     <!-- メインコンテンツ -->
     <main>
         <!-- ヒーローセクション -->
-        <section class="hero">
-            <h1 class="sr-only">レセプトラ</h1>
+        <div class="hero-wrapper">
+            <section class="hero">
+                <h1 class="sr-only">レセプトラ</h1>
+            </section>
             <div class="hero-buttons">
                 <button class="btn btn-primary" onclick="scrollToSearch()">今すぐ検索</button>
                 <button class="btn btn-secondary" onclick="goToSubcategories()">カテゴリーから探す</button>
             </div>
-        </section>
+        </div>
 
         <!-- 検索セクション -->
         <section class="search-section" id="search-section">
