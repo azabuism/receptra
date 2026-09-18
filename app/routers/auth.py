@@ -3,6 +3,8 @@
 /api/v1/auth エンドポイント
 """
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,7 +59,7 @@ async def register(
         # 既存テナント確認
         existing_tenant = await TenantService.get_tenant_by_slug(db, slug)
         if existing_tenant:
-            slug = f"{slug}-{int(db.generate_uuid())[:8]}"
+            slug = f"{slug}-{uuid.uuid4().hex[:8]}"
 
         tenant = await TenantService.create_tenant(
             db=db,
