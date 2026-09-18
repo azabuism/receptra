@@ -91,7 +91,9 @@
         .shop-info { flex: 1; min-width: 0; }
         .shop-info .name { font-weight: 700; font-size: 15px; }
         .shop-info .meta { font-size: 12px; color: #888; margin-top: 2px; }
-        .shop-info a {
+        .shop-links { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; flex-shrink: 0; }
+        .shop-links a.manage-link { color: #888; font-weight: 400; }
+        .shop-links a {
             font-size: 13px;
             color: var(--primary);
             text-decoration: none;
@@ -296,9 +298,9 @@
                             '<div class="name">' + escapeHtml(shop.name) + '</div>' +
                             '<div class="meta">' + categoryLabel(shop.category) + ' ・ ' + escapeHtml(shop.address) + '</div>' +
                         '</div>' +
-                        '<div style="display:flex; flex-direction:column; gap:6px; align-items:flex-end;">' +
+                        '<div class="shop-links">' +
                             '<a href="shop.html?id=' + encodeURIComponent(shop.id) + '">紹介ページを見る →</a>' +
-                            '<a href="shop-manage.html?id=' + encodeURIComponent(shop.id) + '" style="font-size:13px; color:#888; text-decoration:none;">写真・メニューを管理 →</a>' +
+                            '<a href="shop-manage.html?id=' + encodeURIComponent(shop.id) + '" class="manage-link">写真・メニューを管理 →</a>' +
                         '</div>' +
                     '</div>';
                 }).join('');
