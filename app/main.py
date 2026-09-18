@@ -102,6 +102,14 @@ def create_app() -> FastAPI:
     app.include_router(customers_router)
     app.include_router(vonage_voice_router)
 
+    @app.get("/api/v1/debug/db-status", tags=["debug"])
+    async def debug_db_status():
+        """DB初期化状況の診断用エンドポイント（静的ファイルマウントより前に登録して確実に到達可能にする）"""
+        return {
+            "ready": getattr(app.state, "db_ready", False),
+            "error": getattr(app.state, "db_error", None),
+        }
+
     # 静的ファイル配信設定 - /receptra/ ルート
     base_dir = pathlib.Path(__file__).parent.parent
     frontend_path = base_dir / "frontend" / "dist"
