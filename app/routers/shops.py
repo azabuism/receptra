@@ -9,6 +9,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, or_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.shop import Shop, ShopHours
@@ -87,8 +88,17 @@ async def register_shop(
                 db.add(shop_hour)
         
         await db.commit()
-        await db.refresh(shop)
-        
+
+        # shop_hours リレーションを明示的にロードしてから応答を構築
+        # (コミット後にリレーションへ遅延アクセスすると、AsyncSession環境では
+        #  MissingGreenlet エラーになるため、selectinload で事前に読み込む)
+        result = await db.execute(
+            select(Shop)
+            .options(selectinload(Shop.shop_hours))
+            .filter(Shop.id == shop_id)
+        )
+        shop = result.scalar_one()
+
         # レスポンス作成
         shop_response = ShopResponse.from_orm(shop)
         
@@ -162,7 +172,7 @@ async def search_shops(
     """
     try:
         # 基本フィルタ：アクティブな店舗のみ
-        stmt = select(Shop).filter(Shop.is_active == True)
+        stmt = select(Shop).options(selectinload(Shop.shop_hours)).filter(Shop.is_active == True)
         
         # キーワード検索
         if keyword:
@@ -241,7 +251,12 @@ async def get_shop(
     指定された店舗の詳細情報を取得します
     """
     try:
-        shop = await db.get(Shop, shop_id)
+        result = await db.execute(
+            select(Shop)
+            .options(selectinload(Shop.shop_hours))
+            .filter(Shop.id == shop_id)
+        )
+        shop = result.scalar_one_or_none()
         
         if not shop:
             raise HTTPException(
