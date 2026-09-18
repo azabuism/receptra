@@ -16,6 +16,8 @@ from app.schemas.shop import (
     ShopRegisterRequest, ShopResponse, ShopRegisterResponse,
     ShopSearchQuery, ShopListResponse, ErrorResponse, ShopHoursResponse
 )
+from app.deps import get_current_user
+from app.schemas.user import CurrentUser
 
 router = APIRouter(prefix="/api/v1/shops", tags=["shops"])
 
@@ -28,6 +30,7 @@ router = APIRouter(prefix="/api/v1/shops", tags=["shops"])
 )
 async def register_shop(
     request: ShopRegisterRequest,
+    current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> ShopRegisterResponse:
     """
@@ -42,8 +45,7 @@ async def register_shop(
         # 店舗ID生成
         shop_id = str(uuid.uuid4())
         
-        # テナントID（仮：実装時は認証から取得）
-        tenant_id = "default-tenant"
+        tenant_id = current_user.tenant_id
         
         # 店舗オブジェクト作成
         shop = Shop(
@@ -103,6 +105,31 @@ async def register_shop(
             status_code=500,
             detail=f"店舗登録に失敗しました: {str(e)}"
         )
+
+
+@router.get(
+    "/mine",
+    response_model=ShopListResponse,
+    summary="自分のテナントの店舗一覧を取得",
+    description="ログイン中のユーザーのテナントが登録した店舗一覧を取得"
+)
+async def get_my_shops(
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> ShopListResponse:
+    """
+    ログイン中のユーザー（テナント）が登録した店舗一覧を取得します
+    """
+    stmt = select(Shop).filter(Shop.tenant_id == current_user.tenant_id).order_by(Shop.created_at.desc())
+    result = await db.execute(stmt)
+    shops = result.scalars().all()
+    shop_list = [ShopResponse.from_orm(shop) for shop in shops]
+    return ShopListResponse(
+        total=len(shop_list),
+        limit=len(shop_list),
+        offset=0,
+        items=shop_list
+    )
 
 
 @router.get(

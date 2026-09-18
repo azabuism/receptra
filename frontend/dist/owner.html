@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>店舗オーナーページ - レセプトラ</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #FF6B35;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --error: #ef4444;
+            --success: #10b981;
+            --border: 1px solid #ddd;
+        }
+        html, body { height: 100%; }
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            line-height: 1.6;
+        }
+        nav {
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 60px;
+        }
+        .nav-brand {
+            text-decoration: none;
+            color: var(--primary);
+            font-size: 20px;
+            font-weight: 700;
+        }
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            font-size: 14px;
+        }
+        .nav-right button {
+            background: none;
+            border: 1px solid #ddd;
+            border-radius: 20px;
+            padding: 6px 16px;
+            font-family: inherit;
+            font-size: 13px;
+            cursor: pointer;
+            color: var(--dark);
+        }
+        .nav-right button:hover { background: var(--light); }
+        main {
+            max-width: 760px;
+            margin: 0 auto;
+            padding: 32px 20px 80px;
+        }
+        h1 { font-size: 24px; margin-bottom: 4px; }
+        .subtitle { color: #777; font-size: 14px; margin-bottom: 28px; }
+        .card {
+            background: var(--white);
+            border-radius: 16px;
+            padding: 28px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            margin-bottom: 24px;
+        }
+        .card h2 { font-size: 18px; margin-bottom: 18px; }
+        .shop-list-item {
+            display: flex;
+            gap: 14px;
+            align-items: center;
+            padding: 14px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .shop-list-item:last-child { border-bottom: none; }
+        .shop-thumb {
+            width: 64px;
+            height: 64px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #fff0e6, #ffe0cc);
+            background-size: cover;
+            background-position: center;
+            flex-shrink: 0;
+        }
+        .shop-info { flex: 1; min-width: 0; }
+        .shop-info .name { font-weight: 700; font-size: 15px; }
+        .shop-info .meta { font-size: 12px; color: #888; margin-top: 2px; }
+        .shop-info a {
+            font-size: 13px;
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .empty-state { color: #999; font-size: 14px; padding: 12px 0; }
+        .field { margin-bottom: 16px; }
+        .field label {
+            display: block;
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 6px;
+            color: #666;
+        }
+        .field input, .field select, .field textarea {
+            width: 100%;
+            padding: 11px 13px;
+            border: 2px solid #eee;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        .field input:focus, .field select:focus, .field textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .field textarea { resize: vertical; min-height: 80px; }
+        .row-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+        @media (max-width: 560px) {
+            .row-2 { grid-template-columns: 1fr; }
+        }
+        .btn-submit {
+            padding: 13px 32px;
+            border: none;
+            border-radius: 24px;
+            font-size: 15px;
+            font-weight: 700;
+            font-family: inherit;
+            cursor: pointer;
+            background: var(--primary);
+            color: var(--white);
+        }
+        .btn-submit:hover { background: var(--primary-dark); }
+        .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; }
+        .msg {
+            font-size: 13px;
+            margin-top: 14px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            display: none;
+        }
+        .msg.error { background: #fee2e2; color: var(--error); display: block; }
+        .msg.success { background: #d1fae5; color: #047857; display: block; }
+        #gate { display: none; text-align: center; padding: 80px 20px; color: #888; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/" class="nav-brand">∞ レセプトラ</a>
+        <div class="nav-right">
+            <span id="user-label"></span>
+            <button id="logout-btn">ログアウト</button>
+        </div>
+    </nav>
+    <main id="app" style="display: none;">
+        <h1>店舗オーナーページ</h1>
+        <p class="subtitle">お店の情報を登録して、レセプトラでお店を紹介しましょう。</p>
+
+        <div class="card">
+            <h2>登録済みの店舗</h2>
+            <div id="shop-list"><div class="empty-state">読み込み中…</div></div>
+        </div>
+
+        <div class="card">
+            <h2>新しい店舗を登録する</h2>
+            <form id="shop-form">
+                <div class="field">
+                    <label for="shop-name">店舗名 *</label>
+                    <input type="text" id="shop-name" required>
+                </div>
+                <div class="row-2">
+                    <div class="field">
+                        <label for="shop-category">カテゴリ *</label>
+                        <select id="shop-category" required>
+                            <option value="RESTAURANT">飲食店</option>
+                            <option value="CAFE">カフェ</option>
+                            <option value="RAMEN">ラーメン</option>
+                            <option value="SUSHI">寿司</option>
+                            <option value="IZAKAYA">居酒屋</option>
+                            <option value="BAR">バー</option>
+                            <option value="BEAUTY">美容</option>
+                            <option value="SALON">サロン</option>
+                            <option value="CLINIC">クリニック</option>
+                            <option value="OTHER">その他</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="shop-phone">電話番号</label>
+                        <input type="tel" id="shop-phone">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="shop-address">住所 *</label>
+                    <input type="text" id="shop-address" required placeholder="例：東京都渋谷区〇〇1-2-3">
+                </div>
+                <div class="row-2">
+                    <div class="field">
+                        <label for="shop-email">連絡先メールアドレス</label>
+                        <input type="email" id="shop-email">
+                    </div>
+                    <div class="field">
+                        <label for="shop-website">ウェブサイトURL</label>
+                        <input type="url" id="shop-website" placeholder="https://">
+                    </div>
+                </div>
+                <div class="row-2">
+                    <div class="field">
+                        <label for="shop-thumbnail">サムネイル画像URL</label>
+                        <input type="url" id="shop-thumbnail" placeholder="https://">
+                    </div>
+                    <div class="field">
+                        <label for="shop-cover">カバー画像URL</label>
+                        <input type="url" id="shop-cover" placeholder="https://">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="shop-description">お店の紹介文</label>
+                    <textarea id="shop-description" placeholder="お店の魅力やこだわりを紹介しましょう"></textarea>
+                </div>
+                <button type="submit" class="btn-submit" id="shop-submit">この内容で登録する</button>
+                <div class="msg" id="shop-msg"></div>
+            </form>
+        </div>
+    </main>
+    <div id="gate">
+        <p>ログインが必要です。移動します…</p>
+    </div>
+
+    <script>
+        const token = localStorage.getItem('receptra_token');
+        const userRaw = localStorage.getItem('receptra_user');
+
+        if (!token) {
+            document.getElementById('gate').style.display = 'block';
+            window.location.href = 'login.html';
+        } else {
+            document.getElementById('app').style.display = 'block';
+            try {
+                const user = JSON.parse(userRaw || '{}');
+                document.getElementById('user-label').textContent = (user.display_name || user.email || '') + ' さん';
+            } catch (e) {}
+            loadShops();
+        }
+
+        document.getElementById('logout-btn').addEventListener('click', function () {
+            localStorage.removeItem('receptra_token');
+            localStorage.removeItem('receptra_user');
+            window.location.href = '/';
+        });
+
+        function categoryLabel(cat) {
+            const map = {
+                RESTAURANT: '飲食店', CAFE: 'カフェ', RAMEN: 'ラーメン', SUSHI: '寿司',
+                IZAKAYA: '居酒屋', BAR: 'バー', BEAUTY: '美容', SALON: 'サロン',
+                CLINIC: 'クリニック', OTHER: 'その他'
+            };
+            return map[cat] || cat;
+        }
+
+        async function loadShops() {
+            const listEl = document.getElementById('shop-list');
+            try {
+                const res = await fetch('/api/v1/shops/mine', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (res.status === 401) {
+                    localStorage.removeItem('receptra_token');
+                    localStorage.removeItem('receptra_user');
+                    window.location.href = 'login.html';
+                    return;
+                }
+                const data = await res.json();
+                if (!data.items || data.items.length === 0) {
+                    listEl.innerHTML = '<div class="empty-state">まだ登録された店舗はありません。下のフォームから登録してみましょう。</div>';
+                    return;
+                }
+                listEl.innerHTML = data.items.map(function (shop) {
+                    const thumb = shop.thumbnail_url || shop.cover_image_url || '';
+                    const style = thumb ? ('style="background-image: url(\'' + thumb.replace(/'/g, '') + '\')"') : '';
+                    return '<div class="shop-list-item">' +
+                        '<div class="shop-thumb" ' + style + '></div>' +
+                        '<div class="shop-info">' +
+                            '<div class="name">' + escapeHtml(shop.name) + '</div>' +
+                            '<div class="meta">' + categoryLabel(shop.category) + ' ・ ' + escapeHtml(shop.address) + '</div>' +
+                        '</div>' +
+                        '<a href="shop.html?id=' + encodeURIComponent(shop.id) + '">紹介ページを見る →</a>' +
+                    '</div>';
+                }).join('');
+            } catch (err) {
+                listEl.innerHTML = '<div class="empty-state">読み込みに失敗しました。</div>';
+            }
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str || '';
+            return div.innerHTML;
+        }
+
+        document.getElementById('shop-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const btn = document.getElementById('shop-submit');
+            const msg = document.getElementById('shop-msg');
+            msg.style.display = 'none';
+            btn.disabled = true;
+
+            const payload = {
+                name: document.getElementById('shop-name').value,
+                category: document.getElementById('shop-category').value,
+                address: document.getElementById('shop-address').value,
+                phone: document.getElementById('shop-phone').value || null,
+                email: document.getElementById('shop-email').value || null,
+                website: document.getElementById('shop-website').value || null,
+                thumbnail_url: document.getElementById('shop-thumbnail').value || null,
+                cover_image_url: document.getElementById('shop-cover').value || null,
+                description: document.getElementById('shop-description').value || null
+            };
+
+            try {
+                const res = await fetch('/api/v1/shops/register', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + token
+                    },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error((data.detail && (data.detail.msg || data.detail)) || '登録に失敗しました');
+                }
+                msg.className = 'msg success';
+                msg.style.display = 'block';
+                msg.innerHTML = '店舗を登録しました。<a href="shop.html?id=' + encodeURIComponent(data.shop_id) + '">紹介ページを見る →</a>';
+                document.getElementById('shop-form').reset();
+                loadShops();
+            } catch (err) {
+                msg.className = 'msg error';
+                msg.style.display = 'block';
+                msg.textContent = typeof err.message === 'string' ? err.message : '登録に失敗しました';
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

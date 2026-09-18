@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>店舗紹介 - レセプトラ</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #FF6B35;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --rating-color: #fbbf24;
+            --border: 1px solid #eee;
+        }
+        html, body { height: 100%; }
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            line-height: 1.6;
+        }
+        nav {
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            height: 60px;
+        }
+        .nav-brand {
+            text-decoration: none;
+            color: var(--primary);
+            font-size: 20px;
+            font-weight: 700;
+        }
+        .cover {
+            width: 100%;
+            aspect-ratio: 16 / 6;
+            background: linear-gradient(135deg, #ffe0cc, #fff0e6);
+            background-size: cover;
+            background-position: center;
+        }
+        main {
+            max-width: 860px;
+            margin: 0 auto;
+            padding: 0 20px 80px;
+        }
+        .header-block {
+            background: var(--white);
+            border-radius: 0 0 16px 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+        }
+        .category-badge {
+            display: inline-block;
+            background: #fff0e6;
+            color: var(--primary-dark);
+            font-size: 12px;
+            font-weight: 700;
+            padding: 4px 12px;
+            border-radius: 12px;
+            margin-bottom: 10px;
+        }
+        h1 { font-size: 26px; margin-bottom: 8px; }
+        .rating-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #777;
+            font-size: 14px;
+            margin-bottom: 4px;
+        }
+        .stars { color: var(--rating-color); letter-spacing: 1px; }
+        .cta-row {
+            display: flex;
+            gap: 12px;
+            margin-top: 18px;
+            flex-wrap: wrap;
+        }
+        .cta-row a {
+            text-decoration: none;
+            padding: 12px 24px;
+            border-radius: 24px;
+            font-size: 15px;
+            font-weight: 700;
+            text-align: center;
+        }
+        .cta-primary { background: var(--primary); color: var(--white); }
+        .cta-primary:hover { background: var(--primary-dark); }
+        .cta-secondary { background: var(--white); color: var(--primary); border: 2px solid var(--primary); }
+        .card {
+            background: var(--white);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+        }
+        .card h2 {
+            font-size: 17px;
+            margin-bottom: 14px;
+            border-left: 4px solid var(--primary);
+            padding-left: 10px;
+        }
+        .info-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        .info-table th {
+            text-align: left;
+            color: #888;
+            font-weight: 700;
+            padding: 10px 16px 10px 0;
+            vertical-align: top;
+            white-space: nowrap;
+            width: 90px;
+        }
+        .info-table td { padding: 10px 0; border-top: 1px solid #f2f2f2; }
+        .info-table tr:first-child td { border-top: none; }
+        .hours-table { width: 100%; font-size: 13px; border-collapse: collapse; }
+        .hours-table td { padding: 6px 10px; border-top: 1px solid #f2f2f2; }
+        .hours-table td:first-child { font-weight: 700; width: 60px; }
+        .closed-label { color: #bbb; }
+        .description { font-size: 14px; white-space: pre-wrap; }
+        #loading, #not-found { text-align: center; padding: 100px 20px; color: #999; }
+        #not-found { display: none; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/" class="nav-brand">∞ レセプトラ</a>
+    </nav>
+
+    <div id="loading">読み込み中…</div>
+    <div id="not-found">
+        <p>店舗が見つかりませんでした。</p>
+    </div>
+
+    <div id="content" style="display:none;">
+        <div class="cover" id="cover"></div>
+        <main>
+            <div class="header-block">
+                <div class="category-badge" id="category"></div>
+                <h1 id="name"></h1>
+                <div class="rating-row">
+                    <span class="stars" id="stars"></span>
+                    <span id="rating-text"></span>
+                </div>
+                <div class="cta-row">
+                    <a href="#" class="cta-primary" id="call-btn">電話で問い合わせる</a>
+                    <a href="#" class="cta-secondary" id="map-btn" target="_blank" rel="noopener">地図で見る</a>
+                </div>
+            </div>
+
+            <div class="card" id="description-card" style="display:none;">
+                <h2>お店の紹介</h2>
+                <p class="description" id="description"></p>
+            </div>
+
+            <div class="card">
+                <h2>基本情報</h2>
+                <table class="info-table">
+                    <tr><th>住所</th><td id="address"></td></tr>
+                    <tr id="phone-row"><th>電話番号</th><td id="phone"></td></tr>
+                    <tr id="website-row"><th>ウェブサイト</th><td><a id="website" target="_blank" rel="noopener"></a></td></tr>
+                </table>
+            </div>
+
+            <div class="card" id="hours-card" style="display:none;">
+                <h2>営業時間</h2>
+                <table class="hours-table" id="hours-table"></table>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const DAY_NAMES = ['月', '火', '水', '木', '金', '土', '日'];
+        const CATEGORY_LABELS = {
+            RESTAURANT: '飲食店', CAFE: 'カフェ', RAMEN: 'ラーメン', SUSHI: '寿司',
+            IZAKAYA: '居酒屋', BAR: 'バー', BEAUTY: '美容', SALON: 'サロン',
+            CLINIC: 'クリニック', OTHER: 'その他'
+        };
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str || '';
+            return div.innerHTML;
+        }
+
+        async function loadShop() {
+            const params = new URLSearchParams(window.location.search);
+            const id = params.get('id');
+            if (!id) {
+                showNotFound();
+                return;
+            }
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(id));
+                if (!res.ok) {
+                    showNotFound();
+                    return;
+                }
+                const shop = await res.json();
+                render(shop);
+            } catch (err) {
+                showNotFound();
+            }
+        }
+
+        function showNotFound() {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('not-found').style.display = 'block';
+        }
+
+        function render(shop) {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('content').style.display = 'block';
+            document.title = shop.name + ' - レセプトラ';
+
+            const cover = shop.cover_image_url || shop.thumbnail_url;
+            if (cover) {
+                document.getElementById('cover').style.backgroundImage = "url('" + cover.replace(/'/g, '') + "')";
+            }
+
+            document.getElementById('category').textContent = CATEGORY_LABELS[shop.category] || shop.category;
+            document.getElementById('name').textContent = shop.name;
+
+            const rating = shop.average_rating || 0;
+            const fullStars = Math.round(rating);
+            document.getElementById('stars').textContent = '★★★★★'.slice(0, fullStars) + '☆☆☆☆☆'.slice(0, 5 - fullStars);
+            document.getElementById('rating-text').textContent = rating > 0
+                ? rating.toFixed(1) + '（' + (shop.total_reviews || 0) + '件のレビュー）'
+                : 'レビューはまだありません';
+
+            document.getElementById('address').textContent = shop.address;
+            document.getElementById('map-btn').href = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(shop.address);
+
+            if (shop.phone) {
+                document.getElementById('phone').textContent = shop.phone;
+                document.getElementById('call-btn').href = 'tel:' + shop.phone;
+            } else {
+                document.getElementById('phone-row').style.display = 'none';
+                document.getElementById('call-btn').style.display = 'none';
+            }
+
+            if (shop.website) {
+                document.getElementById('website').textContent = shop.website;
+                document.getElementById('website').href = shop.website;
+            } else {
+                document.getElementById('website-row').style.display = 'none';
+            }
+
+            if (shop.description) {
+                document.getElementById('description-card').style.display = 'block';
+                document.getElementById('description').textContent = shop.description;
+            }
+
+            if (shop.shop_hours && shop.shop_hours.length > 0) {
+                const sorted = shop.shop_hours.slice().sort(function (a, b) { return a.day_of_week - b.day_of_week; });
+                const rows = sorted.map(function (h) {
+                    const label = h.is_closed
+                        ? '<span class="closed-label">定休日</span>'
+                        : escapeHtml(h.opening_time) + ' 〜 ' + escapeHtml(h.closing_time);
+                    return '<tr><td>' + DAY_NAMES[h.day_of_week] + '曜</td><td>' + label + '</td></tr>';
+                }).join('');
+                document.getElementById('hours-table').innerHTML = rows;
+                document.getElementById('hours-card').style.display = 'block';
+            }
+        }
+
+        loadShop();
+    </script>
+</body>
+</html>
