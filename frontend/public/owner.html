@@ -226,6 +226,10 @@
                     <label for="shop-description">お店の紹介文</label>
                     <textarea id="shop-description" placeholder="お店の魅力やこだわりを紹介しましょう"></textarea>
                 </div>
+                <div class="field">
+                    <label for="shop-features">お店の特徴（カンマ区切りで入力）</label>
+                    <input type="text" id="shop-features" placeholder="例：個室あり, 禁煙, 駐車場あり">
+                </div>
                 <button type="submit" class="btn-submit" id="shop-submit">この内容で登録する</button>
                 <div class="msg" id="shop-msg"></div>
             </form>
@@ -292,7 +296,10 @@
                             '<div class="name">' + escapeHtml(shop.name) + '</div>' +
                             '<div class="meta">' + categoryLabel(shop.category) + ' ・ ' + escapeHtml(shop.address) + '</div>' +
                         '</div>' +
-                        '<a href="shop.html?id=' + encodeURIComponent(shop.id) + '">紹介ページを見る →</a>' +
+                        '<div style="display:flex; flex-direction:column; gap:6px; align-items:flex-end;">' +
+                            '<a href="shop.html?id=' + encodeURIComponent(shop.id) + '">紹介ページを見る →</a>' +
+                            '<a href="shop-manage.html?id=' + encodeURIComponent(shop.id) + '" style="font-size:13px; color:#888; text-decoration:none;">写真・メニューを管理 →</a>' +
+                        '</div>' +
                     '</div>';
                 }).join('');
             } catch (err) {
@@ -322,7 +329,11 @@
                 website: document.getElementById('shop-website').value || null,
                 thumbnail_url: document.getElementById('shop-thumbnail').value || null,
                 cover_image_url: document.getElementById('shop-cover').value || null,
-                description: document.getElementById('shop-description').value || null
+                description: document.getElementById('shop-description').value || null,
+                features: document.getElementById('shop-features').value
+                    .split(',')
+                    .map(function (s) { return s.trim(); })
+                    .filter(function (s) { return s.length > 0; })
             };
 
             try {

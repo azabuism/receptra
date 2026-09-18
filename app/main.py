@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import get_settings
@@ -22,6 +23,7 @@ from app.routers.auth import router as auth_router
 from app.routers.vonage_voice import router as vonage_voice_router
 from app.routers.visitors import router as visitors_router
 from app.routers.shops import router as shops_router
+from app.routers.shop_media import router as shop_media_router, media_router as shop_media_files_router
 from app.routers.reservations import router as reservations_router
 from app.routers.customers import router as customers_router
 
@@ -57,6 +59,13 @@ async def lifespan(app: FastAPI):
 
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+
+            # create_all は既存テーブルへの新規カラム追加は行わないため、
+            # 後から追加したカラムはここで個別に ALTER する。
+            try:
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS features JSON"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ features カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
         logger.info("✅ Database tables initialized")
         await engine.dispose()
@@ -98,6 +107,8 @@ def create_app() -> FastAPI:
     app.include_router(receptionists_router, prefix="/api/v1/receptionists", tags=["receptionists"])
     app.include_router(visitors_router, prefix="/api/v1/visitors", tags=["visitors"])
     app.include_router(shops_router)
+    app.include_router(shop_media_router)
+    app.include_router(shop_media_files_router)
     app.include_router(reservations_router)
     app.include_router(customers_router)
     app.include_router(vonage_voice_router)

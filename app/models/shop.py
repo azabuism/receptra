@@ -7,7 +7,7 @@ from datetime import datetime, time
 from typing import Optional
 import uuid
 
-from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Index, Text, Float, Integer, Time, Enum
+from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Index, Text, Float, Integer, Time, Enum, JSON, LargeBinary
 from sqlalchemy.orm import relationship
 from app.database import Base
 import enum
@@ -77,7 +77,10 @@ class Shop(Base):
     # 画像
     thumbnail_url = Column(String(500), nullable=True)
     cover_image_url = Column(String(500), nullable=True)
-    
+
+    # お店の特徴（タグのリスト。例: ["個室あり", "禁煙", "駐車場あり"]）
+    features = Column(JSON, nullable=True, default=list)
+
     # 営業情報
     is_active = Column(Boolean, default=True, nullable=False)
     is_featured = Column(Boolean, default=False, nullable=False)  # 特集フラグ
@@ -101,6 +104,8 @@ class Shop(Base):
     # ★★★ 新規リレーション
     services = relationship("Service", back_populates="shop", cascade="all, delete-orphan")
     staff = relationship("Staff", back_populates="shop", cascade="all, delete-orphan")
+    photos = relationship("ShopPhoto", back_populates="shop", cascade="all, delete-orphan")
+    menu_items = relationship("MenuItem", back_populates="shop", cascade="all, delete-orphan")
 
     # インデックス
     __table_args__ = (
@@ -149,3 +154,67 @@ class ShopHours(Base):
 
     def __repr__(self):
         return f"<ShopHours(shop_id={self.shop_id}, day={self.day_of_week})>"
+
+
+class ShopPhotoKind(str, enum.Enum):
+    """店舗写真の種類"""
+    EXTERIOR = "exterior"   # 外観
+    INTERIOR = "interior"   # 内装
+    OTHER = "other"         # その他
+
+
+class ShopPhoto(Base):
+    """店舗写真（外観・内装など）"""
+
+    __tablename__ = "shop_photos"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    shop_id = Column(String(36), ForeignKey("shops.id"), nullable=False, index=True)
+
+    kind = Column(String(20), nullable=False, default="other")  # ShopPhotoKind
+    image_data = Column(LargeBinary, nullable=False)
+    mime_type = Column(String(100), nullable=False)
+    display_order = Column(Integer, default=0, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    shop = relationship("Shop", back_populates="photos")
+
+    __table_args__ = (
+        Index("ix_shop_photos_shop_kind", "shop_id", "kind"),
+    )
+
+    def __repr__(self):
+        return f"<ShopPhoto(id={self.id}, shop_id={self.shop_id}, kind={self.kind})>"
+
+
+class MenuItem(Base):
+    """メニュー項目（料理・サービスなど）"""
+
+    __tablename__ = "menu_items"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    shop_id = Column(String(36), ForeignKey("shops.id"), nullable=False, index=True)
+
+    category = Column(String(100), nullable=False, default="その他")  # 例: フード、ドリンク
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    price = Column(Integer, nullable=True)  # 円
+
+    image_data = Column(LargeBinary, nullable=True)
+    mime_type = Column(String(100), nullable=True)
+
+    is_available = Column(Boolean, default=True, nullable=False)  # False = 売り切れ・提供停止
+    display_order = Column(Integer, default=0, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    shop = relationship("Shop", back_populates="menu_items")
+
+    __table_args__ = (
+        Index("ix_menu_items_shop_category", "shop_id", "category"),
+    )
+
+    def __repr__(self):
+        return f"<MenuItem(id={self.id}, shop_id={self.shop_id}, name={self.name})>"

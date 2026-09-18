@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>店舗紹介 - レセプトラ</title>
     <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root {
@@ -125,6 +126,39 @@
         .description { font-size: 14px; white-space: pre-wrap; }
         #loading, #not-found { text-align: center; padding: 100px 20px; color: #999; }
         #not-found { display: none; }
+        .feature-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+        .feature-tag {
+            background: #f5f5f5; color: #555; font-size: 12px; font-weight: 700;
+            padding: 5px 12px; border-radius: 14px;
+        }
+        .photo-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+        .photo-gallery img {
+            width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; cursor: pointer;
+            background: #f0f0f0;
+        }
+        .gallery-kind-label { font-size: 12px; font-weight: 700; color: #888; margin: 14px 0 8px; }
+        .gallery-kind-label:first-child { margin-top: 0; }
+        .menu-category-title { font-size: 15px; font-weight: 700; color: var(--primary-dark); margin: 18px 0 10px; }
+        .menu-category-title:first-child { margin-top: 0; }
+        .menu-card-row { display: flex; gap: 14px; padding: 12px 0; border-bottom: 1px solid #f2f2f2; }
+        .menu-card-row:last-child { border-bottom: none; }
+        .menu-card-row img { width: 76px; height: 76px; border-radius: 10px; object-fit: cover; flex-shrink: 0; background: #f0f0f0; }
+        .menu-card-info { flex: 1; min-width: 0; }
+        .menu-card-info .mname { font-weight: 700; font-size: 15px; }
+        .menu-card-info .mname.unavailable { color: #bbb; }
+        .menu-card-info .mprice { font-size: 14px; color: var(--primary-dark); font-weight: 700; margin-top: 2px; }
+        .menu-card-info .mdesc { font-size: 13px; color: #888; margin-top: 4px; }
+        .sold-out-chip {
+            display: inline-block; font-size: 11px; background: #eee; color: #999;
+            padding: 2px 8px; border-radius: 10px; margin-left: 6px;
+        }
+        #map { width: 100%; height: 280px; border-radius: 12px; background: #eee; }
+        .lightbox {
+            display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+            align-items: center; justify-content: center; z-index: 1000; padding: 20px;
+        }
+        .lightbox.open { display: flex; }
+        .lightbox img { max-width: 100%; max-height: 90vh; border-radius: 8px; }
     </style>
 </head>
 <body>
@@ -147,15 +181,26 @@
                     <span class="stars" id="stars"></span>
                     <span id="rating-text"></span>
                 </div>
+                <div class="feature-tags" id="feature-tags" style="display:none;"></div>
                 <div class="cta-row">
                     <a href="#" class="cta-primary" id="call-btn">電話で問い合わせる</a>
                     <a href="#" class="cta-secondary" id="map-btn" target="_blank" rel="noopener">地図で見る</a>
                 </div>
             </div>
 
+            <div class="card" id="gallery-card" style="display:none;">
+                <h2>写真</h2>
+                <div id="gallery-content"></div>
+            </div>
+
             <div class="card" id="description-card" style="display:none;">
                 <h2>お店の紹介</h2>
                 <p class="description" id="description"></p>
+            </div>
+
+            <div class="card" id="menu-card" style="display:none;">
+                <h2>メニュー</h2>
+                <div id="menu-content"></div>
             </div>
 
             <div class="card">
@@ -165,6 +210,7 @@
                     <tr id="phone-row"><th>電話番号</th><td id="phone"></td></tr>
                     <tr id="website-row"><th>ウェブサイト</th><td><a id="website" target="_blank" rel="noopener"></a></td></tr>
                 </table>
+                <div id="map" style="margin-top: 16px;"></div>
             </div>
 
             <div class="card" id="hours-card" style="display:none;">
@@ -174,6 +220,11 @@
         </main>
     </div>
 
+    <div class="lightbox" id="lightbox">
+        <img id="lightbox-img" src="" alt="">
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <script>
         const DAY_NAMES = ['月', '火', '水', '木', '金', '土', '日'];
         const CATEGORY_LABELS = {
@@ -256,6 +307,14 @@
                 document.getElementById('description').textContent = shop.description;
             }
 
+            if (shop.features && shop.features.length > 0) {
+                const tagsEl = document.getElementById('feature-tags');
+                tagsEl.innerHTML = shop.features.map(function (f) {
+                    return '<span class="feature-tag">' + escapeHtml(f) + '</span>';
+                }).join('');
+                tagsEl.style.display = 'flex';
+            }
+
             if (shop.shop_hours && shop.shop_hours.length > 0) {
                 const sorted = shop.shop_hours.slice().sort(function (a, b) { return a.day_of_week - b.day_of_week; });
                 const rows = sorted.map(function (h) {
@@ -267,6 +326,119 @@
                 document.getElementById('hours-table').innerHTML = rows;
                 document.getElementById('hours-card').style.display = 'block';
             }
+
+            loadGallery(shop.id);
+            loadMenu(shop.id);
+            initMap(shop);
+        }
+
+        // ---------- 写真ギャラリー ----------
+        const GALLERY_KIND_LABELS = { exterior: '外観', interior: '内装', other: 'その他' };
+
+        async function loadGallery(shopId) {
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/photos');
+                if (!res.ok) return;
+                const photos = await res.json();
+                if (!photos.length) return;
+
+                const kinds = ['exterior', 'interior', 'other'];
+                let html = '';
+                kinds.forEach(function (kind) {
+                    const items = photos.filter(function (p) { return p.kind === kind; })
+                        .sort(function (a, b) { return a.display_order - b.display_order; });
+                    if (!items.length) return;
+                    html += '<div class="gallery-kind-label">' + GALLERY_KIND_LABELS[kind] + '</div>';
+                    html += '<div class="photo-gallery">' + items.map(function (p) {
+                        return '<img src="' + p.url + '" alt="" data-full="' + p.url + '">';
+                    }).join('') + '</div>';
+                });
+                document.getElementById('gallery-content').innerHTML = html;
+                document.getElementById('gallery-card').style.display = 'block';
+
+                document.querySelectorAll('#gallery-content img').forEach(function (img) {
+                    img.addEventListener('click', function () {
+                        document.getElementById('lightbox-img').src = img.dataset.full;
+                        document.getElementById('lightbox').classList.add('open');
+                    });
+                });
+            } catch (err) {}
+        }
+
+        document.getElementById('lightbox').addEventListener('click', function () {
+            this.classList.remove('open');
+        });
+
+        // ---------- メニュー ----------
+        async function loadMenu(shopId) {
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/menu');
+                if (!res.ok) return;
+                const items = await res.json();
+                if (!items.length) return;
+
+                const categories = [];
+                items.forEach(function (i) { if (categories.indexOf(i.category) === -1) categories.push(i.category); });
+
+                const html = categories.map(function (cat) {
+                    const catItems = items.filter(function (i) { return i.category === cat; })
+                        .sort(function (a, b) { return a.display_order - b.display_order; });
+                    const rows = catItems.map(function (item) {
+                        const img = item.photo_url ? '<img src="' + item.photo_url + '" alt="">' : '';
+                        return '<div class="menu-card-row">' +
+                            img +
+                            '<div class="menu-card-info">' +
+                                '<div class="mname' + (item.is_available ? '' : ' unavailable') + '">' +
+                                    escapeHtml(item.name) +
+                                    (item.is_available ? '' : '<span class="sold-out-chip">売り切れ</span>') +
+                                '</div>' +
+                                (item.price != null ? '<div class="mprice">¥' + item.price.toLocaleString() + '</div>' : '') +
+                                (item.description ? '<div class="mdesc">' + escapeHtml(item.description) + '</div>' : '') +
+                            '</div>' +
+                        '</div>';
+                    }).join('');
+                    return '<div class="menu-category-title">' + escapeHtml(cat) + '</div>' + rows;
+                }).join('');
+
+                document.getElementById('menu-content').innerHTML = html;
+                document.getElementById('menu-card').style.display = 'block';
+            } catch (err) {}
+        }
+
+        // ---------- 地図 ----------
+        async function initMap(shop) {
+            const mapEl = document.getElementById('map');
+            if (typeof L === 'undefined') return;
+
+            let lat = shop.latitude;
+            let lon = shop.longitude;
+
+            if (lat == null || lon == null) {
+                try {
+                    const geoRes = await fetch(
+                        'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(shop.address)
+                    );
+                    const results = await geoRes.json();
+                    if (results && results.length > 0) {
+                        lat = parseFloat(results[0].lat);
+                        lon = parseFloat(results[0].lon);
+                    }
+                } catch (err) {
+                    // 地図が出せなくても他の情報は表示できるようにする
+                }
+            }
+
+            if (lat == null || lon == null) {
+                mapEl.style.display = 'none';
+                return;
+            }
+
+            const map = L.map(mapEl).setView([lat, lon], 16);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+                maxZoom: 19
+            }).addTo(map);
+            L.marker([lat, lon]).addTo(map).bindPopup(escapeHtml(shop.name));
         }
 
         loadShop();

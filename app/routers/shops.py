@@ -15,7 +15,8 @@ from app.database import get_db
 from app.models.shop import Shop, ShopHours
 from app.schemas.shop import (
     ShopRegisterRequest, ShopResponse, ShopRegisterResponse,
-    ShopSearchQuery, ShopListResponse, ErrorResponse, ShopHoursResponse
+    ShopSearchQuery, ShopListResponse, ErrorResponse, ShopHoursResponse,
+    ShopUpdateRequest
 )
 from app.deps import get_current_user
 from app.schemas.user import CurrentUser
@@ -63,6 +64,7 @@ async def register_shop(
             website=request.website,
             thumbnail_url=request.thumbnail_url,
             cover_image_url=request.cover_image_url,
+            features=request.features or [],
             is_active=True,
             is_featured=False,
             created_at=datetime.utcnow(),
@@ -140,6 +142,38 @@ async def get_my_shops(
         offset=0,
         items=shop_list
     )
+
+
+@router.patch(
+    "/{shop_id}",
+    response_model=ShopResponse,
+    summary="店舗情報を更新",
+    description="送られたフィールドのみ更新（特徴タグ、紹介文などの後編集に利用）"
+)
+async def update_shop(
+    shop_id: str,
+    request: ShopUpdateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> ShopResponse:
+    shop = await db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店舗が見つかりません")
+    if shop.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="この店舗を編集する権限がありません")
+
+    update_data = request.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(shop, field, value)
+    shop.updated_at = datetime.utcnow()
+
+    await db.commit()
+
+    result = await db.execute(
+        select(Shop).options(selectinload(Shop.shop_hours)).filter(Shop.id == shop_id)
+    )
+    shop = result.scalar_one()
+    return ShopResponse.from_orm(shop)
 
 
 @router.get(

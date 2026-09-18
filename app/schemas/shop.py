@@ -47,6 +47,23 @@ class ShopRegisterRequest(BaseModel):
     thumbnail_url: Optional[str] = Field(None, max_length=500, description="サムネイル画像URL")
     cover_image_url: Optional[str] = Field(None, max_length=500, description="カバー画像URL")
     shop_hours: Optional[List[ShopHoursCreate]] = Field(None, description="営業時間リスト")
+    features: Optional[List[str]] = Field(default_factory=list, description="お店の特徴タグ（例：個室あり、禁煙、駐車場あり）")
+
+
+class ShopUpdateRequest(BaseModel):
+    """店舗更新リクエストスキーマ（送られたフィールドのみ更新）"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=2000)
+    category: Optional[str] = None
+    address: Optional[str] = Field(None, min_length=1, max_length=500)
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+    phone: Optional[str] = Field(None, max_length=20)
+    email: Optional[EmailStr] = None
+    website: Optional[str] = Field(None, max_length=500)
+    thumbnail_url: Optional[str] = Field(None, max_length=500)
+    cover_image_url: Optional[str] = Field(None, max_length=500)
+    features: Optional[List[str]] = None
 
 
 class ShopResponse(BaseModel):
@@ -72,6 +89,7 @@ class ShopResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     shop_hours: Optional[List[ShopHoursResponse]] = []
+    features: Optional[List[str]] = []
 
     class Config:
         from_attributes = True
