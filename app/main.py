@@ -29,13 +29,26 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def _normalize_database_url(database_url: str) -> str:
+    """Railway 等が発行する DATABASE_URL は postgres:// / postgresql:// 形式のことが多いが、
+    asyncpg ドライバーを使うには postgresql+asyncpg:// である必要があるため補正する。"""
+    if database_url.startswith("postgres://"):
+        return "postgresql+asyncpg://" + database_url[len("postgres://"):]
+    if database_url.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + database_url[len("postgresql://"):]
+    return database_url
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """アプリケーションのライフサイクル管理"""
     logger.info("🚀 BARIYON Receptra API starting up...")
 
+    app.state.db_ready = False
+    app.state.db_error = None
+
     try:
-        database_url = settings.DATABASE_URL
+        database_url = _normalize_database_url(settings.DATABASE_URL)
         engine = create_async_engine(
             database_url,
             echo=settings.ENVIRONMENT == "development",
@@ -49,8 +62,10 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
         init_db(database_url)
+        app.state.db_ready = True
         logger.info("✅ Database session factory initialized")
     except Exception as e:
+        app.state.db_error = f"{type(e).__name__}: {e}"
         logger.error(f"❌ Database initialization failed: {e}")
 
     yield
@@ -108,6 +123,10 @@ def create_app() -> FastAPI:
             "service": "BARIYON Receptra API",
             "version": "1.0.0",
             "environment": settings.ENVIRONMENT,
+            "database": {
+                "ready": getattr(app.state, "db_ready", False),
+                "error": getattr(app.state, "db_error", None),
+            },
         }
 
     @app.get("/", tags=["root"])
