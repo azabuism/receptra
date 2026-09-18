@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>新規登録 - レセプトラ</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #FF6B35;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --error: #ef4444;
+            --success: #10b981;
+            --border: 1px solid #ddd;
+        }
+        html, body { height: 100%; }
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            line-height: 1.6;
+        }
+        nav {
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            height: 60px;
+        }
+        .nav-brand {
+            text-decoration: none;
+            color: var(--primary);
+            font-size: 20px;
+            font-weight: 700;
+        }
+        main {
+            max-width: 440px;
+            margin: 0 auto;
+            padding: 40px 20px 80px;
+        }
+        h1 {
+            font-size: 22px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .type-toggle {
+            display: flex;
+            gap: 8px;
+            background: #ececec;
+            border-radius: 24px;
+            padding: 4px;
+            margin-bottom: 24px;
+        }
+        .type-toggle button {
+            flex: 1;
+            border: none;
+            background: transparent;
+            padding: 11px 8px;
+            border-radius: 20px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 700;
+            color: #777;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+        }
+        .type-toggle button.active {
+            background: var(--white);
+            color: var(--primary);
+            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+        }
+        .type-hint {
+            font-size: 13px;
+            color: #888;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .card {
+            background: var(--white);
+            border-radius: 16px;
+            padding: 32px 28px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            margin-bottom: 20px;
+        }
+        .field {
+            margin-bottom: 16px;
+        }
+        .field label {
+            display: block;
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 6px;
+            color: #666;
+        }
+        .field input {
+            width: 100%;
+            padding: 12px 14px;
+            border: 2px solid #eee;
+            border-radius: 8px;
+            font-size: 15px;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+        .field input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .btn-submit {
+            width: 100%;
+            padding: 13px;
+            border: none;
+            border-radius: 24px;
+            font-size: 16px;
+            font-weight: 700;
+            font-family: inherit;
+            cursor: pointer;
+            background: var(--primary);
+            color: var(--white);
+            transition: background 0.2s;
+        }
+        .btn-submit:hover { background: var(--primary-dark); }
+        .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; }
+        .msg {
+            font-size: 13px;
+            margin-top: 12px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            display: none;
+        }
+        .msg.error { background: #fee2e2; color: var(--error); display: block; }
+        .msg.success { background: #d1fae5; color: #047857; display: block; }
+        .switch-link {
+            text-align: center;
+            margin-top: 8px;
+        }
+        .switch-link a {
+            color: var(--primary);
+            font-size: 14px;
+            font-weight: 700;
+            text-decoration: none;
+        }
+        .switch-link a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/" class="nav-brand">∞ レセプトラ</a>
+    </nav>
+    <main>
+        <h1>新規登録</h1>
+
+        <div class="type-toggle">
+            <button type="button" id="tab-user" class="active">ユーザーとして登録</button>
+            <button type="button" id="tab-owner">お店を登録（オーナー）</button>
+        </div>
+        <div class="type-hint" id="type-hint">サービスを探す・予約するアカウントを作成します</div>
+
+        <div class="card">
+            <form id="register-form">
+                <div class="field">
+                    <label for="register-name" id="label-name">お名前</label>
+                    <input type="text" id="register-name" required autocomplete="name">
+                </div>
+                <div class="field">
+                    <label for="register-email">メールアドレス</label>
+                    <input type="email" id="register-email" required autocomplete="email">
+                </div>
+                <div class="field">
+                    <label for="register-password">パスワード（8文字以上）</label>
+                    <input type="password" id="register-password" required minlength="8" autocomplete="new-password">
+                </div>
+                <button type="submit" class="btn-submit" id="register-submit">登録する</button>
+                <div class="msg" id="register-msg"></div>
+            </form>
+        </div>
+
+        <div class="switch-link">
+            <a id="login-link" href="user-login.html">すでにアカウントをお持ちの方はこちら →</a>
+        </div>
+    </main>
+
+    <script>
+        let currentType = 'user';
+
+        const tabUser = document.getElementById('tab-user');
+        const tabOwner = document.getElementById('tab-owner');
+        const typeHint = document.getElementById('type-hint');
+        const labelName = document.getElementById('label-name');
+        const loginLink = document.getElementById('login-link');
+        const nameInput = document.getElementById('register-name');
+
+        function setType(type) {
+            currentType = type;
+            if (type === 'owner') {
+                tabOwner.classList.add('active');
+                tabUser.classList.remove('active');
+                typeHint.textContent = 'お店の情報を登録して、レセプトラでお店を紹介するアカウントを作成します';
+                labelName.textContent = 'お名前（オーナー様）';
+                nameInput.placeholder = '';
+                loginLink.textContent = 'すでにアカウントをお持ちの方はこちら →';
+                loginLink.href = 'owner-login.html';
+            } else {
+                tabUser.classList.add('active');
+                tabOwner.classList.remove('active');
+                typeHint.textContent = 'サービスを探す・予約するアカウントを作成します';
+                labelName.textContent = 'お名前';
+                loginLink.textContent = 'すでにアカウントをお持ちの方はこちら →';
+                loginLink.href = 'user-login.html';
+            }
+        }
+
+        tabUser.addEventListener('click', function () { setType('user'); });
+        tabOwner.addEventListener('click', function () { setType('owner'); });
+
+        const params = new URLSearchParams(window.location.search);
+        setType(params.get('type') === 'owner' ? 'owner' : 'user');
+
+        function showMsg(el, text, type) {
+            el.textContent = text;
+            el.className = 'msg ' + type;
+        }
+
+        document.getElementById('register-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const btn = document.getElementById('register-submit');
+            const msg = document.getElementById('register-msg');
+            msg.style.display = 'none';
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/v1/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        display_name: document.getElementById('register-name').value,
+                        email: document.getElementById('register-email').value,
+                        password: document.getElementById('register-password').value
+                    })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error((data.detail && (data.detail.msg || data.detail)) || '登録に失敗しました');
+                }
+                if (currentType === 'owner') {
+                    localStorage.setItem('receptra_token', data.access_token);
+                    localStorage.setItem('receptra_user', JSON.stringify(data.user));
+                    showMsg(msg, '登録が完了しました。移動します…', 'success');
+                    window.location.href = 'owner.html';
+                } else {
+                    localStorage.setItem('receptra_customer_token', data.access_token);
+                    localStorage.setItem('receptra_customer_user', JSON.stringify(data.user));
+                    showMsg(msg, '登録が完了しました。移動します…', 'success');
+                    window.location.href = '/';
+                }
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '登録に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

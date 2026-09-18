@@ -156,27 +156,9 @@
 
         <div class="divider">まだアカウントをお持ちでない方</div>
 
-        <div class="card">
-            <h2>新規登録（店舗オーナー様）</h2>
-            <form id="register-form">
-                <div class="field">
-                    <label for="register-name">お名前</label>
-                    <input type="text" id="register-name" required autocomplete="name">
-                </div>
-                <div class="field">
-                    <label for="register-email">メールアドレス</label>
-                    <input type="email" id="register-email" required autocomplete="email">
-                </div>
-                <div class="field">
-                    <label for="register-password">パスワード（8文字以上）</label>
-                    <input type="password" id="register-password" required minlength="8" autocomplete="new-password">
-                </div>
-                <button type="submit" class="btn-submit" id="register-submit">新規登録する</button>
-                <div class="msg" id="register-msg"></div>
-            </form>
-        </div>
+        <a href="register.html?type=owner" class="btn-submit" style="display:block; text-align:center; text-decoration:none; box-sizing:border-box;">新規登録はこちら</a>
 
-        <div class="switch-link">
+        <div class="switch-link" style="margin-top:20px;">
             <a href="user-login.html">一般ユーザーの方はこちら →</a>
         </div>
     </main>
@@ -226,35 +208,6 @@
             }
         });
 
-        document.getElementById('register-form').addEventListener('submit', async function (event) {
-            event.preventDefault();
-            const btn = document.getElementById('register-submit');
-            const msg = document.getElementById('register-msg');
-            msg.style.display = 'none';
-            btn.disabled = true;
-            try {
-                const res = await fetch('/api/v1/auth/register', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        display_name: document.getElementById('register-name').value,
-                        email: document.getElementById('register-email').value,
-                        password: document.getElementById('register-password').value
-                    })
-                });
-                const data = await res.json();
-                if (!res.ok) {
-                    throw new Error((data.detail && (data.detail.msg || data.detail)) || '登録に失敗しました');
-                }
-                saveSession(data);
-                showMsg(msg, '登録が完了しました。移動します…', 'success');
-                window.location.href = 'owner.html';
-            } catch (err) {
-                showMsg(msg, typeof err.message === 'string' ? err.message : '登録に失敗しました', 'error');
-            } finally {
-                btn.disabled = false;
-            }
-        });
     </script>
 </body>
 </html>
