@@ -223,6 +223,7 @@
         function showMsg(el, text, type) {
             el.textContent = text;
             el.className = 'msg ' + type;
+            el.style.display = 'block';
         }
 
         document.getElementById('register-form').addEventListener('submit', async function (event) {
