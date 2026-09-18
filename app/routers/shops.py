@@ -130,7 +130,7 @@ async def get_my_shops(
     """
     ログイン中のユーザー（テナント）が登録した店舗一覧を取得します
     """
-    stmt = select(Shop).filter(Shop.tenant_id == current_user.tenant_id).order_by(Shop.created_at.desc())
+    stmt = select(Shop).options(selectinload(Shop.shop_hours)).filter(Shop.tenant_id == current_user.tenant_id).order_by(Shop.created_at.desc())
     result = await db.execute(stmt)
     shops = result.scalars().all()
     shop_list = [ShopResponse.from_orm(shop) for shop in shops]
