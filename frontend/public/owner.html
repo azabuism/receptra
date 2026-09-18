@@ -241,7 +241,7 @@
 
         if (!token) {
             document.getElementById('gate').style.display = 'block';
-            window.location.href = 'login.html';
+            window.location.href = 'owner-login.html';
         } else {
             document.getElementById('app').style.display = 'block';
             try {
@@ -275,7 +275,7 @@
                 if (res.status === 401) {
                     localStorage.removeItem('receptra_token');
                     localStorage.removeItem('receptra_user');
-                    window.location.href = 'login.html';
+                    window.location.href = 'owner-login.html';
                     return;
                 }
                 const data = await res.json();
