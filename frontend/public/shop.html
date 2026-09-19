@@ -217,6 +217,20 @@
         .slot-btn.selected { background: var(--primary); border-color: var(--primary); color: var(--white); }
         .slot-btn.unavailable { color: #ccc; border-color: #f0f0f0; cursor: not-allowed; text-decoration: line-through; }
         .booking-hint { font-size: 13px; color: #999; margin-bottom: 14px; }
+        .ai-booking-row {
+            display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px;
+            padding-bottom: 18px; border-bottom: 1px solid #f2f2f2;
+        }
+        .ai-booking-btn {
+            flex: 1; min-width: 160px; display: flex; align-items: center; justify-content: center; gap: 8px;
+            padding: 13px 16px; border-radius: 12px; font-size: 14px; font-weight: 700;
+            text-decoration: none; font-family: inherit; cursor: pointer;
+        }
+        .ai-booking-btn.chat { background: #fff1e6; color: var(--primary-dark); border: 2px solid var(--primary); }
+        .ai-booking-btn.chat:hover { background: #ffe4cc; }
+        .ai-booking-btn.voice { background: var(--primary); color: var(--white); border: 2px solid var(--primary); }
+        .ai-booking-btn.voice:hover { background: var(--primary-dark); }
+        .ai-booking-or { font-size: 12px; color: #bbb; text-align: center; margin: -10px 0 18px; }
         .booking-hint.error { color: #ef4444; }
         .booking-msg {
             font-size: 13px; margin-top: 12px; padding: 10px 12px; border-radius: 8px; display: none;
@@ -263,6 +277,11 @@
 
             <div class="card" id="booking-card">
                 <h2>ご予約</h2>
+                <div class="ai-booking-row">
+                    <a href="#" class="ai-booking-btn chat" id="ai-chat-btn">💬 チャットで予約</a>
+                    <a href="#" class="ai-booking-btn voice" id="ai-voice-btn">📞 通話で予約</a>
+                </div>
+                <p class="ai-booking-or">または、フォームからご予約</p>
                 <p class="booking-hint" id="booking-intro-hint">会員登録は不要です。日時と人数を選んで、そのまま予約できます。</p>
                 <div class="field" id="booking-service-field" style="display:none;">
                     <label for="booking-service">ご希望のサービス *</label>
@@ -411,6 +430,8 @@
             document.getElementById('content').style.display = 'block';
             document.title = shop.name + ' - レセプトラ';
             currentShopId = shop.id;
+            document.getElementById('ai-chat-btn').href = '/shop-ai-booking.html?id=' + encodeURIComponent(shop.id) + '&mode=chat';
+            document.getElementById('ai-voice-btn').href = '/shop-ai-booking.html?id=' + encodeURIComponent(shop.id) + '&mode=voice';
             currentBusinessType = shop.business_type || null;
             setServiceBookingMode(SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1);
             if (SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1) {

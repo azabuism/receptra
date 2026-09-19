@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # 1通話あたりの最大ターン数（暴走・異常な長時間通話によるコスト増を防ぐ安全装置）
     VOICE_AI_MAX_TURNS: int = 8
 
+    # ===== 店舗ページ AI予約（チャット・通話）設定 =====
+    # お客様が店舗ページから直接AIと会話して予約するための設定。
+    # 日時・人数・お名前・電話番号などヒアリング項目が多いため、電話受付より
+    # ターン数上限をやや大きめに取る。
+    BOOKING_AI_MAX_TOKENS: int = 400
+    BOOKING_AI_MAX_TURNS: int = 10
+
     # ===== PAY.JP設定 =====
     PAYJP_API_KEY: str = ""
     PAYJP_SECRET_KEY: str = ""

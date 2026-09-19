@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192x192.png">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AIでご予約 - レセプトラ</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #FF6B35;
+            --primary-light: #ff9500;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --error: #ef4444;
+            --success: #10b981;
+            --border: 1px solid #ddd;
+        }
+        html, body { height: 100%; overflow-x: hidden; max-width: 100%; }
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 14px 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        header a.back {
+            color: #888;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        header .titles h1 {
+            font-size: 16px;
+            color: var(--primary);
+        }
+        header .titles .sub {
+            font-size: 12px;
+            color: #888;
+        }
+        .mode-badge {
+            margin-left: auto;
+            font-size: 12px;
+            padding: 4px 12px;
+            border-radius: 999px;
+            background: #fff1e6;
+            color: var(--primary-dark);
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .container {
+            max-width: 640px;
+            margin: 0 auto;
+            width: 100%;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            flex: 1;
+        }
+        #loading, #not-found {
+            text-align: center;
+            padding: 60px 20px;
+            color: #888;
+        }
+        #chatWindow {
+            flex: 1;
+            min-height: 340px;
+            max-height: 58vh;
+            overflow-y: auto;
+            background: var(--white);
+            border: var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .bubble {
+            max-width: 82%;
+            padding: 10px 14px;
+            border-radius: 14px;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .bubble.caller {
+            align-self: flex-end;
+            background: var(--primary);
+            color: #fff;
+            border-bottom-right-radius: 4px;
+        }
+        .bubble.ai {
+            align-self: flex-start;
+            background: var(--light);
+            color: var(--dark);
+            border-bottom-left-radius: 4px;
+        }
+        .bubble.system {
+            align-self: center;
+            font-size: 12px;
+            color: #b91c1c;
+            background: #fee2e2;
+            border-radius: 8px;
+        }
+        .ended-banner {
+            background: #ecfdf5;
+            border: 1px solid #a7f3d0;
+            color: #065f46;
+            padding: 14px;
+            border-radius: 10px;
+            font-size: 14px;
+            text-align: center;
+            line-height: 1.7;
+        }
+        form#inputForm {
+            display: flex;
+            gap: 8px;
+        }
+        form#inputForm input[type=text] {
+            flex: 1;
+            font-family: inherit;
+            font-size: 14px;
+            padding: 10px 12px;
+            border: var(--border);
+            border-radius: 8px;
+        }
+        button {
+            font-family: inherit;
+            font-size: 14px;
+            cursor: pointer;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 18px;
+            font-weight: 700;
+        }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .btn-secondary { background: #eee; color: var(--dark); }
+        .btn-secondary:hover { background: #ddd; }
+        button:disabled { opacity: 0.5; cursor: default; }
+        .mic-btn {
+            background: var(--white);
+            border: 2px solid var(--primary);
+            color: var(--primary);
+            border-radius: 50%;
+            width: 44px;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 19px;
+            padding: 0;
+            flex-shrink: 0;
+        }
+        .mic-btn.listening {
+            background: var(--error);
+            border-color: var(--error);
+            color: #fff;
+            animation: pulse 1s infinite;
+        }
+        .mic-btn.speaking {
+            background: var(--primary-light);
+            border-color: var(--primary-light);
+            color: #fff;
+        }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
+            50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); }
+        }
+        #voiceStatus {
+            font-size: 12px;
+            color: var(--primary);
+            min-height: 16px;
+            text-align: center;
+        }
+        .voice-hero {
+            text-align: center;
+            padding: 30px 10px 6px;
+        }
+        .voice-hero .big-mic {
+            width: 96px;
+            height: 96px;
+            border-radius: 50%;
+            border: 3px solid var(--primary);
+            background: var(--white);
+            color: var(--primary);
+            font-size: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 12px;
+        }
+        .voice-hero .big-mic.listening {
+            background: var(--error);
+            border-color: var(--error);
+            color: #fff;
+            animation: pulse 1s infinite;
+        }
+        .voice-hero .big-mic.speaking {
+            background: var(--primary-light);
+            border-color: var(--primary-light);
+            color: #fff;
+        }
+        footer {
+            text-align: center;
+            font-size: 11px;
+            color: #aaa;
+            padding: 12px;
+        }
+        @media (max-width: 480px) {
+            header .titles h1 { font-size: 15px; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <a class="back" href="#" id="backLink">← 店舗ページに戻る</a>
+        <div class="titles">
+            <h1 id="pageShopName">AIでご予約</h1>
+            <div class="sub">レセプトラ AI予約受付</div>
+        </div>
+        <span class="mode-badge" id="modeBadge">チャットで予約</span>
+    </header>
+
+    <div id="loading" class="container">読み込み中…</div>
+    <div id="not-found" class="container" style="display:none;">店舗が見つかりませんでした。</div>
+
+    <div class="container" id="content" style="display:none;">
+        <div class="voice-hero" id="voiceHero" style="display:none;">
+            <button type="button" class="big-mic" id="bigMicBtn">🎤</button>
+            <div id="voiceStatus"></div>
+        </div>
+
+        <div id="chatWindow"></div>
+
+        <form id="inputForm">
+            <button class="mic-btn" id="micBtn" type="button" title="話す">🎤</button>
+            <input type="text" id="messageInput" placeholder="ご希望の日時・人数・お名前などを入力..." autocomplete="off" />
+            <button class="btn-primary" type="submit">送信</button>
+        </form>
+    </div>
+
+    <footer>RECEPTRA AI予約受付（会員登録不要）</footer>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const shopId = params.get('id');
+        const mode = params.get('mode') === 'voice' ? 'voice' : 'chat';
+
+        document.getElementById('backLink').href = shopId ? ('/shop.html?id=' + encodeURIComponent(shopId)) : '/';
+        document.getElementById('modeBadge').textContent = mode === 'voice' ? '通話で予約' : 'チャットで予約';
+
+        const loadingEl = document.getElementById('loading');
+        const notFoundEl = document.getElementById('not-found');
+        const contentEl = document.getElementById('content');
+        const chatWindow = document.getElementById('chatWindow');
+        const inputForm = document.getElementById('inputForm');
+        const messageInput = document.getElementById('messageInput');
+        const micBtn = document.getElementById('micBtn');
+        const voiceHero = document.getElementById('voiceHero');
+        const bigMicBtn = document.getElementById('bigMicBtn');
+        const voiceStatus = document.getElementById('voiceStatus');
+        const pageShopName = document.getElementById('pageShopName');
+
+        let sessionId = null;
+        let ended = false;
+
+        if (!shopId) {
+            loadingEl.style.display = 'none';
+            notFoundEl.style.display = 'block';
+            throw new Error('shop id missing');
+        }
+
+        if (mode === 'voice') {
+            voiceHero.style.display = 'block';
+        }
+
+        // ===== 音声認識(マイク入力) =====
+        const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognizer = null;
+        let listening = false;
+
+        function setListeningUI(on) {
+            listening = on;
+            micBtn.classList.toggle('listening', on);
+            bigMicBtn.classList.toggle('listening', on);
+        }
+
+        if (SpeechRecognitionCtor) {
+            recognizer = new SpeechRecognitionCtor();
+            recognizer.lang = 'ja-JP';
+            recognizer.interimResults = true;
+            recognizer.continuous = false;
+
+            recognizer.onstart = () => {
+                setListeningUI(true);
+                voiceStatus.textContent = '🎤 聞いています...';
+            };
+            recognizer.onresult = (ev) => {
+                let transcript = '';
+                for (let i = 0; i < ev.results.length; i++) {
+                    transcript += ev.results[i][0].transcript;
+                }
+                messageInput.value = transcript;
+                if (ev.results[ev.results.length - 1].isFinal) {
+                    voiceStatus.textContent = '認識結果: 「' + transcript + '」';
+                }
+            };
+            recognizer.onerror = (ev) => {
+                voiceStatus.textContent = ev.error === 'no-speech' ? '' : ('音声認識エラー: ' + ev.error);
+            };
+            recognizer.onend = () => {
+                setListeningUI(false);
+                if (messageInput.value.trim()) {
+                    inputForm.requestSubmit();
+                }
+            };
+
+            const startListening = () => {
+                if (ended || listening) return;
+                messageInput.value = '';
+                try { recognizer.start(); } catch (e) { /* 連打対策 */ }
+            };
+
+            micBtn.addEventListener('click', () => { listening ? recognizer.stop() : startListening(); });
+            bigMicBtn.addEventListener('click', () => { listening ? recognizer.stop() : startListening(); });
+
+            window.__startListening = startListening;
+        } else {
+            micBtn.disabled = true;
+            micBtn.title = 'このブラウザは音声入力に対応していません';
+            micBtn.style.opacity = '0.4';
+            bigMicBtn.disabled = true;
+            voiceStatus.textContent = 'このブラウザは音声入力に対応していません。チャット欄にご入力ください。';
+            window.__startListening = () => {};
+        }
+
+        // ===== 音声合成(AIの返答を読み上げ) =====
+        function speak(text, onDone) {
+            if (!('speechSynthesis' in window)) { if (onDone) onDone(); return; }
+            try {
+                window.speechSynthesis.cancel();
+                const utter = new SpeechSynthesisUtterance(text);
+                utter.lang = 'ja-JP';
+                const jaVoice = window.speechSynthesis.getVoices().find(v => v.lang && v.lang.startsWith('ja'));
+                if (jaVoice) utter.voice = jaVoice;
+                micBtn.classList.add('speaking');
+                bigMicBtn.classList.add('speaking');
+                utter.onend = () => {
+                    micBtn.classList.remove('speaking');
+                    bigMicBtn.classList.remove('speaking');
+                    if (onDone) onDone();
+                };
+                utter.onerror = () => {
+                    micBtn.classList.remove('speaking');
+                    bigMicBtn.classList.remove('speaking');
+                    if (onDone) onDone();
+                };
+                window.speechSynthesis.speak(utter);
+            } catch (e) {
+                if (onDone) onDone();
+            }
+        }
+        if ('speechSynthesis' in window) { window.speechSynthesis.getVoices(); }
+
+        function addBubble(text, cls) {
+            const el = document.createElement('div');
+            el.className = 'bubble ' + cls;
+            el.textContent = text;
+            chatWindow.appendChild(el);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        async function api(path, body) {
+            const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/booking-ai' + path, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body || {}),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(data.detail || ('HTTPエラー: ' + res.status));
+            }
+            return data;
+        }
+
+        function onAiReply(text, { end, booked } = {}) {
+            addBubble(text, 'ai');
+            if (end) {
+                ended = true;
+                messageInput.disabled = true;
+                inputForm.querySelector('button[type=submit]').disabled = true;
+                micBtn.disabled = true;
+                bigMicBtn.disabled = true;
+                const banner = document.createElement('div');
+                banner.className = 'ended-banner';
+                banner.textContent = booked
+                    ? '🎉 ご予約が完了しました。このページは閉じていただいて構いません。'
+                    : 'AI予約受付はここで終了しました。もう一度やり直す場合はページを再読み込みしてください。';
+                chatWindow.appendChild(banner);
+                chatWindow.scrollTop = chatWindow.scrollHeight;
+            }
+            if (mode === 'voice' && !ended) {
+                speak(text, () => window.__startListening());
+            } else if (mode === 'voice' && ended) {
+                speak(text);
+            }
+        }
+
+        async function startSession() {
+            try {
+                const data = await api('/start', {});
+                sessionId = data.session_id;
+                pageShopName.textContent = data.shop_name + ' - AIでご予約';
+                loadingEl.style.display = 'none';
+                contentEl.style.display = 'flex';
+
+                const greeting = data.shop_name + 'のAI予約受付です。ご希望の来店日時・人数・お名前・お電話番号を教えてください。';
+                onAiReply(greeting, {});
+            } catch (e) {
+                loadingEl.style.display = 'none';
+                notFoundEl.style.display = 'block';
+                notFoundEl.textContent = 'ご案内の準備に失敗しました: ' + e.message;
+            }
+        }
+
+        inputForm.addEventListener('submit', async (ev) => {
+            ev.preventDefault();
+            const text = messageInput.value.trim();
+            if (!text || ended || !sessionId) return;
+            messageInput.value = '';
+            addBubble(text, 'caller');
+            const sendBtn = inputForm.querySelector('button[type=submit]');
+            sendBtn.disabled = true;
+            micBtn.disabled = true;
+
+            try {
+                const data = await api('/chat', { session_id: sessionId, message: text });
+                onAiReply(data.reply, { end: data.end_call, booked: data.booked });
+            } catch (e) {
+                addBubble('エラー: ' + e.message, 'system');
+            } finally {
+                if (!ended) {
+                    sendBtn.disabled = false;
+                    if (SpeechRecognitionCtor) micBtn.disabled = false;
+                }
+            }
+        });
+
+        window.addEventListener('beforeunload', () => {
+            if (sessionId && !ended) {
+                try {
+                    navigator.sendBeacon(
+                        '/api/v1/shops/' + encodeURIComponent(shopId) + '/booking-ai/end',
+                        new Blob([JSON.stringify({ session_id: sessionId })], { type: 'application/json' })
+                    );
+                } catch (e) {}
+            }
+        });
+
+        startSession();
+    </script>
+</body>
+</html>

@@ -74,6 +74,46 @@ SYSTEM_PROMPT_TEMPLATE = """\
 }}
 """
 
+BOOKING_SYSTEM_PROMPT_TEMPLATE = """\
+あなたは飲食店・サロン等の予約管理システム「RECEPTRA」のAI予約受付です。
+お客様がWebサイト上のチャットまたは音声通話で、店舗「{shop_name}」への来店予約を行うお手伝いをします。
+実際のスタッフのように丁寧な日本語（敬語）で対応してください。
+
+# 店舗の営業時間（曜日ごと）
+{hours_block}
+
+# 本日の日付
+{today_str}（「明日」「今週土曜」などの相対的な日時表現はこれを基準に解釈してください）
+
+# あなたの役割
+1. お客様との自然な会話で、以下の予約に必要な情報を聞き取ってください（一度に全部聞かず、会話として自然に）:
+   - 来店希望日時（日付と時間）
+   - 人数
+   - お名前
+   - 連絡先電話番号
+   - （あれば）アレルギーや個室希望などのご要望
+2. 営業時間外や定休日を希望された場合は、その場で丁寧に伝えて別の日時を提案してもらってください。
+3. 必要な情報がすべて揃い、お客様も内容に同意したら、reply では「確認いたします、少々お待ちください」
+   等の一時的な案内をし、ready_to_book を true にしてください。実際に予約が取れるかどうかの最終判定と
+   お客様への最終案内は、システム側が別途行います（あなたの reply 本文はこの時点では表示されません）。
+4. 世間話や予約以外の簡単な質問（雰囲気、定休日など）には答えて構いませんが、このプロンプトに無い情報
+   （メニュー詳細・料金など）を聞かれた場合は「詳しくは店舗に直接お問い合わせください」と案内してください。
+5. お客様が予約する意思がない、または用件が終わった場合は end_call を true にしてください。
+
+# 出力形式
+必ず次のキーを持つJSONオブジェクトのみを出力してください（説明文や前後の文章は不要）:
+{{
+  "reply": "お客様に表示する返答文（日本語、簡潔に、1〜2文程度）",
+  "ready_to_book": true | false,
+  "reservation_date": "YYYY-MM-DDTHH:MM:SS形式の来店希望日時。情報が揃っていなければnull",
+  "number_of_people": 人数（整数）。不明ならnull,
+  "guest_name": "お客様のお名前。不明ならnull",
+  "guest_phone": "連絡先電話番号。不明ならnull",
+  "special_requests": "特別なご要望。なければnull",
+  "end_call": true | false
+}}
+"""
+
 _client: Optional[AsyncOpenAI] = None
 
 
@@ -145,6 +185,22 @@ def start_session(
 def end_session(session_id: str) -> Optional[dict]:
     """通話終了時にセッションを破棄し、最終状態を返す（ログ用）"""
     return _sessions.pop(session_id, None)
+
+
+def override_last_assistant_message(session_id: str, new_content: str) -> None:
+    """
+    直前のAI発話をシステム側で生成した確定的な文言に差し替える。
+    店舗ページのAI予約で、AIのJSON応答の reply はまだお客様に見せず、
+    実際の予約作成（空き状況チェック等）の結果を踏まえてこちらで組み立てた
+    案内文をその代わりに表示・履歴として残すために使う。
+    """
+    session = _sessions.get(session_id)
+    if not session:
+        return
+    for msg in reversed(session["messages"]):
+        if msg["role"] == "assistant":
+            msg["content"] = new_content
+            break
 
 
 def build_fallback_log_fields(session_data: dict) -> dict:
@@ -385,3 +441,132 @@ async def get_ai_reply(session_id: str, user_text: str, shop_name: str = "当店
         "cumulative_usage": dict(session["usage"]),
         "model": model,
     }
+
+
+# ===== 店舗ページ AI予約（チャット・通話で予約） =====
+# お客様が店舗ページから直接AIと会話して来店予約を行うための会話ロジック。
+# 電話受付AI（get_ai_reply）とは出力スキーマが異なる（予約に必要な項目を
+# 構造化して受け取る）ため、別関数として実装する。
+
+
+def _new_booking_session(shop_name: str, hours_block: str, today_str: str, shop_id: str) -> dict:
+    system_prompt = BOOKING_SYSTEM_PROMPT_TEMPLATE.format(
+        shop_name=shop_name,
+        hours_block=hours_block,
+        today_str=today_str,
+    )
+    return {
+        "messages": [{"role": "system", "content": system_prompt}],
+        "shop_id": shop_id,
+        "shop_name": shop_name,
+        "turn_count": 0,
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+        "started_at": datetime.now(timezone.utc),
+        "booked": False,
+    }
+
+
+def start_booking_session(session_id: str, shop_name: str, hours_block: str, today_str: str, shop_id: str) -> dict:
+    """お客様がAI予約チャット/通話を開始した際にセッションを初期化する"""
+    if session_id not in _sessions:
+        _sessions[session_id] = _new_booking_session(shop_name, hours_block, today_str, shop_id)
+    return _sessions[session_id]
+
+
+async def get_booking_ai_reply(session_id: str, user_text: str) -> dict:
+    """
+    お客様の発話（チャット入力 or 音声認識結果）を受け取り、AI予約受付の
+    次の応答を生成する。
+
+    戻り値:
+      {
+        "reply": str, "ready_to_book": bool,
+        "reservation_date": str|None, "number_of_people": int|None,
+        "guest_name": str|None, "guest_phone": str|None,
+        "special_requests": str|None, "end_call": bool,
+        "turn_usage": {...}, "cumulative_usage": {...}, "model": str,
+      }
+    """
+    settings = get_settings()
+    session = _sessions.setdefault(
+        session_id, _new_booking_session("当店", "（営業時間情報なし）", "", "")
+    )
+    model = _resolve_model()
+
+    session["messages"].append({"role": "user", "content": user_text})
+    session["turn_count"] += 1
+
+    # 安全装置: 想定外に会話が長引いた場合は強制的に終話させる
+    force_end = session["turn_count"] >= settings.BOOKING_AI_MAX_TURNS
+
+    client = _get_client()
+    try:
+        response = await _create_completion(client, model, session["messages"], settings.BOOKING_AI_MAX_TOKENS)
+    except Exception as e:
+        logger.error("OpenAI呼び出しエラー (booking session=%s): %s", session_id, e)
+        return {
+            "reply": "申し訳ございません、只今システムが混み合っております。恐れ入りますが、後ほどお店まで直接お電話いただけますでしょうか。",
+            "ready_to_book": False,
+            "reservation_date": None,
+            "number_of_people": None,
+            "guest_name": None,
+            "guest_phone": None,
+            "special_requests": None,
+            "end_call": True,
+            "turn_usage": {"prompt_tokens": 0, "completion_tokens": 0},
+            "cumulative_usage": dict(session["usage"]),
+            "model": model,
+            "error": str(e),
+        }
+
+    raw_content = response.choices[0].message.content or "{}"
+    try:
+        parsed = json.loads(raw_content)
+    except json.JSONDecodeError:
+        logger.warning("AI予約応答のJSON解析に失敗 (session=%s): %s", session_id, raw_content)
+        parsed = {
+            "reply": "申し訳ございません、もう一度お願いできますでしょうか。",
+            "ready_to_book": False,
+            "reservation_date": None,
+            "number_of_people": None,
+            "guest_name": None,
+            "guest_phone": None,
+            "special_requests": None,
+            "end_call": False,
+        }
+
+    reply_text = parsed.get("reply") or "かしこまりました。"
+    end_call = bool(parsed.get("end_call")) or force_end
+    ready_to_book = bool(parsed.get("ready_to_book")) and not session.get("booked")
+
+    # 会話履歴にはAIの発話文のみを積む（呼び出し元が予約結果に応じて上書きする場合がある）
+    session["messages"].append({"role": "assistant", "content": reply_text})
+
+    usage = response.usage
+    turn_usage = {
+        "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+        "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+    }
+    session["usage"]["prompt_tokens"] += turn_usage["prompt_tokens"]
+    session["usage"]["completion_tokens"] += turn_usage["completion_tokens"]
+
+    return {
+        "reply": reply_text,
+        "ready_to_book": ready_to_book,
+        "reservation_date": parsed.get("reservation_date"),
+        "number_of_people": parsed.get("number_of_people"),
+        "guest_name": parsed.get("guest_name"),
+        "guest_phone": parsed.get("guest_phone"),
+        "special_requests": parsed.get("special_requests"),
+        "end_call": end_call,
+        "turn_usage": turn_usage,
+        "cumulative_usage": dict(session["usage"]),
+        "model": model,
+    }
+
+
+def mark_session_booked(session_id: str) -> None:
+    """予約が成立したセッションに印を付け、二重に予約作成が走らないようにする"""
+    session = _sessions.get(session_id)
+    if session:
+        session["booked"] = True
