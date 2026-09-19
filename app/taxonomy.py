@@ -60,7 +60,7 @@ TAXONOMY: List[TaxonomyGroup] = [
             {"name": "ネイル・マツエク", "icon": "💅", "image": "beauty-nail"},
             {"name": "エステ・脱毛", "icon": "✨", "image": "beauty-esthe"},
             {"name": "マッサージ・リラクゼーション", "icon": "🙏", "image": "beauty-massage"},
-            {"name": "メイク・コスメ", "icon": "💄"},
+            {"name": "メイク・コスメ", "icon": "💄", "image": "beauty-makeup"},
             {"name": "その他（美容）", "icon": "💫", "image": "beauty-other"},
         ],
     },
