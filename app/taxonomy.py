@@ -120,9 +120,9 @@ TAXONOMY: List[TaxonomyGroup] = [
             {"name": "格闘技", "icon": "🥊", "image": "fitness-martial-arts"},
             {"name": "スイミングスクール", "icon": "🏊", "image": "fitness-swimming"},
             {"name": "ダンススクール", "icon": "💃", "image": "fitness-dance"},
-            {"name": "ピラティス", "icon": "🧘‍♀️"},
+            {"name": "ピラティス", "icon": "🧘‍♀️", "image": "fitness-pilates"},
             {"name": "球技", "icon": "⚽", "image": "fitness-ball-sports"},
-            {"name": "その他（フィットネス）", "icon": "🏅"},
+            {"name": "その他（フィットネス）", "icon": "🏅", "image": "fitness-other"},
         ],
     },
     {
@@ -137,7 +137,7 @@ TAXONOMY: List[TaxonomyGroup] = [
             {"name": "シネマ", "icon": "🎬", "image": "entertainment-cinema"},
             {"name": "美術館", "icon": "🎨", "image": "entertainment-artmuseum"},
             {"name": "アミューズメントパーク", "icon": "🎡", "image": "entertainment-amusementpark"},
-            {"name": "その他（エンタメ）", "icon": "🎉"},
+            {"name": "その他（エンタメ）", "icon": "🎪"},
         ],
     },
     {
