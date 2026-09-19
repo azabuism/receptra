@@ -186,11 +186,11 @@
         @media (max-width: 560px) { .booking-row { grid-template-columns: 1fr; } }
         .field { margin-bottom: 14px; }
         .field label { display: block; font-size: 13px; font-weight: 700; color: #555; margin-bottom: 6px; }
-        .field input, .field textarea {
+        .field input, .field textarea, .field select {
             width: 100%; padding: 10px 12px; border: var(--border); border-radius: 8px;
-            font-size: 14px; font-family: inherit;
+            font-size: 14px; font-family: inherit; background: var(--white);
         }
-        .field input:focus, .field textarea:focus { outline: none; border-color: var(--primary); }
+        .field input:focus, .field textarea:focus, .field select:focus { outline: none; border-color: var(--primary); }
         .field textarea { resize: vertical; min-height: 60px; }
         .btn {
             padding: 11px 24px; border: none; border-radius: 22px; font-size: 14px; font-weight: 700;
@@ -246,13 +246,25 @@
 
             <div class="card" id="booking-card">
                 <h2>ご予約</h2>
-                <p class="booking-hint">会員登録は不要です。日時と人数を選んで、そのまま予約できます。</p>
+                <p class="booking-hint" id="booking-intro-hint">会員登録は不要です。日時と人数を選んで、そのまま予約できます。</p>
+                <div class="field" id="booking-service-field" style="display:none;">
+                    <label for="booking-service">ご希望のサービス *</label>
+                    <select id="booking-service">
+                        <option value="">選択してください</option>
+                    </select>
+                </div>
+                <div class="field" id="booking-staff-field" style="display:none;">
+                    <label for="booking-staff">担当スタッフ（任意）</label>
+                    <select id="booking-staff">
+                        <option value="">指名なし（お任せ）</option>
+                    </select>
+                </div>
                 <div class="booking-row">
                     <div class="field" style="margin-bottom:0;">
                         <label for="booking-date">来店日</label>
                         <input type="date" id="booking-date">
                     </div>
-                    <div class="field" style="margin-bottom:0;">
+                    <div class="field" id="booking-party-field" style="margin-bottom:0;">
                         <label for="booking-party">人数</label>
                         <input type="number" id="booking-party" min="1" max="999" value="2">
                     </div>
@@ -331,7 +343,10 @@
     <script>
         const DAY_NAMES = ['月', '火', '水', '木', '金', '土', '日'];
         let currentShopId = null;
+        let currentBusinessType = null;
         let selectedBookingTime = null;
+        let bookingServices = [];
+        const SERVICE_BASED_TYPES = ['beauty', 'medical', 'education', 'fitness'];
         const CATEGORY_LABELS = {
             RESTAURANT: '飲食店', CAFE: 'カフェ', RAMEN: 'ラーメン', SUSHI: '寿司',
             IZAKAYA: '居酒屋', BAR: 'バー', BEAUTY: '美容', SALON: 'サロン',
@@ -374,6 +389,11 @@
             document.getElementById('content').style.display = 'block';
             document.title = shop.name + ' - レセプトラ';
             currentShopId = shop.id;
+            currentBusinessType = shop.business_type || null;
+            setServiceBookingMode(SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1);
+            if (SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1) {
+                loadBookingServices(shop.id);
+            }
 
             const cover = shop.cover_image_url || shop.thumbnail_url;
             if (cover) {
@@ -714,6 +734,69 @@
             L.marker([lat, lon]).addTo(map).bindPopup(escapeHtml(shop.name));
         }
 
+        // ---------- ご予約（サービス・スタッフ選択） ----------
+        function setServiceBookingMode(isServiceBased) {
+            document.getElementById('booking-service-field').style.display = isServiceBased ? 'block' : 'none';
+            document.getElementById('booking-staff-field').style.display = isServiceBased ? 'block' : 'none';
+            document.getElementById('booking-party-field').style.display = isServiceBased ? 'none' : 'block';
+            document.querySelector('.booking-row').style.gridTemplateColumns = isServiceBased ? '1fr' : '';
+            document.getElementById('booking-intro-hint').textContent = isServiceBased
+                ? '会員登録は不要です。サービスと日時を選んで、そのまま予約できます。'
+                : '会員登録は不要です。日時と人数を選んで、そのまま予約できます。';
+        }
+
+        async function loadBookingServices(shopId) {
+            const select = document.getElementById('booking-service');
+            try {
+                const res = await fetch('/api/v1/services?shop_id=' + encodeURIComponent(shopId) + '&is_active=true');
+                bookingServices = await res.json();
+                if (!bookingServices.length) {
+                    select.innerHTML = '<option value="">現在ご予約可能なサービスがありません</option>';
+                    return;
+                }
+                select.innerHTML = '<option value="">選択してください</option>' + bookingServices.map(function (s) {
+                    const meta = [s.duration_minutes ? s.duration_minutes + '分' : null, '¥' + Number(s.base_price).toLocaleString()]
+                        .filter(Boolean).join(' / ');
+                    return '<option value="' + s.id + '">' + escapeHtml(s.name) + '（' + meta + '）</option>';
+                }).join('');
+            } catch (e) {
+                // サービス一覧の取得に失敗しても予約フォーム自体は表示しておく
+            }
+        }
+
+        document.getElementById('booking-service').addEventListener('change', async function () {
+            const serviceId = this.value;
+            const staffSelect = document.getElementById('booking-staff');
+            staffSelect.innerHTML = '<option value="">指名なし（お任せ）</option>';
+            document.getElementById('booking-slots-wrap').style.display = 'none';
+            document.getElementById('booking-form-wrap').style.display = 'none';
+            selectedBookingTime = null;
+            if (!serviceId || !currentShopId) return;
+
+            try {
+                const staffRes = await fetch('/api/v1/staff?shop_id=' + encodeURIComponent(currentShopId) + '&is_active=true');
+                const staffList = await staffRes.json();
+                const eligible = [];
+                for (const st of staffList) {
+                    try {
+                        const svcRes = await fetch('/api/v1/staff/' + encodeURIComponent(st.id) + '/services');
+                        const services = await svcRes.json();
+                        if (services.some(function (sv) { return sv.service_id === serviceId; })) {
+                            eligible.push(st);
+                        }
+                    } catch (e) { /* このスタッフの担当サービス取得に失敗しても他のスタッフは表示する */ }
+                }
+                if (eligible.length) {
+                    staffSelect.innerHTML += eligible.map(function (st) {
+                        return '<option value="' + st.id + '">' + escapeHtml(st.name) +
+                            (st.position ? '（' + escapeHtml(st.position) + '）' : '') + '</option>';
+                    }).join('');
+                }
+            } catch (e) {
+                // スタッフ一覧の取得に失敗しても「指名なし」で予約は続けられる
+            }
+        });
+
         // ---------- ご予約 ----------
         (function initBookingDefaults() {
             const dateInput = document.getElementById('booking-date');
@@ -734,10 +817,18 @@
 
         document.getElementById('booking-check-btn').addEventListener('click', async function () {
             if (!currentShopId) return;
+            const isServiceBased = SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1;
             const date = document.getElementById('booking-date').value;
             const partySize = parseInt(document.getElementById('booking-party').value, 10) || 1;
+            const serviceId = isServiceBased ? document.getElementById('booking-service').value : '';
+            const staffId = isServiceBased ? document.getElementById('booking-staff').value : '';
+
             if (!date) {
                 alert('来店日を選択してください');
+                return;
+            }
+            if (isServiceBased && !serviceId) {
+                alert('ご希望のサービスを選択してください');
                 return;
             }
 
@@ -752,10 +843,15 @@
             hintEl.textContent = '空き状況を確認しています…';
 
             try {
-                const res = await fetch(
-                    '/api/v1/reservations/shop/' + encodeURIComponent(currentShopId) +
-                    '/availability?date=' + encodeURIComponent(date) + '&party_size=' + partySize
-                );
+                let url = '/api/v1/reservations/shop/' + encodeURIComponent(currentShopId) +
+                    '/availability?date=' + encodeURIComponent(date);
+                if (isServiceBased) {
+                    url += '&service_id=' + encodeURIComponent(serviceId);
+                    if (staffId) url += '&staff_id=' + encodeURIComponent(staffId);
+                } else {
+                    url += '&party_size=' + partySize;
+                }
+                const res = await fetch(url);
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || '空き状況の取得に失敗しました');
 
@@ -781,8 +877,11 @@
                         slotsEl.querySelectorAll('.slot-btn').forEach(function (b) { b.classList.remove('selected'); });
                         btn.classList.add('selected');
                         selectedBookingTime = btn.dataset.time;
-                        document.getElementById('booking-selected-label').textContent =
-                            date + ' ' + selectedBookingTime + '〜　' + partySize + '名';
+                        const label = isServiceBased
+                            ? date + ' ' + selectedBookingTime + '〜　' +
+                              ((bookingServices.find(function (s) { return s.id === serviceId; }) || {}).name || 'サービス')
+                            : date + ' ' + selectedBookingTime + '〜　' + partySize + '名';
+                        document.getElementById('booking-selected-label').textContent = label;
                         document.getElementById('booking-form-wrap').style.display = 'block';
                         document.getElementById('booking-msg').className = 'booking-msg';
                     });
@@ -794,8 +893,11 @@
 
         document.getElementById('booking-submit-btn').addEventListener('click', async function () {
             if (!currentShopId || !selectedBookingTime) return;
+            const isServiceBased = SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1;
             const date = document.getElementById('booking-date').value;
             const partySize = parseInt(document.getElementById('booking-party').value, 10) || 1;
+            const serviceId = isServiceBased ? document.getElementById('booking-service').value : '';
+            const staffId = isServiceBased ? document.getElementById('booking-staff').value : '';
             const name = document.getElementById('booking-name').value.trim();
             const phone = document.getElementById('booking-phone').value.trim();
             const email = document.getElementById('booking-email').value.trim();
@@ -810,19 +912,26 @@
             const btn = document.getElementById('booking-submit-btn');
             btn.disabled = true;
 
+            const payload = {
+                shop_id: currentShopId,
+                reservation_date: reservationDate,
+                guest_name: name,
+                guest_phone: phone,
+                guest_email: email || null,
+                special_requests: notes || null
+            };
+            if (isServiceBased) {
+                payload.service_id = serviceId;
+                if (staffId) payload.staff_id = staffId;
+            } else {
+                payload.number_of_people = partySize;
+            }
+
             try {
                 const res = await fetch('/api/v1/reservations/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        shop_id: currentShopId,
-                        reservation_date: reservationDate,
-                        number_of_people: partySize,
-                        guest_name: name,
-                        guest_phone: phone,
-                        guest_email: email || null,
-                        special_requests: notes || null
-                    })
+                    body: JSON.stringify(payload)
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || '予約に失敗しました');
