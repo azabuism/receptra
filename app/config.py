@@ -45,7 +45,11 @@ class Settings(BaseSettings):
     # ===== JWT設定 =====
     SECRET_KEY: str = "your-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_HOURS: int = 24
+    # オーナー/ユーザーが「更新する度に再ログインが必要」と感じないよう、
+    # セッションの有効期限を90日に設定（従来は24時間）。
+    # デプロイやサーバー再起動では SECRET_KEY は変わらないため、
+    # 既存トークンはこの期限内であれば引き続き有効。
+    ACCESS_TOKEN_EXPIRE_HOURS: int = 24 * 90  # 2160時間 = 90日
 
     # ===== OpenAI設定 =====
     OPENAI_API_KEY: str = ""
