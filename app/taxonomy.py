@@ -76,10 +76,7 @@ TAXONOMY: List[TaxonomyGroup] = [
             {"name": "リゾートホテル", "icon": "🏖️", "image": "hotel-resort"},
             {"name": "カプセルホテル", "icon": "🛏️", "image": "hotel-capsule"},
             {"name": "旅館", "icon": "🏮", "image": "hotel-ryokan"},
-            {"name": "ゲストハウス", "icon": "🏠"},
-            {"name": "ホステル", "icon": "🛏️"},
-            {"name": "シティホテル", "icon": "🌆"},
-            {"name": "その他（宿泊）", "icon": "🗝️"},
+            {"name": "その他（宿泊）", "icon": "🛎️"},
         ],
     },
     {
