@@ -21,6 +21,7 @@ pydantic[email]>=2.9.2
 openai>=1.6.0
 requests==2.31.0
 vonage==4.8.1
+payjp==1.6.1
 
 # Async & Tasks
 celery==5.3.4

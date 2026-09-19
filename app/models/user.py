@@ -30,9 +30,16 @@ class Tenant(Base):
     # Subscription info
     subscription_status = Column(
         String(50),
-        default="trial",  # trial, active, suspended, cancelled
+        default="trial",  # trial, active, past_due, suspended, cancelled
         nullable=False,
     )
+
+    # PAY.jp 課金情報
+    payjp_customer_id = Column(String(255), nullable=True)
+    payjp_subscription_id = Column(String(255), nullable=True)
+    card_brand = Column(String(50), nullable=True)
+    card_last4 = Column(String(4), nullable=True)
+    setup_fee_paid_at = Column(DateTime, nullable=True)
 
     # 統計情報
     total_users = Column(String(50), default="0", nullable=False)

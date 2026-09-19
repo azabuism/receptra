@@ -18,8 +18,9 @@ from app.schemas.shop import (
     ShopSearchQuery, ShopListResponse, ErrorResponse, ShopHoursResponse,
     ShopUpdateRequest, ShopHoursBulkUpdateRequest
 )
-from app.deps import get_current_user
+from app.deps import get_current_user, get_current_tenant
 from app.schemas.user import CurrentUser
+from app.models.user import Tenant
 from app.taxonomy import resolve_business_type
 
 router = APIRouter(prefix="/api/v1/shops", tags=["shops"])
@@ -169,6 +170,7 @@ async def update_shop(
     shop_id: str,
     request: ShopUpdateRequest,
     current_user: CurrentUser = Depends(get_current_user),
+    tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db)
 ) -> ShopResponse:
     shop = await db.get(Shop, shop_id)
@@ -178,6 +180,17 @@ async def update_shop(
         raise HTTPException(status_code=403, detail="この店舗を編集する権限がありません")
 
     update_data = request.dict(exclude_unset=True)
+
+    # 予約受付をONにする操作は、課金アクティベーション（初期費用＋月額サブスク）が
+    # 済んでいるテナントのみ許可する。既にONの店舗（既存店舗など）はそのまま維持できる。
+    if update_data.get("reservations_enabled") is True and not shop.reservations_enabled:
+        if tenant.subscription_status != "active":
+            raise HTTPException(
+                status_code=402,
+                detail="予約受付を開始するには、お支払い設定（初期費用20,000円・月額5,000円）の完了が必要です。"
+                       "「/api/v1/billing/activate」からお手続きください。",
+            )
+
     for field, value in update_data.items():
         setattr(shop, field, value)
     if "category" in update_data:

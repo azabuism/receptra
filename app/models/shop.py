@@ -95,7 +95,10 @@ class Shop(Base):
     # 営業情報
     is_active = Column(Boolean, default=True, nullable=False)
     is_featured = Column(Boolean, default=False, nullable=False)  # 特集フラグ
-    
+
+    # 予約受付（PAY.jp課金アクティベーション後に有効化。既存店舗はマイグレーションでTrueのまま維持）
+    reservations_enabled = Column(Boolean, default=False, nullable=False)
+
     # 統計情報
     total_reservations = Column(Integer, default=0)
     total_reviews = Column(Integer, default=0)

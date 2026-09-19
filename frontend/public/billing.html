@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192x192.png">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>お支払い設定 - レセプトラ</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://js.pay.jp/v2/pay.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #FF6B35;
+            --primary-light: #ff9500;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --error: #ef4444;
+            --success: #10b981;
+            --border: 1px solid #ddd;
+        }
+        html, body { height: 100%; overflow-x: hidden; max-width: 100%; }
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            line-height: 1.6;
+            display: flex;
+            flex-direction: column;
+            min-height: 100%;
+        }
+        nav {
+            position: sticky; top: 0; z-index: 10;
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            row-gap: 6px;
+            min-height: 60px;
+        }
+        .nav-brand {
+            text-decoration: none;
+            color: var(--primary);
+            font-size: 20px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .nav-logo-img { width: 32px; height: 32px; object-fit: contain; flex-shrink: 0; }
+        .nav-right a { color: var(--dark); text-decoration: none; font-size: 13px; }
+        main { flex: 1; max-width: 480px; margin: 0 auto; padding: 32px 20px 60px; width: 100%; }
+        h1 { font-size: 22px; margin-bottom: 6px; }
+        .subtitle { color: #777; font-size: 14px; margin-bottom: 24px; }
+        .card {
+            background: var(--white);
+            border-radius: 16px;
+            padding: 24px 22px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            margin-bottom: 20px;
+        }
+        .price-summary { margin-bottom: 20px; }
+        .price-row { display: flex; justify-content: space-between; align-items: baseline; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
+        .price-row:last-child { border-bottom: none; }
+        .price-row .label { font-size: 13px; color: #777; }
+        .price-row .value { font-size: 16px; font-weight: 700; }
+        .price-row .value .strike { font-size: 12px; color: #aaa; text-decoration: line-through; font-weight: 400; margin-right: 4px; }
+        .field { margin-bottom: 16px; }
+        .field label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #666; }
+        .card-element-box {
+            padding: 12px 13px;
+            border: 2px solid #eee;
+            border-radius: 8px;
+            background: var(--white);
+        }
+        .card-element-box.StripeElement--focus, .card-element-box.focused { border-color: var(--primary); }
+        .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .btn-cta {
+            display: block; width: 100%; padding: 15px; border: none; border-radius: 24px;
+            font-size: 16px; font-weight: 700; font-family: inherit; cursor: pointer;
+            background: var(--primary); color: var(--white); text-align: center;
+        }
+        .btn-cta:hover { background: var(--primary-dark); }
+        .btn-cta:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-outline {
+            display: block; width: 100%; padding: 13px; border: 2px solid #ddd; border-radius: 24px;
+            font-size: 14px; font-weight: 700; font-family: inherit; cursor: pointer;
+            background: var(--white); color: #999; text-align: center;
+        }
+        .note-box { font-size: 12px; color: #999; margin-top: 14px; line-height: 1.7; }
+        .error-box {
+            background: #fee; color: var(--error); padding: 12px 14px; border-radius: 8px;
+            font-size: 13px; margin-bottom: 16px; display: none;
+        }
+        .status-badge {
+            display: inline-block; font-size: 12px; font-weight: 700; padding: 4px 12px;
+            border-radius: 12px; margin-bottom: 14px;
+        }
+        .status-badge.active { background: #e6f7ec; color: #1a8a4a; }
+        .status-badge.inactive { background: #fff0e6; color: var(--primary-dark); }
+        .card-info { font-size: 14px; color: #555; margin-bottom: 18px; }
+        .legal-links { text-align: center; font-size: 12px; margin-top: 8px; }
+        .legal-links a { color: var(--primary); text-decoration: none; }
+        #loading { text-align: center; padding: 60px 0; color: #999; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/" class="nav-brand"><img src="/images/receptra-logo.png" alt="RECEPTRA Logo" class="nav-logo-img">レセプトラ</a>
+        <div class="nav-right"><a href="owner.html">← オーナーページに戻る</a></div>
+    </nav>
+    <main>
+        <div id="loading">読み込み中…</div>
+
+        <div id="app" style="display:none;">
+            <h1>お支払い設定</h1>
+            <p class="subtitle">予約受付機能をご利用いただくには、お支払い設定が必要です。</p>
+
+            <div id="error-box" class="error-box"></div>
+
+            <!-- すでに有効な場合 -->
+            <div id="active-view" class="card" style="display:none;">
+                <span class="status-badge active">お支払い設定 済み</span>
+                <div class="card-info" id="active-card-info"></div>
+                <button type="button" class="btn-outline" id="cancel-btn">サブスクリプションを解約する</button>
+            </div>
+
+            <!-- 未設定の場合 -->
+            <div id="setup-view" style="display:none;">
+                <div class="card price-summary">
+                    <span class="status-badge inactive">未設定</span>
+                    <div class="price-row">
+                        <span class="label">初期導入費（初回のみ）</span>
+                        <span class="value"><span class="strike">通常40,000円</span>20,000円</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="label">月額利用料</span>
+                        <span class="value">5,000円 / 月</span>
+                    </div>
+                </div>
+
+                <form id="card-form" class="card">
+                    <div class="field">
+                        <label>カード番号</label>
+                        <div id="card-number" class="card-element-box"></div>
+                    </div>
+                    <div class="row-2">
+                        <div class="field">
+                            <label>有効期限</label>
+                            <div id="card-expiry" class="card-element-box"></div>
+                        </div>
+                        <div class="field">
+                            <label>セキュリティコード</label>
+                            <div id="card-cvc" class="card-element-box"></div>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn-cta" id="submit-btn">20,000円を支払い、予約受付を開始する</button>
+                    <div class="note-box">
+                        ・お支払い方法はクレジットカード（PAY.jp決済）です。<br>
+                        ・初期導入費は登録時に一度のみ、月額利用料は毎月自動更新でのお支払いとなります。<br>
+                        ・解約はいつでも可能です。日割りでの返金は行っておりません。<br>
+                        ・カード情報は当社サーバーを経由せず、PAY.jpに直接安全に送信されます。
+                    </div>
+                </form>
+
+                <div class="legal-links">
+                    <a href="receptra-pricing.html">料金プランの詳細</a> ・
+                    <a href="https://www.bariyon.com/tokushoho.html" target="_blank" rel="noopener">特定商取引法に基づく表記</a>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const token = localStorage.getItem('receptra_token');
+        if (!token) {
+            window.location.href = 'owner-login.html';
+        }
+
+        const params = new URLSearchParams(window.location.search);
+        const shopId = params.get('shop_id');
+
+        let payjp, cardNumber, cardExpiry, cardCvc;
+
+        function showError(message) {
+            const box = document.getElementById('error-box');
+            box.textContent = message;
+            box.style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('error-box').style.display = 'none';
+        }
+
+        async function activateShopReservations() {
+            // カード決済成功後、対象店舗があれば予約受付をONにする
+            if (!shopId) return;
+            try {
+                await fetch('/api/v1/shops/' + encodeURIComponent(shopId), {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + token
+                    },
+                    body: JSON.stringify({ reservations_enabled: true })
+                });
+            } catch (err) {
+                console.error('shop activation failed', err);
+            }
+        }
+
+        async function init() {
+            try {
+                const [keyRes, statusRes] = await Promise.all([
+                    fetch('/api/v1/billing/public-key'),
+                    fetch('/api/v1/billing/status', { headers: { 'Authorization': 'Bearer ' + token } })
+                ]);
+
+                if (statusRes.status === 401) {
+                    window.location.href = 'owner-login.html';
+                    return;
+                }
+
+                const keyData = await keyRes.json();
+                const status = await statusRes.json();
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('app').style.display = 'block';
+
+                if (status.is_active) {
+                    document.getElementById('active-view').style.display = 'block';
+                    const cardInfo = status.card_brand
+                        ? ('ご登録のカード: ' + status.card_brand + ' •••• ' + (status.card_last4 || ''))
+                        : 'お支払い設定は有効です。';
+                    document.getElementById('active-card-info').textContent = cardInfo;
+
+                    if (shopId) {
+                        await activateShopReservations();
+                    }
+
+                    document.getElementById('cancel-btn').addEventListener('click', async function () {
+                        if (!confirm('サブスクリプションを解約しますか？解約すると予約受付が停止します。')) return;
+                        try {
+                            const res = await fetch('/api/v1/billing/cancel', {
+                                method: 'POST',
+                                headers: { 'Authorization': 'Bearer ' + token }
+                            });
+                            if (!res.ok) {
+                                const err = await res.json();
+                                throw new Error(err.detail || '解約に失敗しました');
+                            }
+                            alert('解約しました。');
+                            window.location.href = 'owner.html';
+                        } catch (err) {
+                            showError(err.message);
+                        }
+                    });
+                    return;
+                }
+
+                document.getElementById('setup-view').style.display = 'block';
+
+                if (!keyData.public_key) {
+                    showError('決済サービスの設定が完了していません。管理者に連絡してください。');
+                    document.getElementById('submit-btn').disabled = true;
+                    return;
+                }
+
+                payjp = Payjp(keyData.public_key);
+                const elements = payjp.elements();
+                const elementStyle = {
+                    base: { fontSize: '16px', fontFamily: "'M PLUS Rounded 1c', sans-serif", color: '#333' }
+                };
+                cardNumber = elements.create('cardNumber', { style: elementStyle });
+                cardExpiry = elements.create('cardExpiry', { style: elementStyle });
+                cardCvc = elements.create('cardCvc', { style: elementStyle });
+                cardNumber.mount('#card-number');
+                cardExpiry.mount('#card-expiry');
+                cardCvc.mount('#card-cvc');
+
+                document.getElementById('card-form').addEventListener('submit', async function (e) {
+                    e.preventDefault();
+                    hideError();
+                    const submitBtn = document.getElementById('submit-btn');
+                    submitBtn.disabled = true;
+                    submitBtn.textContent = '処理中…';
+
+                    try {
+                        const tokenResponse = await payjp.createToken(cardNumber);
+                        if (tokenResponse.error) {
+                            throw new Error(tokenResponse.error.message || 'カード情報の確認に失敗しました');
+                        }
+
+                        const res = await fetch('/api/v1/billing/activate', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': 'Bearer ' + token
+                            },
+                            body: JSON.stringify({ payjp_token: tokenResponse.id })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) {
+                            throw new Error(data.detail || 'お支払い処理に失敗しました');
+                        }
+
+                        if (shopId) {
+                            await activateShopReservations();
+                        }
+
+                        alert('お支払い設定が完了しました。予約受付が有効になりました。');
+                        window.location.href = shopId ? ('shop-manage.html?id=' + encodeURIComponent(shopId)) : 'owner.html';
+                    } catch (err) {
+                        showError(err.message);
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = '20,000円を支払い、予約受付を開始する';
+                    }
+                });
+            } catch (err) {
+                document.getElementById('loading').textContent = '読み込みに失敗しました。時間をおいて再度お試しください。';
+                console.error(err);
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>

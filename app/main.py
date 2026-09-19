@@ -35,6 +35,7 @@ from app.routers.mypage import router as mypage_router
 from app.routers.coupons import router as coupons_router
 from app.routers.services import router as services_router
 from app.routers.staff import router as staff_router
+from app.routers.billing import router as billing_router, webhook_router as payjp_webhook_router
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -145,6 +146,23 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ reviews.user_id カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # PAY.jp課金連携: テナントの課金情報カラム
+            try:
+                await conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS payjp_customer_id VARCHAR(255)"))
+                await conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS payjp_subscription_id VARCHAR(255)"))
+                await conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS card_brand VARCHAR(50)"))
+                await conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS card_last4 VARCHAR(4)"))
+                await conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS setup_fee_paid_at TIMESTAMP"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ tenants の課金用カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
+            # PAY.jp課金連携: 予約受付ON/OFFカラム。既存店舗は既にサービス提供中のため
+            # デフォルトTrueで追加して維持し、以後の新規登録店舗はアプリ側でFalseを明示的にセットする。
+            try:
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS reservations_enabled BOOLEAN NOT NULL DEFAULT true"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ shops.reservations_enabled カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
             # 既存店舗（旧カテゴリー体系で登録されたもの）を新しいタクソノミーに移行する
             try:
                 from app.taxonomy import LEGACY_CATEGORY_MAP
@@ -214,6 +232,8 @@ def create_app() -> FastAPI:
     app.include_router(services_router)
     app.include_router(staff_router)
     app.include_router(vonage_voice_router)
+    app.include_router(billing_router)
+    app.include_router(payjp_webhook_router)
 
     @app.get("/api/v1/debug/db-status", tags=["debug"])
     async def debug_db_status():

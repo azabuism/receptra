@@ -114,6 +114,26 @@
         .shop-info { flex: 1; min-width: 0; }
         .shop-info .name { font-weight: 700; font-size: 15px; }
         .shop-info .meta { font-size: 12px; color: #888; margin-top: 2px; }
+        .res-badge {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 10px;
+            margin-top: 4px;
+        }
+        .res-badge.on { background: #e6f7ec; color: #1a8a4a; }
+        .res-badge.off { background: #f5f5f5; color: #999; }
+        .res-activate-btn {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--white) !important;
+            background: var(--primary);
+            border-radius: 14px;
+            padding: 5px 12px !important;
+            text-decoration: none;
+        }
+        .res-activate-btn:hover { background: var(--primary-dark); }
         .shop-links { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; flex-shrink: 0; }
         .shop-links a.manage-link { color: #888; font-weight: 400; }
         .shop-links .delete-link {
@@ -374,10 +394,16 @@
                         '<div class="shop-info">' +
                             '<div class="name">' + escapeHtml(shop.name) + '</div>' +
                             '<div class="meta">' + categoryLabel(shop.category) + ' ・ ' + escapeHtml(shop.address) + '</div>' +
+                            (shop.reservations_enabled
+                                ? '<span class="res-badge on">予約受付中</span>'
+                                : '<span class="res-badge off">予約受付 停止中</span>') +
                         '</div>' +
                         '<div class="shop-links">' +
                             '<a href="shop.html?id=' + encodeURIComponent(shop.id) + '">紹介ページを見る →</a>' +
                             '<a href="shop-manage.html?id=' + encodeURIComponent(shop.id) + '" class="manage-link">編集する →</a>' +
+                            (shop.reservations_enabled
+                                ? ''
+                                : '<a href="billing.html?shop_id=' + encodeURIComponent(shop.id) + '" class="res-activate-btn">予約受付を開始する</a>') +
                             '<button type="button" class="delete-link" data-id="' + shop.id + '" data-name="' + escapeHtml(shop.name) + '">削除する</button>' +
                         '</div>' +
                     '</div>';

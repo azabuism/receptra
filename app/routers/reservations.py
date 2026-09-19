@@ -295,6 +295,9 @@ async def create_reservation(
         if not shop or not shop.is_active:
             raise HTTPException(status_code=404, detail="指定された店舗が見つかりません")
 
+        if not shop.reservations_enabled:
+            raise HTTPException(status_code=400, detail="この店舗は現在予約を受け付けていません")
+
         if request.reservation_date <= datetime.utcnow():
             raise HTTPException(status_code=400, detail="過去の日時で予約することはできません")
 

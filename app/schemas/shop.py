@@ -66,6 +66,9 @@ class ShopUpdateRequest(BaseModel):
     cover_image_url: Optional[str] = Field(None, max_length=500)
     features: Optional[List[str]] = None
     reservation_duration_minutes: Optional[int] = Field(None, ge=15, le=600)
+    reservations_enabled: Optional[bool] = Field(
+        None, description="予約受付をON/OFFする。ONにするには課金アクティベーションが必要"
+    )
 
 
 class ShopHoursBulkUpdateRequest(BaseModel):
@@ -91,6 +94,7 @@ class ShopResponse(BaseModel):
     cover_image_url: Optional[str]
     is_active: bool
     is_featured: bool
+    reservations_enabled: bool = False
     total_reservations: Optional[int]
     total_reviews: Optional[int]
     average_rating: Optional[float]
