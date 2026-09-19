@@ -50,11 +50,13 @@
             border-bottom: var(--border);
             padding: 8px 20px;
             display: flex;
+            flex-wrap: wrap;
+            row-gap: 6px;
             justify-content: space-between;
             align-items: center;
             z-index: 100;
             box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
-            height: 60px;
+            min-height: 60px;
         }
 
         .nav-brand {
@@ -84,8 +86,18 @@
 
         .nav-right {
             display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            row-gap: 4px;
             align-items: center;
-            gap: 12px;
+            gap: 8px;
+        }
+
+        #nav-status-label {
+            max-width: 45vw;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .nav-button {
@@ -704,6 +716,17 @@
         }
 
         initAuthNav();
+
+        // ナビが2段に折り返した場合でも本文と重ならないよう、実際の高さに合わせて調整する
+        function adjustMainOffset() {
+            const nav = document.querySelector('nav');
+            const main = document.querySelector('main');
+            if (nav && main) {
+                main.style.marginTop = nav.getBoundingClientRect().height + 'px';
+            }
+        }
+        adjustMainOffset();
+        window.addEventListener('resize', adjustMainOffset);
     </script>
 </body>
 </html>
