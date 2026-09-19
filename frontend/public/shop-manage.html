@@ -136,6 +136,20 @@
         .image-slot-actions .btn-outline { font-size: 11px; padding: 5px 10px; }
         .closure-item { display: flex; justify-content: space-between; align-items: center;
             padding: 12px 14px; border: var(--border); border-radius: 10px; margin-bottom: 8px; gap: 12px; flex-wrap: wrap; }
+        .service-item, .staff-item { padding: 12px 14px; border: var(--border); border-radius: 10px; margin-bottom: 10px; }
+        .service-item .row-top, .staff-item .row-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .service-item .name, .staff-item .name { font-weight: 700; }
+        .service-item .meta, .staff-item .meta { color: #888; font-size: 13px; margin-top: 2px; }
+        .service-item .actions, .staff-item .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+        .inactive-badge { font-size: 11px; background: #f3f4f6; color: #999; padding: 2px 8px; border-radius: 10px; font-weight: 700; }
+        .staff-services-row { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+        .service-chip {
+            font-size: 12px; padding: 4px 10px; border-radius: 12px; border: 1px solid #eee; cursor: pointer;
+            background: #f9f9f9; color: #888; font-family: inherit;
+        }
+        .service-chip.assigned { background: #fff0e6; color: var(--primary-dark); border-color: #ffd8bd; }
+        .subsection-title { font-size: 15px; font-weight: 700; margin: 22px 0 10px; }
+        .subsection-title:first-of-type { margin-top: 0; }
         .menu-category-title { font-size: 14px; font-weight: 700; color: var(--primary-dark); margin: 18px 0 8px; }
         .menu-category-title:first-child { margin-top: 0; }
         .menu-row {
@@ -381,6 +395,76 @@
             <div id="table-list" style="margin-top: 18px;"></div>
         </div>
 
+        <div class="card" id="service-staff-card" style="display: none;">
+            <h2>サービス・スタッフの管理</h2>
+            <p class="hint">
+                美容院・クリニック・スクール・フィットネスなど施術/コース単位で予約を受け付ける業種向けの機能です。
+                サービス（施術・コース）とスタッフを登録すると、お客様の予約フォームで「サービスを選ぶ→スタッフを選ぶ」流れで予約できるようになります。
+            </p>
+
+            <h3 class="subsection-title">サービスメニュー</h3>
+            <form id="service-form">
+                <div class="row-2">
+                    <div class="field">
+                        <label for="service-name">サービス名 *</label>
+                        <input type="text" id="service-name" placeholder="例：カット、初診、体験レッスン" required>
+                    </div>
+                    <div class="field">
+                        <label for="service-type">種別（任意）</label>
+                        <input type="text" id="service-type" placeholder="例：カット、カラー">
+                    </div>
+                </div>
+                <div class="row-2">
+                    <div class="field">
+                        <label for="service-price">料金（円）*</label>
+                        <input type="number" id="service-price" min="0" required>
+                    </div>
+                    <div class="field">
+                        <label for="service-duration">所要時間（分）</label>
+                        <input type="number" id="service-duration" min="1" max="1440" placeholder="例：45">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="service-description">説明</label>
+                    <textarea id="service-description" placeholder="内容や特徴など"></textarea>
+                </div>
+                <button type="submit" class="btn" id="service-add-btn">サービスを追加</button>
+                <div class="msg" id="service-msg"></div>
+            </form>
+            <div id="service-list" style="margin-top: 18px;"></div>
+
+            <h3 class="subsection-title">スタッフ</h3>
+            <form id="staff-form">
+                <div class="row-2">
+                    <div class="field">
+                        <label for="staff-name">氏名 *</label>
+                        <input type="text" id="staff-name" required>
+                    </div>
+                    <div class="field">
+                        <label for="staff-position">職位</label>
+                        <input type="text" id="staff-position" placeholder="例：スタイリスト、担当医、講師">
+                    </div>
+                </div>
+                <div class="row-2">
+                    <div class="field">
+                        <label for="staff-specialty">専門分野</label>
+                        <input type="text" id="staff-specialty" placeholder="例：カット・カラー">
+                    </div>
+                    <div class="field">
+                        <label for="staff-phone">電話番号</label>
+                        <input type="tel" id="staff-phone">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="staff-bio">紹介文</label>
+                    <textarea id="staff-bio" placeholder="経歴やひとことなど"></textarea>
+                </div>
+                <button type="submit" class="btn" id="staff-add-btn">スタッフを登録</button>
+                <div class="msg" id="staff-msg"></div>
+            </form>
+            <div id="staff-list" style="margin-top: 18px;"></div>
+        </div>
+
         <div class="card">
             <h2>予約管理</h2>
             <p class="hint">お客様からのオンライン予約を確認・確定できます。</p>
@@ -463,6 +547,7 @@
         const KIND_LABELS = { exterior: '外観', interior: '内装', other: 'その他' };
         const DAY_NAMES = ['月', '火', '水', '木', '金', '土', '日'];
         const STATUS_LABELS = { pending: '確認待ち', confirmed: '確定', cancelled: 'キャンセル', no_show: '無断キャンセル', completed: '来店済み' };
+        const SERVICE_BASED_TYPES = ['beauty', 'medical', 'education', 'fitness'];
 
         if (!token || !shopId) {
             document.getElementById('gate').style.display = 'block';
@@ -551,6 +636,7 @@
                         document.getElementById('edit-business-type').value = shop.business_type;
                     }
                     populateCategorySelect(shop.business_type, shop.category);
+                    updateServiceStaffVisibility(shop.business_type);
                     document.getElementById('edit-phone').value = shop.phone || '';
                     document.getElementById('edit-address').value = shop.address || '';
                     document.getElementById('edit-email').value = shop.email || '';
@@ -565,6 +651,8 @@
             loadPhotos();
             loadMenu();
             loadTables();
+            await loadServices();
+            loadStaff();
             loadReservations();
             loadClosures();
             loadReviewsManage();
@@ -842,6 +930,262 @@
             }
         }
 
+        // ---------- サービス・スタッフの管理 ----------
+        let servicesCache = [];
+        let staffCache = [];
+
+        function updateServiceStaffVisibility(businessType) {
+            const card = document.getElementById('service-staff-card');
+            card.style.display = SERVICE_BASED_TYPES.indexOf(businessType) !== -1 ? 'block' : 'none';
+        }
+
+        async function loadServices() {
+            const container = document.getElementById('service-list');
+            try {
+                const res = await fetch('/api/v1/services?shop_id=' + encodeURIComponent(shopId));
+                servicesCache = await res.json();
+                renderServiceList();
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        function renderServiceList() {
+            const container = document.getElementById('service-list');
+            if (!servicesCache.length) {
+                container.innerHTML = '<p class="empty-hint">まだサービスが登録されていません</p>';
+                return;
+            }
+            container.innerHTML = servicesCache.map(function (s) {
+                const meta = [
+                    '¥' + Number(s.base_price || 0).toLocaleString(),
+                    s.duration_minutes ? s.duration_minutes + '分' : null,
+                    s.service_type ? escapeHtml(s.service_type) : null
+                ].filter(Boolean).join(' ・ ');
+                return '<div class="service-item">' +
+                    '<div class="row-top">' +
+                        '<div>' +
+                            '<div class="name">' + escapeHtml(s.name) + (s.is_active ? '' : ' <span class="inactive-badge">非公開</span>') + '</div>' +
+                            '<div class="meta">' + meta + '</div>' +
+                        '</div>' +
+                        '<div class="actions">' +
+                            '<button type="button" class="btn-outline service-toggle-btn" data-id="' + s.id + '" data-active="' + s.is_active + '">' +
+                                (s.is_active ? '非公開にする' : '公開する') + '</button>' +
+                            '<button type="button" class="btn-outline btn-danger service-delete-btn" data-id="' + s.id + '">削除</button>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+            }).join('');
+            container.querySelectorAll('.service-toggle-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    toggleServiceActive(btn.dataset.id, btn.dataset.active !== 'true');
+                });
+            });
+            container.querySelectorAll('.service-delete-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () { deleteService(btn.dataset.id); });
+            });
+        }
+
+        document.getElementById('service-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('service-msg');
+            const btn = document.getElementById('service-add-btn');
+            const durationVal = document.getElementById('service-duration').value;
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/services', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        shop_id: shopId,
+                        name: document.getElementById('service-name').value.trim(),
+                        base_price: parseFloat(document.getElementById('service-price').value),
+                        duration_minutes: durationVal ? parseInt(durationVal, 10) : null,
+                        service_type: document.getElementById('service-type').value.trim() || null,
+                        description: document.getElementById('service-description').value.trim() || null
+                    })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '追加に失敗しました');
+                }
+                showMsg(msg, 'サービスを追加しました', 'success');
+                document.getElementById('service-form').reset();
+                await loadServices();
+                renderStaffList();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '追加に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        async function toggleServiceActive(serviceId, nextActive) {
+            try {
+                await authFetch('/api/v1/services/' + encodeURIComponent(serviceId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ is_active: nextActive })
+                });
+                loadServices();
+            } catch (e) {}
+        }
+
+        async function deleteService(serviceId) {
+            if (!confirm('このサービスを削除しますか？スタッフへの割り当ても解除されます。')) return;
+            const msg = document.getElementById('service-msg');
+            try {
+                const res = await authFetch('/api/v1/services/' + encodeURIComponent(serviceId), { method: 'DELETE' });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '削除に失敗しました');
+                }
+                await loadServices();
+                loadStaff();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
+            }
+        }
+
+        async function loadStaff() {
+            const container = document.getElementById('staff-list');
+            try {
+                const res = await fetch('/api/v1/staff?shop_id=' + encodeURIComponent(shopId));
+                staffCache = await res.json();
+                await Promise.all(staffCache.map(async function (st) {
+                    try {
+                        const r = await fetch('/api/v1/staff/' + encodeURIComponent(st.id) + '/services');
+                        st._services = r.ok ? await r.json() : [];
+                    } catch (e) {
+                        st._services = [];
+                    }
+                }));
+                renderStaffList();
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        function renderStaffList() {
+            const container = document.getElementById('staff-list');
+            if (!staffCache.length) {
+                container.innerHTML = '<p class="empty-hint">まだスタッフが登録されていません</p>';
+                return;
+            }
+            container.innerHTML = staffCache.map(function (st) {
+                const meta = [st.position, st.specialty].filter(Boolean).map(escapeHtml).join(' ・ ');
+                const assignedIds = (st._services || []).map(function (x) { return x.service_id; });
+                const chips = servicesCache.length
+                    ? '<div class="staff-services-row">' + servicesCache.map(function (svc) {
+                        const assigned = assignedIds.indexOf(svc.id) !== -1;
+                        return '<button type="button" class="service-chip' + (assigned ? ' assigned' : '') + '" ' +
+                            'data-staff-id="' + st.id + '" data-svc-id="' + svc.id + '" data-assigned="' + assigned + '">' +
+                            (assigned ? '✓ ' : '+ ') + escapeHtml(svc.name) + '</button>';
+                    }).join('') + '</div>'
+                    : '<p class="empty-hint" style="padding: 6px 0 0;">先にサービスを登録すると、担当サービスを設定できます</p>';
+                return '<div class="staff-item">' +
+                    '<div class="row-top">' +
+                        '<div>' +
+                            '<div class="name">' + escapeHtml(st.name) + (st.is_active ? '' : ' <span class="inactive-badge">非公開</span>') + '</div>' +
+                            '<div class="meta">' + meta + '</div>' +
+                        '</div>' +
+                        '<div class="actions">' +
+                            '<button type="button" class="btn-outline staff-toggle-btn" data-id="' + st.id + '" data-active="' + st.is_active + '">' +
+                                (st.is_active ? '非公開にする' : '公開する') + '</button>' +
+                            '<button type="button" class="btn-outline btn-danger staff-delete-btn" data-id="' + st.id + '">削除</button>' +
+                        '</div>' +
+                    '</div>' +
+                    chips +
+                '</div>';
+            }).join('');
+            container.querySelectorAll('.staff-toggle-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    toggleStaffActive(btn.dataset.id, btn.dataset.active !== 'true');
+                });
+            });
+            container.querySelectorAll('.staff-delete-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () { deleteStaff(btn.dataset.id); });
+            });
+            container.querySelectorAll('.service-chip').forEach(function (chip) {
+                chip.addEventListener('click', function () {
+                    toggleStaffService(chip.dataset.staffId, chip.dataset.svcId, chip.dataset.assigned === 'true');
+                });
+            });
+        }
+
+        document.getElementById('staff-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('staff-msg');
+            const btn = document.getElementById('staff-add-btn');
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/staff', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        shop_id: shopId,
+                        name: document.getElementById('staff-name').value.trim(),
+                        position: document.getElementById('staff-position').value.trim() || null,
+                        specialty: document.getElementById('staff-specialty').value.trim() || null,
+                        phone: document.getElementById('staff-phone').value.trim() || null,
+                        bio: document.getElementById('staff-bio').value.trim() || null
+                    })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '登録に失敗しました');
+                }
+                showMsg(msg, 'スタッフを登録しました', 'success');
+                document.getElementById('staff-form').reset();
+                loadStaff();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '登録に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        async function toggleStaffActive(staffId, nextActive) {
+            try {
+                await authFetch('/api/v1/staff/' + encodeURIComponent(staffId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ is_active: nextActive })
+                });
+                loadStaff();
+            } catch (e) {}
+        }
+
+        async function deleteStaff(staffId) {
+            if (!confirm('このスタッフを削除しますか？')) return;
+            const msg = document.getElementById('staff-msg');
+            try {
+                const res = await authFetch('/api/v1/staff/' + encodeURIComponent(staffId), { method: 'DELETE' });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '削除に失敗しました');
+                }
+                loadStaff();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
+            }
+        }
+
+        async function toggleStaffService(staffId, serviceId, currentlyAssigned) {
+            try {
+                if (currentlyAssigned) {
+                    await authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/services/' + encodeURIComponent(serviceId), {
+                        method: 'DELETE'
+                    });
+                } else {
+                    await authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/services/' + encodeURIComponent(serviceId), {
+                        method: 'POST'
+                    });
+                }
+                loadStaff();
+            } catch (e) {}
+        }
+
         // ---------- 予約管理 ----------
         function formatReservationDate(iso) {
             const d = new Date(iso);
@@ -945,6 +1289,7 @@
                 }
                 const shop = await res.json();
                 document.getElementById('shop-name-title').textContent = shop.name + ' の管理';
+                updateServiceStaffVisibility(shop.business_type);
                 showMsg(msg, '保存しました', 'success');
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
