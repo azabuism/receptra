@@ -42,7 +42,7 @@ TAXONOMY: List[TaxonomyGroup] = [
             {"name": "焼肉", "icon": "🥩", "image": "restaurant-yakiniku"},
             {"name": "カフェ", "icon": "☕", "image": "restaurant-cafe"},
             {"name": "居酒屋", "icon": "🍺", "image": "restaurant-izakaya"},
-            {"name": "バー", "icon": "🍸"},
+            {"name": "バー", "icon": "🍸", "image": "restaurant-bar"},
             {"name": "ハンバーガー", "icon": "🍔", "image": "restaurant-hamburger"},
             {"name": "ステーキ", "icon": "🥩", "image": "restaurant-steak"},
             {"name": "パン屋", "icon": "🥐", "image": "restaurant-bakery"},
