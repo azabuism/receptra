@@ -173,20 +173,19 @@
                 </div>
                 <div class="row-2">
                     <div class="field">
-                        <label for="edit-category">カテゴリ *</label>
-                        <select id="edit-category" required>
-                            <option value="RESTAURANT">飲食店</option>
-                            <option value="CAFE">カフェ</option>
-                            <option value="RAMEN">ラーメン</option>
-                            <option value="SUSHI">寿司</option>
-                            <option value="IZAKAYA">居酒屋</option>
-                            <option value="BAR">バー</option>
-                            <option value="BEAUTY">美容</option>
-                            <option value="SALON">サロン</option>
-                            <option value="CLINIC">クリニック</option>
-                            <option value="OTHER">その他</option>
+                        <label for="edit-business-type">業種 *</label>
+                        <select id="edit-business-type" required>
+                            <option value="">選択してください</option>
                         </select>
                     </div>
+                    <div class="field">
+                        <label for="edit-category">詳細カテゴリー *</label>
+                        <select id="edit-category" required>
+                            <option value="">先に業種を選択してください</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="row-2">
                     <div class="field">
                         <label for="edit-phone">電話番号</label>
                         <input type="tel" id="edit-phone">
@@ -451,7 +450,48 @@
             return res;
         }
 
+        // ---------- カテゴリー分類（業種→詳細カテゴリー） ----------
+        let taxonomyGroups = [];
+
+        async function loadTaxonomy() {
+            try {
+                const res = await fetch('/api/v1/taxonomy');
+                const data = await res.json();
+                taxonomyGroups = data.groups || [];
+                const businessTypeSelect = document.getElementById('edit-business-type');
+                businessTypeSelect.innerHTML = '<option value="">選択してください</option>' +
+                    taxonomyGroups.map(function (g) {
+                        return '<option value="' + g.key + '">' + (g.icon || '') + ' ' + escapeHtml(g.title) + '</option>';
+                    }).join('');
+            } catch (e) {
+                // タクソノミーの取得に失敗しても編集フォーム自体は使えるようにしておく
+            }
+        }
+
+        function populateCategorySelect(businessTypeKey, selectedCategory) {
+            const group = taxonomyGroups.find(function (g) { return g.key === businessTypeKey; });
+            const categorySelect = document.getElementById('edit-category');
+            if (!group) {
+                categorySelect.innerHTML = '<option value="">先に業種を選択してください</option>';
+                return;
+            }
+            categorySelect.innerHTML = group.items.map(function (item) {
+                const selected = item.name === selectedCategory ? ' selected' : '';
+                return '<option value="' + escapeHtml(item.name) + '"' + selected + '>' + (item.icon || '') + ' ' + escapeHtml(item.name) + '</option>';
+            }).join('');
+            // 既存のカテゴリー値がこの業種の選択肢に含まれていない場合（未知の値など）は先頭に追加しておく
+            if (selectedCategory && !group.items.some(function (item) { return item.name === selectedCategory; })) {
+                categorySelect.insertAdjacentHTML('afterbegin',
+                    '<option value="' + escapeHtml(selectedCategory) + '" selected>' + escapeHtml(selectedCategory) + '</option>');
+            }
+        }
+
+        document.getElementById('edit-business-type').addEventListener('change', function () {
+            populateCategorySelect(this.value, null);
+        });
+
         async function init() {
+            await loadTaxonomy();
             try {
                 const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId));
                 if (res.ok) {
@@ -460,7 +500,10 @@
                     document.getElementById('features-input').value = (shop.features || []).join(', ');
 
                     document.getElementById('edit-name').value = shop.name || '';
-                    document.getElementById('edit-category').value = shop.category || 'OTHER';
+                    if (shop.business_type) {
+                        document.getElementById('edit-business-type').value = shop.business_type;
+                    }
+                    populateCategorySelect(shop.business_type, shop.category);
                     document.getElementById('edit-phone').value = shop.phone || '';
                     document.getElementById('edit-address').value = shop.address || '';
                     document.getElementById('edit-email').value = shop.email || '';

@@ -186,20 +186,19 @@
                 </div>
                 <div class="row-2">
                     <div class="field">
-                        <label for="shop-category">カテゴリ *</label>
-                        <select id="shop-category" required>
-                            <option value="RESTAURANT">飲食店</option>
-                            <option value="CAFE">カフェ</option>
-                            <option value="RAMEN">ラーメン</option>
-                            <option value="SUSHI">寿司</option>
-                            <option value="IZAKAYA">居酒屋</option>
-                            <option value="BAR">バー</option>
-                            <option value="BEAUTY">美容</option>
-                            <option value="SALON">サロン</option>
-                            <option value="CLINIC">クリニック</option>
-                            <option value="OTHER">その他</option>
+                        <label for="shop-business-type">業種 *</label>
+                        <select id="shop-business-type" required>
+                            <option value="">選択してください</option>
                         </select>
                     </div>
+                    <div class="field">
+                        <label for="shop-category">詳細カテゴリー *</label>
+                        <select id="shop-category" required>
+                            <option value="">先に業種を選択してください</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="row-2">
                     <div class="field">
                         <label for="shop-phone">電話番号</label>
                         <input type="tel" id="shop-phone">
@@ -260,12 +259,43 @@
                 document.getElementById('user-label').textContent = (user.display_name || user.email || '') + ' さん';
             } catch (e) {}
             loadShops();
+            loadTaxonomy();
         }
 
         document.getElementById('logout-btn').addEventListener('click', function () {
             localStorage.removeItem('receptra_token');
             localStorage.removeItem('receptra_user');
             window.location.href = '/';
+        });
+
+        // ---------- カテゴリー分類（業種→詳細カテゴリー） ----------
+        let taxonomyGroups = [];
+
+        async function loadTaxonomy() {
+            try {
+                const res = await fetch('/api/v1/taxonomy');
+                const data = await res.json();
+                taxonomyGroups = data.groups || [];
+                const businessTypeSelect = document.getElementById('shop-business-type');
+                businessTypeSelect.innerHTML = '<option value="">選択してください</option>' +
+                    taxonomyGroups.map(function (g) {
+                        return '<option value="' + g.key + '">' + (g.icon || '') + ' ' + escapeHtml(g.title) + '</option>';
+                    }).join('');
+            } catch (e) {
+                // タクソノミーの取得に失敗しても登録フォーム自体は使えるようにしておく
+            }
+        }
+
+        document.getElementById('shop-business-type').addEventListener('change', function () {
+            const group = taxonomyGroups.find(function (g) { return g.key === this.value; }, this);
+            const categorySelect = document.getElementById('shop-category');
+            if (!group) {
+                categorySelect.innerHTML = '<option value="">先に業種を選択してください</option>';
+                return;
+            }
+            categorySelect.innerHTML = group.items.map(function (item) {
+                return '<option value="' + escapeHtml(item.name) + '">' + (item.icon || '') + ' ' + escapeHtml(item.name) + '</option>';
+            }).join('');
         });
 
         function categoryLabel(cat) {

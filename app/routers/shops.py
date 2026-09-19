@@ -20,6 +20,7 @@ from app.schemas.shop import (
 )
 from app.deps import get_current_user
 from app.schemas.user import CurrentUser
+from app.taxonomy import resolve_business_type
 
 router = APIRouter(prefix="/api/v1/shops", tags=["shops"])
 
@@ -68,6 +69,7 @@ async def register_shop(
             name=request.name,
             description=request.description,
             category=request.category,
+            business_type=resolve_business_type(request.category),
             address=request.address,
             latitude=request.latitude,
             longitude=request.longitude,
@@ -178,6 +180,8 @@ async def update_shop(
     update_data = request.dict(exclude_unset=True)
     for field, value in update_data.items():
         setattr(shop, field, value)
+    if "category" in update_data:
+        shop.business_type = resolve_business_type(update_data["category"])
     shop.updated_at = datetime.utcnow()
 
     await db.commit()
@@ -265,7 +269,9 @@ async def delete_shop(
 )
 async def search_shops(
     keyword: Optional[str] = Query(None, description="キーワード検索"),
-    category: Optional[str] = Query(None, description="カテゴリフィルタ"),
+    category: Optional[str] = Query(None, description="カテゴリフィルタ（サブカテゴリー名の完全一致）"),
+    business_type: Optional[str] = Query(None, description="業種フィルタ（restaurant, beauty, hotel, education, medical, fitness, entertainment, other）"),
+    location: Optional[str] = Query(None, description="住所の部分一致検索（都道府県名・市区町村名など）"),
     latitude: Optional[float] = Query(None, description="検索中心点の緯度"),
     longitude: Optional[float] = Query(None, description="検索中心点の経度"),
     radius_km: float = Query(5.0, ge=0.1, le=50, description="検索半径（km）"),
@@ -279,7 +285,9 @@ async def search_shops(
     店舗を検索します
     
     - **keyword**: キーワード検索（店舗名、説明から検索）
-    - **category**: カテゴリでフィルタ（例：RESTAURANT）
+    - **category**: 詳細サブカテゴリーでフィルタ（例：ラーメン）
+    - **business_type**: 業種（大分類）でフィルタ（例：restaurant）
+    - **location**: 住所の部分一致検索（例：東京都、渋谷区）
     - **latitude/longitude**: GPS座標で近くの店舗を検索
     - **radius_km**: 検索半径（デフォルト5km）
     - **min_rating**: 最小評価でフィルタ
@@ -299,10 +307,18 @@ async def search_shops(
                 )
             )
         
-        # カテゴリフィルタ
+        # カテゴリフィルタ（サブカテゴリー完全一致）
         if category:
             stmt = stmt.filter(Shop.category == category)
-        
+
+        # 業種フィルタ（大分類）
+        if business_type:
+            stmt = stmt.filter(Shop.business_type == business_type)
+
+        # 住所の部分一致検索（都道府県・市区町村など）
+        if location:
+            stmt = stmt.filter(Shop.address.ilike(f"%{location}%"))
+
         # 最小評価フィルタ
         if min_rating is not None:
             stmt = stmt.filter(Shop.average_rating >= min_rating)

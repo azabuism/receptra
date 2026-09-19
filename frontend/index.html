@@ -625,20 +625,16 @@
 
         function handleSearch(event) {
             event.preventDefault();
-            const shopName = document.getElementById('shop-name').value;
-            const location = document.getElementById('location').value;
+            const shopName = document.getElementById('shop-name').value.trim();
+            const location = document.getElementById('location').value.trim();
             const serviceType = document.getElementById('service-type').value;
 
-            // クエリパラメータで検索結果ページへ遷移
-            const params = new URLSearchParams({
-                shop: shopName,
-                location: location,
-                type: serviceType
-            });
+            const params = new URLSearchParams();
+            if (shopName) params.set('shopName', shopName);
+            if (location) params.set('location', location);
+            if (serviceType) params.set('businessType', serviceType);
 
-            // 実際の検索結果ページへ遷移
-            // window.location.href = `receptra-results.html?${params.toString()}`;
-            alert(`検索内容:\nお店:${shopName || 'すべて'}\n場所:${location || 'すべて'}\nサービス:${serviceType || 'すべて'}`);
+            window.location.href = `receptra-results.html?${params.toString()}`;
         }
     </script>
 </body>

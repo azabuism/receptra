@@ -80,6 +80,7 @@ class ShopResponse(BaseModel):
     name: str
     description: Optional[str]
     category: str
+    business_type: Optional[str] = None
     address: str
     latitude: Optional[float]
     longitude: Optional[float]

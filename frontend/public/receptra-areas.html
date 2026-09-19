@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>エリア選択 - レセプトラ</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'メイリオ', Meiryo, sans-serif;
+            background: linear-gradient(135deg, #FF6B35 0%, #ff9500 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .breadcrumb {
+            margin-bottom: 30px;
+        }
+
+        .breadcrumb a {
+            color: white;
+            text-decoration: none;
+            font-size: 14px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            opacity: 0.9;
+            transition: opacity 0.3s;
+        }
+
+        .breadcrumb a:hover {
+            opacity: 1;
+        }
+
+        .breadcrumb span {
+            color: white;
+            opacity: 0.7;
+            margin: 0 10px;
+        }
+
+        .current {
+            color: white;
+            font-size: 14px;
+            display: inline;
+        }
+
+        .region-section {
+            margin-bottom: 40px;
+        }
+
+        .region-title {
+            color: white;
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .prefecture-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 12px;
+        }
+
+        .prefecture-btn {
+            background: white;
+            border: none;
+            border-radius: 12px;
+            padding: 16px 12px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            color: #333;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            display: block;
+        }
+
+        .prefecture-btn:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+            background: #f0f0f0;
+        }
+
+        .prefecture-btn.active {
+            background: linear-gradient(135deg, #FF6B35 0%, #e66d00 100%);
+            color: white;
+        }
+
+        .search-section {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 40px;
+            backdrop-filter: blur(10px);
+        }
+
+        .search-section h3 {
+            color: white;
+            margin-bottom: 20px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            font-size: 14px;
+            background: white;
+            color: #333;
+        }
+
+        .search-input::placeholder {
+            color: #999;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: white;
+            box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+        }
+
+        .search-button {
+            width: 100%;
+            padding: 12px 16px;
+            margin-top: 12px;
+            background: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            color: #e66d00;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .search-button:hover {
+            background: #f0f0f0;
+            transform: translateY(-2px);
+        }
+
+        .footer {
+            background: rgba(0, 0, 0, 0.1);
+            color: white;
+            padding: 30px 20px;
+            text-align: center;
+            border-radius: 12px;
+            margin-top: 50px;
+        }
+
+        .footer a {
+            color: white;
+            text-decoration: none;
+            margin: 0 15px;
+            font-size: 14px;
+            opacity: 0.8;
+            transition: opacity 0.3s;
+        }
+
+        .footer a:hover {
+            opacity: 1;
+            text-decoration: underline;
+        }
+
+        @media (max-width: 768px) {
+            .prefecture-grid {
+                grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+                gap: 10px;
+            }
+
+            .prefecture-btn {
+                padding: 14px 10px;
+                font-size: 13px;
+            }
+
+            .header h1 {
+                font-size: 24px;
+            }
+
+            .search-section {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- ロゴナビゲーション -->
+    <div style="position: fixed; top: 20px; left: 20px; z-index: 1000;">
+        <a href="/" style="display: flex; align-items: center; gap: 8px; text-decoration: none;">
+            <img src="/images/receptra-logo.png" alt="RECEPTRA Logo" style="width: 48px; height: 48px;">
+        </a>
+    </div>
+
+    <div class="container">
+        <div class="breadcrumb">
+            <a href="/">← ホーム</a>
+            <span>/</span>
+            <span class="current">エリアから検索</span>
+        </div>
+
+        <div class="header">
+            <h1>エリアから検索</h1>
+            <p>都道府県を選択してサービスを探す</p>
+        </div>
+
+        <div class="search-section">
+            <h3>📍 フリーワード検索</h3>
+            <input
+                type="text"
+                id="location-search"
+                class="search-input"
+                placeholder="例：東京都渋谷区、大阪市北区、福岡県..."
+                value=""
+            >
+            <button class="search-button" onclick="searchByFreeword()">この場所で検索</button>
+        </div>
+
+        <!-- Hokkaido/Tohoku -->
+        <div class="region-section">
+            <div class="region-title">🌏 北海道・東北</div>
+            <div class="prefecture-grid">
+                <button class="prefecture-btn" onclick="searchByArea('北海道')">北海道</button>
+                <button class="prefecture-btn" onclick="searchByArea('青森県')">青森県</button>
+                <button class="prefecture-btn" onclick="searchByArea('岩手県')">岩手県</button>
+                <button class="prefecture-btn" onclick="searchByArea('宮城県')">宮城県</button>
+                <button class="prefecture-btn" onclick="searchByArea('秋田県')">秋田県</button>
+                <button class="prefecture-btn" onclick="searchByArea('山形県')">山形県</button>
+                <button class="prefecture-btn" onclick="searchByArea('福島県')">福島県</button>
+            </div>
+        </div>
+
+        <!-- Kanto -->
+        <div class="region-section">
+            <div class="region-title">🗼 関東</div>
+            <div class="prefecture-grid">
+                <button class="prefecture-btn" onclick="searchByArea('茨城県')">茨城県</button>
+                <button class="prefecture-btn" onclick="searchByArea('栃木県')">栃木県</button>
+                <button class="prefecture-btn" onclick="searchByArea('群馬県')">群馬県</button>
+                <button class="prefecture-btn" onclick="searchByArea('埼玉県')">埼玉県</button>
+                <button class="prefecture-btn" onclick="searchByArea('千葉県')">千葉県</button>
+                <button class="prefecture-btn" onclick="searchByArea('東京都')">東京都</button>
+                <button class="prefecture-btn" onclick="searchByArea('神奈川県')">神奈川県</button>
+            </div>
+        </div>
+
+        <!-- Chubu -->
+        <div class="region-section">
+            <div class="region-title">🏔️ 中部</div>
+            <div class="prefecture-grid">
+                <button class="prefecture-btn" onclick="searchByArea('新潟県')">新潟県</button>
+                <button class="prefecture-btn" onclick="searchByArea('富山県')">富山県</button>
+                <button class="prefecture-btn" onclick="searchByArea('石川県')">石川県</button>
+                <button class="prefecture-btn" onclick="searchByArea('福井県')">福井県</button>
+                <button class="prefecture-btn" onclick="searchByArea('山梨県')">山梨県</button>
+                <button class="prefecture-btn" onclick="searchByArea('長野県')">長野県</button>
+                <button class="prefecture-btn" onclick="searchByArea('岐阜県')">岐阜県</button>
+                <button class="prefecture-btn" onclick="searchByArea('愛知県')">愛知県</button>
+                <button class="prefecture-btn" onclick="searchByArea('三重県')">三重県</button>
+            </div>
+        </div>
+
+        <!-- Kansai -->
+        <div class="region-section">
+            <div class="region-title">⛩️ 関西</div>
+            <div class="prefecture-grid">
+                <button class="prefecture-btn" onclick="searchByArea('滋賀県')">滋賀県</button>
+                <button class="prefecture-btn" onclick="searchByArea('京都府')">京都府</button>
+                <button class="prefecture-btn" onclick="searchByArea('大阪府')">大阪府</button>
+                <button class="prefecture-btn" onclick="searchByArea('兵庫県')">兵庫県</button>
+                <button class="prefecture-btn" onclick="searchByArea('奈良県')">奈良県</button>
+                <button class="prefecture-btn" onclick="searchByArea('和歌山県')">和歌山県</button>
+            </div>
+        </div>
+
+        <!-- Chugoku -->
+        <div class="region-section">
+            <div class="region-title">🏞️ 中国</div>
+            <div class="prefecture-grid">
+                <button class="prefecture-btn" onclick="searchByArea('鳥取県')">鳥取県</button>
+                <button class="prefecture-btn" onclick="searchByArea('島根県')">島根県</button>
+                <button class="prefecture-btn" onclick="searchByArea('岡山県')">岡山県</button>
+                <button class="prefecture-btn" onclick="searchByArea('広島県')">広島県</button>
+                <button class="prefecture-btn" onclick="searchByArea('山口県')">山口県</button>
+            </div>
+        </div>
+
+        <!-- Shikoku -->
+        <div class="region-section">
+            <div class="region-title">🌊 四国</div>
+            <div class="prefecture-grid">
+                <button class="prefecture-btn" onclick="searchByArea('徳島県')">徳島県</button>
+                <button class="prefecture-btn" onclick="searchByArea('香川県')">香川県</button>
+                <button class="prefecture-btn" onclick="searchByArea('愛媛県')">愛媛県</button>
+                <button class="prefecture-btn" onclick="searchByArea('高知県')">高知県</button>
+            </div>
+        </div>
+
+        <!-- Kyushu/Okinawa -->
+        <div class="region-section">
+            <div class="region-title">🌴 九州・沖縄</div>
+            <div class="prefecture-grid">
+                <button class="prefecture-btn" onclick="searchByArea('福岡県')">福岡県</button>
+                <button class="prefecture-btn" onclick="searchByArea('佐賀県')">佐賀県</button>
+                <button class="prefecture-btn" onclick="searchByArea('長崎県')">長崎県</button>
+                <button class="prefecture-btn" onclick="searchByArea('熊本県')">熊本県</button>
+                <button class="prefecture-btn" onclick="searchByArea('大分県')">大分県</button>
+                <button class="prefecture-btn" onclick="searchByArea('宮崎県')">宮崎県</button>
+                <button class="prefecture-btn" onclick="searchByArea('鹿児島県')">鹿児島県</button>
+                <button class="prefecture-btn" onclick="searchByArea('沖縄県')">沖縄県</button>
+            </div>
+        </div>
+
+        <div class="footer">
+            <a href="https://www.bariyon.com/privacy.html" target="_blank">プライバシーポリシー</a>
+            <a href="https://www.bariyon.com/terms.html" target="_blank">利用規約</a>
+            <a href="https://www.bariyon.com/contact.html" target="_blank">お問い合わせ</a>
+        </div>
+    </div>
+
+    <script>
+        // Handle prefecture button click
+        function searchByArea(prefecture) {
+            // Store search parameters
+            const searchParams = new URLSearchParams({
+                location: prefecture,
+                searchType: 'area'
+            });
+
+            // Navigate to results page
+            window.location.href = `receptra-results.html?${searchParams.toString()}`;
+        }
+
+        // Handle freeword search
+        function searchByFreeword() {
+            const locationInput = document.getElementById('location-search');
+            const location = locationInput.value.trim();
+
+            if (!location) {
+                alert('場所を入力してください');
+                return;
+            }
+
+            const searchParams = new URLSearchParams({
+                location: location,
+                searchType: 'freeword'
+            });
+
+            window.location.href = `receptra-results.html?${searchParams.toString()}`;
+        }
+
+        // Allow Enter key to search
+        document.getElementById('location-search').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                searchByFreeword();
+            }
+        });
+
+        // Initialize prefectures from URL if present
+        function initializeFromURL() {
+            const params = new URLSearchParams(window.location.search);
+            const selectedArea = params.get('area');
+
+            if (selectedArea) {
+                const buttons = document.querySelectorAll('.prefecture-btn');
+                buttons.forEach(btn => {
+                    if (btn.textContent === selectedArea) {
+                        btn.classList.add('active');
+                    }
+                });
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', initializeFromURL);
+    </script>
+</body>
+</html>

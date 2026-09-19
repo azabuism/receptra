@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>カテゴリーから探す - レセプトラ</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #FF6B35;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --border: 1px solid #ddd;
+        }
+        html, body { height: 100%; }
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            line-height: 1.6;
+        }
+        nav {
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 60px;
+        }
+        .nav-brand { text-decoration: none; color: var(--primary); font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+        .nav-right a { color: var(--dark); text-decoration: none; font-size: 13px; }
+        main { max-width: 960px; margin: 0 auto; padding: 32px 20px 100px; }
+        .breadcrumb { font-size: 13px; color: #999; margin-bottom: 18px; }
+        .breadcrumb a { color: #999; text-decoration: none; }
+        .breadcrumb a:hover { color: var(--primary); }
+        .header-icon { font-size: 40px; margin-bottom: 8px; }
+        h1 { font-size: 24px; margin-bottom: 6px; }
+        .subtitle { color: #777; font-size: 14px; margin-bottom: 28px; }
+        .subcategories-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 16px;
+        }
+        .subcategory-card {
+            background: var(--white);
+            border-radius: 14px;
+            overflow: hidden;
+            text-align: center;
+            text-decoration: none;
+            color: inherit;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+            transition: transform 0.2s, box-shadow 0.2s;
+            display: flex;
+            flex-direction: column;
+        }
+        .subcategory-card:hover { transform: translateY(-4px); box-shadow: 0 8px 20px rgba(0,0,0,0.1); }
+        .subcategory-icon-image { width: 100%; height: 100px; object-fit: cover; display: block; background: #f0f0f0; }
+        .subcategory-icon-emoji { font-size: 40px; padding: 28px 0 10px; }
+        .subcategory-body { padding: 10px 8px 16px; }
+        .subcategory-name { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+        .subcategory-count { font-size: 12px; color: #999; }
+        .empty-state { text-align: center; color: #999; padding: 60px 20px; grid-column: 1 / -1; }
+        .loading-state { text-align: center; color: #999; padding: 60px 20px; grid-column: 1 / -1; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/" class="nav-brand">∞ レセプトラ</a>
+        <div class="nav-right"><a href="/">← ホームに戻る</a></div>
+    </nav>
+    <main>
+        <div class="breadcrumb">
+            <a href="/">ホーム</a> / <a href="/#categories-grid">カテゴリー</a> / <span id="breadcrumb-category">読み込み中…</span>
+        </div>
+        <div class="header-icon" id="category-icon"></div>
+        <h1 id="category-title">読み込み中…</h1>
+        <p class="subtitle" id="category-description"></p>
+        <div class="subcategories-grid" id="subcategories-container">
+            <div class="loading-state">読み込み中…</div>
+        </div>
+    </main>
+
+    <script>
+        function getBusinessTypeFromURL() {
+            const params = new URLSearchParams(window.location.search);
+            return params.get('category') || 'restaurant';
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str || '';
+            return div.innerHTML;
+        }
+
+        async function fetchCount(businessType, subcategoryName) {
+            try {
+                const params = new URLSearchParams({ business_type: businessType, category: subcategoryName, limit: '1' });
+                const res = await fetch('/api/v1/shops/search?' + params.toString());
+                if (!res.ok) return 0;
+                const data = await res.json();
+                return data.total || 0;
+            } catch (e) {
+                return 0;
+            }
+        }
+
+        async function init() {
+            const businessType = getBusinessTypeFromURL();
+            let groups;
+            try {
+                const res = await fetch('/api/v1/taxonomy');
+                const data = await res.json();
+                groups = data.groups;
+            } catch (e) {
+                showErrorState();
+                return;
+            }
+
+            const group = groups.find(function (g) { return g.key === businessType; });
+            if (!group) {
+                showErrorState();
+                return;
+            }
+
+            document.title = group.title + ' - レセプトラ';
+            document.getElementById('category-icon').textContent = group.icon || '';
+            document.getElementById('category-title').textContent = group.title;
+            document.getElementById('category-description').textContent = group.description || '';
+            document.getElementById('breadcrumb-category').textContent = group.title;
+
+            const container = document.getElementById('subcategories-container');
+            container.innerHTML = group.items.map(function (item) {
+                const iconHtml = item.image
+                    ? '<picture>' +
+                        '<source srcset="/images/categories/' + item.image + '.webp" type="image/webp">' +
+                        '<img class="subcategory-icon-image" src="/images/categories/' + item.image + '.jpg" alt="' + escapeHtml(item.name) + '" loading="lazy">' +
+                      '</picture>'
+                    : '<div class="subcategory-icon-emoji">' + (item.icon || '') + '</div>';
+                const href = 'receptra-results.html?businessType=' + encodeURIComponent(businessType) +
+                    '&category=' + encodeURIComponent(item.name);
+                return '<a href="' + href + '" class="subcategory-card" data-subcategory="' + escapeHtml(item.name) + '">' +
+                    iconHtml +
+                    '<div class="subcategory-body">' +
+                        '<div class="subcategory-name">' + escapeHtml(item.name) + '</div>' +
+                        '<div class="subcategory-count" data-count-for="' + escapeHtml(item.name) + '">…</div>' +
+                    '</div>' +
+                '</a>';
+            }).join('');
+
+            // 実際の件数を非同期で取得して反映する（並列取得）
+            group.items.forEach(function (item) {
+                fetchCount(businessType, item.name).then(function (count) {
+                    const el = container.querySelector('[data-count-for="' + CSS.escape(item.name) + '"]');
+                    if (el) el.textContent = count + '件';
+                });
+            });
+        }
+
+        function showErrorState() {
+            document.getElementById('category-title').textContent = 'カテゴリーが見つかりません';
+            document.getElementById('category-icon').textContent = '';
+            document.getElementById('breadcrumb-category').textContent = 'エラー';
+            document.getElementById('subcategories-container').innerHTML =
+                '<div class="empty-state">指定されたカテゴリーは見つかりませんでした。<br><a href="/">ホームに戻る</a></div>';
+        }
+
+        init();
+    </script>
+</body>
+</html>

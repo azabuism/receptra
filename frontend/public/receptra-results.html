@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>検索結果 - レセプトラ</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #FF6B35;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --border: 1px solid #ddd;
+        }
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, var(--primary) 0%, #ff9500 100%);
+            color: white;
+            padding: 28px 20px;
+        }
+        .header-inner { max-width: 1100px; margin: 0 auto; }
+        .breadcrumb { margin-bottom: 14px; font-size: 13px; }
+        .breadcrumb a { color: rgba(255,255,255,0.85); text-decoration: none; }
+        .breadcrumb a:hover { opacity: 1; text-decoration: underline; }
+        .breadcrumb span { color: rgba(255,255,255,0.6); margin: 0 6px; }
+        .search-title { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+        .search-subtitle { font-size: 13px; opacity: 0.9; }
+
+        .container { max-width: 1100px; margin: 0 auto; padding: 24px 20px 100px; }
+
+        .filters-section {
+            background: var(--white); border-radius: 12px; padding: 16px 20px; margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.06); display: none;
+        }
+        .filter-group { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        .filter-item {
+            background: #fff0e6; color: var(--primary-dark); padding: 6px 12px; border-radius: 16px;
+            font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;
+        }
+        .filter-remove { cursor: pointer; opacity: 0.6; }
+        .filter-remove:hover { opacity: 1; }
+
+        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+        .result-count { font-size: 14px; color: #666; font-weight: 700; }
+        .sort-buttons { display: flex; gap: 6px; }
+        .sort-btn {
+            padding: 6px 14px; border-radius: 16px; border: var(--border); background: var(--white);
+            font-size: 12px; font-family: inherit; cursor: pointer; color: #666;
+        }
+        .sort-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+
+        .results-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; }
+        .result-card {
+            background: var(--white); border-radius: 14px; overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.06); text-decoration: none; color: inherit;
+            display: flex; flex-direction: column; transition: transform 0.15s, box-shadow 0.15s;
+        }
+        .result-card:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,0.1); }
+        .result-image {
+            width: 100%; height: 130px; background: #f0f0f0; background-size: cover; background-position: center;
+            display: flex; align-items: center; justify-content: center; font-size: 40px; color: #ccc;
+        }
+        .result-content { padding: 14px; flex: 1; display: flex; flex-direction: column; }
+        .result-name { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+        .result-category { font-size: 12px; color: var(--primary-dark); margin-bottom: 4px; }
+        .result-address { font-size: 12px; color: #888; margin-bottom: 8px; flex: 1; }
+        .result-rating { font-size: 12px; color: #666; margin-bottom: 10px; }
+        .result-rating .stars { color: #fbbf24; letter-spacing: 1px; }
+        .result-btn {
+            display: inline-block; text-align: center; padding: 8px; border-radius: 18px;
+            background: var(--primary); color: white; font-size: 13px; font-weight: 700; text-decoration: none;
+        }
+        .result-btn:hover { background: var(--primary-dark); }
+
+        .empty-state, .loading-state { text-align: center; padding: 80px 20px; color: #999; grid-column: 1 / -1; }
+        .empty-state-icon { font-size: 40px; margin-bottom: 12px; }
+        .empty-state a { color: var(--primary); font-weight: 700; text-decoration: none; }
+
+        .pagination { display: flex; justify-content: center; gap: 6px; margin-top: 30px; flex-wrap: wrap; }
+        .pagination button {
+            padding: 8px 14px; border-radius: 8px; border: var(--border); background: var(--white);
+            font-family: inherit; font-size: 13px; cursor: pointer; color: #666;
+        }
+        .pagination button.active { background: var(--primary); color: white; border-color: var(--primary); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-inner">
+            <div class="breadcrumb">
+                <a href="/">ホーム</a><span>/</span><span id="breadcrumb-current">検索結果</span>
+            </div>
+            <div class="search-title" id="search-title">検索結果</div>
+            <div class="search-subtitle" id="search-subtitle"></div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="filters-section" id="filters-section">
+            <div class="filter-group" id="filters-group"></div>
+        </div>
+
+        <div class="toolbar">
+            <div class="result-count" id="result-count"></div>
+            <div class="sort-buttons">
+                <button class="sort-btn active" data-sort="rating" onclick="changeSort('rating')">評価順</button>
+                <button class="sort-btn" data-sort="new" onclick="changeSort('new')">新着順</button>
+                <button class="sort-btn" data-sort="popular" onclick="changeSort('popular')">人気順</button>
+            </div>
+        </div>
+
+        <div class="results-grid" id="results-grid">
+            <div class="loading-state">読み込み中…</div>
+        </div>
+
+        <div class="pagination" id="pagination"></div>
+    </div>
+
+    <script>
+        const CATEGORY_LABELS = {
+            RESTAURANT: '飲食店', CAFE: 'カフェ', RAMEN: 'ラーメン', SUSHI: '寿司',
+            IZAKAYA: '居酒屋', BAR: 'バー', BEAUTY: '美容', SALON: 'サロン',
+            CLINIC: 'クリニック', OTHER: 'その他'
+        };
+        const PAGE_SIZE = 12;
+        let currentSort = 'rating';
+        let currentOffset = 0;
+        let lastTotal = 0;
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str || '';
+            return div.innerHTML;
+        }
+
+        function getSearchParams() {
+            const params = new URLSearchParams(window.location.search);
+            return {
+                businessType: params.get('businessType') || '',
+                category: params.get('category') || '',
+                location: params.get('location') || '',
+                shopName: params.get('shopName') || ''
+            };
+        }
+
+        async function fetchResults() {
+            const params = getSearchParams();
+            const grid = document.getElementById('results-grid');
+            grid.innerHTML = '<div class="loading-state">読み込み中…</div>';
+
+            const apiParams = new URLSearchParams({
+                sort_by: currentSort,
+                limit: String(PAGE_SIZE),
+                offset: String(currentOffset)
+            });
+            if (params.businessType) apiParams.set('business_type', params.businessType);
+            if (params.category) apiParams.set('category', params.category);
+            if (params.location) apiParams.set('location', params.location);
+            if (params.shopName) apiParams.set('keyword', params.shopName);
+
+            try {
+                const res = await fetch('/api/v1/shops/search?' + apiParams.toString());
+                if (!res.ok) throw new Error('検索に失敗しました');
+                const data = await res.json();
+                lastTotal = data.total || 0;
+                renderResults(data.items || [], params);
+                renderPagination();
+            } catch (e) {
+                grid.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⚠️</div><p>検索に失敗しました。時間をおいて再度お試しください。</p></div>';
+            }
+        }
+
+        function renderResults(items, params) {
+            updateHeader(params, lastTotal);
+
+            const grid = document.getElementById('results-grid');
+            if (!items.length) {
+                grid.innerHTML =
+                    '<div class="empty-state">' +
+                        '<div class="empty-state-icon">🔍</div>' +
+                        '<h2 style="font-size:16px;margin-bottom:8px;">検索結果がありません</h2>' +
+                        '<p>条件に合致するお店が見つかりませんでした。</p>' +
+                        '<p style="margin-top:12px;"><a href="/">ホームに戻る</a></p>' +
+                    '</div>';
+                return;
+            }
+
+            grid.innerHTML = items.map(function (shop) {
+                const image = shop.cover_image_url || shop.thumbnail_url;
+                const imageStyle = image ? ' style="background-image: url(\'' + image.replace(/'/g, '') + '\')"' : '';
+                const imageContent = image ? '' : '🏪';
+                const categoryLabel = CATEGORY_LABELS[shop.category] || shop.category;
+                const rating = shop.average_rating || 0;
+                const fullStars = Math.round(rating);
+                const stars = '★★★★★'.slice(0, fullStars) + '☆☆☆☆☆'.slice(0, 5 - fullStars);
+                const ratingText = rating > 0
+                    ? stars + ' ' + rating.toFixed(1) + '（' + (shop.total_reviews || 0) + '件）'
+                    : 'レビューなし';
+                return '<a href="shop.html?id=' + encodeURIComponent(shop.id) + '" class="result-card">' +
+                    '<div class="result-image"' + imageStyle + '>' + imageContent + '</div>' +
+                    '<div class="result-content">' +
+                        '<div class="result-name">' + escapeHtml(shop.name) + '</div>' +
+                        '<div class="result-category">' + escapeHtml(categoryLabel) + '</div>' +
+                        '<div class="result-address">' + escapeHtml(shop.address) + '</div>' +
+                        '<div class="result-rating"><span class="stars">' + stars + '</span> ' +
+                            (rating > 0 ? rating.toFixed(1) + '（' + (shop.total_reviews || 0) + '件）' : 'レビューなし') +
+                        '</div>' +
+                        '<span class="result-btn">お店を見る</span>' +
+                    '</div>' +
+                '</a>';
+            }).join('');
+        }
+
+        function updateHeader(params, count) {
+            let title = '検索結果';
+            let breadcrumb = '検索結果';
+
+            if (params.category) {
+                title = params.category + 'の検索結果';
+                breadcrumb = params.category;
+            } else if (params.businessType) {
+                title = '検索結果';
+                breadcrumb = '検索結果';
+            } else if (params.location) {
+                title = params.location + 'での検索結果';
+                breadcrumb = params.location;
+            } else if (params.shopName) {
+                title = '「' + params.shopName + '」の検索結果';
+                breadcrumb = '「' + params.shopName + '」';
+            }
+
+            document.getElementById('search-title').textContent = title;
+            document.getElementById('breadcrumb-current').textContent = breadcrumb;
+            document.getElementById('search-subtitle').textContent = count + '件のお店が見つかりました';
+            document.getElementById('result-count').textContent = count + '件の検索結果';
+
+            updateFiltersDisplay(params);
+        }
+
+        function updateFiltersDisplay(params) {
+            const filtersSection = document.getElementById('filters-section');
+            const filtersGroup = document.getElementById('filters-group');
+
+            const filters = [];
+            if (params.businessType) filters.push({ label: '業種：' + params.businessType, type: 'businessType' });
+            if (params.category) filters.push({ label: params.category, type: 'category' });
+            if (params.location) filters.push({ label: '📍 ' + params.location, type: 'location' });
+            if (params.shopName) filters.push({ label: '「' + params.shopName + '」', type: 'shopName' });
+
+            if (filters.length > 0) {
+                filtersSection.style.display = 'block';
+                filtersGroup.innerHTML = filters.map(function (filter) {
+                    return '<div class="filter-item">' + escapeHtml(filter.label) +
+                        '<span class="filter-remove" data-remove="' + filter.type + '">✕</span></div>';
+                }).join('');
+                filtersGroup.querySelectorAll('[data-remove]').forEach(function (el) {
+                    el.addEventListener('click', function () { removeFilter(el.dataset.remove); });
+                });
+            } else {
+                filtersSection.style.display = 'none';
+            }
+        }
+
+        function removeFilter(type) {
+            const newParams = new URLSearchParams(window.location.search);
+            newParams.delete(type);
+            window.location.search = newParams.toString() ? '?' + newParams.toString() : '';
+        }
+
+        function changeSort(type) {
+            currentSort = type;
+            currentOffset = 0;
+            document.querySelectorAll('.sort-btn').forEach(function (btn) {
+                btn.classList.toggle('active', btn.dataset.sort === type);
+            });
+            fetchResults();
+        }
+
+        function renderPagination() {
+            const pagination = document.getElementById('pagination');
+            const totalPages = Math.ceil(lastTotal / PAGE_SIZE);
+            const currentPage = Math.floor(currentOffset / PAGE_SIZE) + 1;
+            if (totalPages <= 1) {
+                pagination.innerHTML = '';
+                return;
+            }
+            let html = '';
+            if (currentPage > 1) {
+                html += '<button data-page="' + (currentPage - 1) + '">← 前へ</button>';
+            }
+            for (let i = Math.max(1, currentPage - 2); i <= Math.min(totalPages, currentPage + 2); i++) {
+                html += '<button class="' + (i === currentPage ? 'active' : '') + '" data-page="' + i + '">' + i + '</button>';
+            }
+            if (currentPage < totalPages) {
+                html += '<button data-page="' + (currentPage + 1) + '">次へ →</button>';
+            }
+            pagination.innerHTML = html;
+            pagination.querySelectorAll('button[data-page]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    currentOffset = (parseInt(btn.dataset.page, 10) - 1) * PAGE_SIZE;
+                    fetchResults();
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                });
+            });
+        }
+
+        fetchResults();
+    </script>
+</body>
+</html>

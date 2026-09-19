@@ -29,6 +29,7 @@ from app.routers.customers import router as customers_router
 from app.routers.shop_tables import router as shop_tables_router
 from app.routers.shop_closures import router as shop_closures_router
 from app.routers.shop_images import router as shop_images_router, media_router as shop_images_files_router
+from app.routers.taxonomy import router as taxonomy_router
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -99,6 +100,27 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ shops の画像用カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # 業種（business_type）カラム：カテゴリーのタクソノミー導入に伴う追加
+            try:
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS business_type VARCHAR(50)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shops_business_type ON shops (business_type)"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ business_type カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
+            # 既存店舗（旧カテゴリー体系で登録されたもの）を新しいタクソノミーに移行する
+            try:
+                from app.taxonomy import LEGACY_CATEGORY_MAP
+                for old_value, (business_type, new_category) in LEGACY_CATEGORY_MAP.items():
+                    await conn.execute(
+                        text(
+                            "UPDATE shops SET business_type = :business_type, category = :new_category "
+                            "WHERE business_type IS NULL AND category = :old_value"
+                        ),
+                        {"business_type": business_type, "new_category": new_category, "old_value": old_value},
+                    )
+            except Exception as migrate_err:
+                logger.warning(f"⚠️ 既存店舗のカテゴリー移行に失敗しました: {migrate_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 
@@ -147,6 +169,7 @@ def create_app() -> FastAPI:
     app.include_router(shop_closures_router)
     app.include_router(shop_images_router)
     app.include_router(shop_images_files_router)
+    app.include_router(taxonomy_router)
     app.include_router(vonage_voice_router)
 
     @app.get("/api/v1/debug/db-status", tags=["debug"])
