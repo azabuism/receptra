@@ -399,6 +399,53 @@
         </div>
 
         <div class="card">
+            <h2>口コミ管理</h2>
+            <p class="hint">お客様からの口コミを確認し、返信できます。</p>
+            <div id="review-manage-list" style="margin-top: 14px;"></div>
+        </div>
+
+        <div class="card">
+            <h2>クーポン管理</h2>
+            <p class="hint">お客様のマイページに表示されるクーポンを作成できます。</p>
+            <form id="coupon-form">
+                <div class="row-3">
+                    <div class="field">
+                        <label for="coupon-code">クーポンコード</label>
+                        <input type="text" id="coupon-code" placeholder="例：WELCOME10" required>
+                    </div>
+                    <div class="field">
+                        <label for="coupon-discount-type">割引タイプ</label>
+                        <select id="coupon-discount-type">
+                            <option value="percentage">割引率（%）</option>
+                            <option value="fixed">割引額（円）</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="coupon-discount-value">割引の値</label>
+                        <input type="number" id="coupon-discount-value" min="1" required>
+                    </div>
+                </div>
+                <div class="row-2">
+                    <div class="field">
+                        <label for="coupon-start">開始日</label>
+                        <input type="date" id="coupon-start" required>
+                    </div>
+                    <div class="field">
+                        <label for="coupon-end">終了日</label>
+                        <input type="date" id="coupon-end" required>
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="coupon-description">説明</label>
+                    <input type="text" id="coupon-description" placeholder="例：全メニュー10%オフ">
+                </div>
+                <button type="submit" class="btn" id="coupon-add-btn">クーポンを作成</button>
+                <div class="msg" id="coupon-msg"></div>
+            </form>
+            <div id="coupon-list" style="margin-top: 18px;"></div>
+        </div>
+
+        <div class="card">
             <h2>店舗の削除</h2>
             <p class="hint">この店舗と、登録されている写真・メニュー・営業時間などをすべて削除します。この操作は取り消せません。</p>
             <button type="button" class="btn-outline btn-danger" id="delete-shop-btn">この店舗を削除する</button>
@@ -520,6 +567,8 @@
             loadTables();
             loadReservations();
             loadClosures();
+            loadReviewsManage();
+            loadCoupons();
         }
 
         // ---------- 画像設定（ロゴ・サムネイル・カバー） ----------
@@ -1129,6 +1178,155 @@
                 loadMenu();
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '追加に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // ---------- 口コミ管理 ----------
+        async function loadReviewsManage() {
+            const container = document.getElementById('review-manage-list');
+            try {
+                const res = await fetch('/api/v1/reviews/shop/' + encodeURIComponent(shopId));
+                if (!res.ok) throw new Error();
+                const reviews = await res.json();
+                if (!reviews.length) {
+                    container.innerHTML = '<p class="empty-state">まだ口コミはありません。</p>';
+                    return;
+                }
+                container.innerHTML = reviews.map(function (r) {
+                    const fullStars = Math.round(r.overall_rating || 0);
+                    const stars = '★★★★★'.slice(0, fullStars) + '☆☆☆☆☆'.slice(0, 5 - fullStars);
+                    const date = r.created_at ? new Date(r.created_at).toLocaleDateString('ja-JP') : '';
+                    const replyBlock = r.shop_response
+                        ? '<div class="msg success" style="display:block; margin-top:10px;"><strong>返信済み：</strong>' + escapeHtml(r.shop_response) + '</div>'
+                        : '<div class="row-2" style="margin-top:10px; align-items:end;">' +
+                            '<div class="field" style="margin-bottom:0;">' +
+                                '<label>返信する</label>' +
+                                '<input type="text" class="review-reply-input" data-id="' + r.id + '" placeholder="お客様への返信メッセージ">' +
+                            '</div>' +
+                            '<button type="button" class="btn-outline review-reply-btn" data-id="' + r.id + '" style="height:40px;">返信を送る</button>' +
+                        '</div>';
+                    return '<div class="table-item" style="display:block;">' +
+                        '<div class="res-main">' +
+                            '<span class="review-stars" style="color:#fbbf24;">' + stars + '</span>' +
+                            ' <span class="res-date" style="color:#999; font-size:12px;">' + date + '</span>' +
+                            (r.title ? '<div style="font-weight:700; margin-top:4px;">' + escapeHtml(r.title) + '</div>' : '') +
+                            (r.comment ? '<div style="margin-top:2px;">' + escapeHtml(r.comment) + '</div>' : '') +
+                            replyBlock +
+                        '</div>' +
+                    '</div>';
+                }).join('');
+
+                container.querySelectorAll('.review-reply-btn').forEach(function (btn) {
+                    btn.addEventListener('click', async function () {
+                        const reviewId = btn.dataset.id;
+                        const input = container.querySelector('.review-reply-input[data-id="' + reviewId + '"]');
+                        const text = (input.value || '').trim();
+                        if (!text) {
+                            alert('返信内容を入力してください');
+                            return;
+                        }
+                        btn.disabled = true;
+                        try {
+                            const res = await authFetch('/api/v1/reviews/' + encodeURIComponent(reviewId) + '/reply', {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ shop_response: text })
+                            });
+                            if (!res.ok) {
+                                const errData = await res.json().catch(function () { return {}; });
+                                throw new Error(errData.detail || '返信に失敗しました');
+                            }
+                            loadReviewsManage();
+                        } catch (err) {
+                            alert(typeof err.message === 'string' ? err.message : '返信に失敗しました');
+                            btn.disabled = false;
+                        }
+                    });
+                });
+            } catch (err) {
+                container.innerHTML = '<p class="empty-state">口コミを読み込めませんでした。</p>';
+            }
+        }
+
+        // ---------- クーポン管理 ----------
+        async function loadCoupons() {
+            const container = document.getElementById('coupon-list');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/coupons');
+                if (!res.ok) throw new Error();
+                const coupons = await res.json();
+                if (!coupons.length) {
+                    container.innerHTML = '<p class="empty-state">まだクーポンはありません。</p>';
+                    return;
+                }
+                container.innerHTML = coupons.map(function (c) {
+                    const value = c.discount_type === 'percentage' ? c.discount_value + '%OFF' : '¥' + c.discount_value.toLocaleString() + ' OFF';
+                    const period = new Date(c.start_date).toLocaleDateString('ja-JP') + ' 〜 ' + new Date(c.end_date).toLocaleDateString('ja-JP');
+                    const statusBadge = c.is_active
+                        ? '<span class="status-badge confirmed">利用可能</span>'
+                        : '<span class="status-badge cancelled">停止中</span>';
+                    return '<div class="table-item">' +
+                        '<div class="res-main">' +
+                            '<span class="name">' + escapeHtml(c.code) + '</span>　' +
+                            statusBadge + '　' +
+                            '<span class="capacity">' + value + '</span>' +
+                            (c.description ? '<div class="res-note">' + escapeHtml(c.description) + '</div>' : '') +
+                            '<div class="res-note">' + period + '（利用回数: ' + c.usage_count + (c.usage_limit ? ' / ' + c.usage_limit : '') + '）</div>' +
+                        '</div>' +
+                        (c.is_active ? '<button type="button" class="btn-outline btn-danger coupon-deactivate-btn" data-id="' + c.id + '">停止する</button>' : '') +
+                    '</div>';
+                }).join('');
+
+                container.querySelectorAll('.coupon-deactivate-btn').forEach(function (btn) {
+                    btn.addEventListener('click', async function () {
+                        if (!confirm('このクーポンを停止しますか？')) return;
+                        try {
+                            const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/coupons/' + encodeURIComponent(btn.dataset.id) + '/deactivate', {
+                                method: 'PUT'
+                            });
+                            if (!res.ok) throw new Error();
+                            loadCoupons();
+                        } catch (err) {
+                            alert('停止に失敗しました');
+                        }
+                    });
+                });
+            } catch (err) {
+                container.innerHTML = '<p class="empty-state">クーポンを読み込めませんでした。</p>';
+            }
+        }
+
+        document.getElementById('coupon-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const btn = document.getElementById('coupon-add-btn');
+            const msg = document.getElementById('coupon-msg');
+            msg.style.display = 'none';
+            btn.disabled = true;
+            try {
+                const startDate = document.getElementById('coupon-start').value;
+                const endDate = document.getElementById('coupon-end').value;
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/coupons', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        code: document.getElementById('coupon-code').value,
+                        description: document.getElementById('coupon-description').value || null,
+                        discount_type: document.getElementById('coupon-discount-type').value,
+                        discount_value: parseFloat(document.getElementById('coupon-discount-value').value),
+                        start_date: startDate + 'T00:00:00',
+                        end_date: endDate + 'T23:59:59'
+                    })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'クーポンの作成に失敗しました');
+                showMsg(msg, 'クーポンを作成しました', 'success');
+                document.getElementById('coupon-form').reset();
+                document.getElementById('coupon-discount-type').value = 'percentage';
+                loadCoupons();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : 'クーポンの作成に失敗しました', 'error');
             } finally {
                 btn.disabled = false;
             }

@@ -19,7 +19,8 @@ class Review(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     shop_id = Column(String(36), ForeignKey("shops.id"), nullable=False, index=True)
-    customer_id = Column(String(36), ForeignKey("customers.id"), nullable=False, index=True)
+    customer_id = Column(String(36), ForeignKey("customers.id"), nullable=True, index=True)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)  # マイページからの投稿はこちらを使用（customer_id は店舗側CRMのレガシー用）
     reservation_id = Column(String(36), ForeignKey("reservations.id"), nullable=True)
 
     # レビュー内容
@@ -54,12 +55,14 @@ class Review(Base):
     # リレーション
     shop = relationship("Shop", back_populates="reviews")
     customer = relationship("Customer", back_populates="reviews")
+    user = relationship("User", foreign_keys=[user_id])
     reservation = relationship("Reservation", foreign_keys=[reservation_id])
 
     # インデックス
     __table_args__ = (
         Index("ix_reviews_shop", "shop_id"),
         Index("ix_reviews_customer", "customer_id"),
+        Index("ix_reviews_user", "user_id"),
         Index("ix_reviews_overall_rating", "overall_rating"),
         Index("ix_reviews_is_verified", "is_verified"),
     )

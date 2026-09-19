@@ -17,6 +17,8 @@ from app.schemas.user import CurrentUser
 
 # セキュリティスキーム
 security = HTTPBearer()
+# Authorization ヘッダーが無くても 401 にせず None を返す（オプション認証用）
+optional_security = HTTPBearer(auto_error=False)
 
 
 async def get_db() -> AsyncSession:
@@ -126,7 +128,7 @@ async def get_current_tenant(
 
 
 async def get_optional_current_user(
-    credentials: Optional[Any] = Depends(security),
+    credentials: Optional[Any] = Depends(optional_security),
     db: AsyncSession = Depends(get_db),
 ) -> Optional[CurrentUser]:
     """

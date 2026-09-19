@@ -30,6 +30,7 @@ class Reservation(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     shop_id = Column(String(36), ForeignKey("shops.id"), nullable=False, index=True)
     customer_id = Column(String(36), ForeignKey("customers.id"), nullable=True, index=True)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)  # ログイン中のプラットフォームアカウント（マイページの「よく行く店」集計に使用）
     staff_id = Column(String(36), ForeignKey("staff.id"), nullable=True)  # スタッフ指名（オプション）
     table_id = Column(String(36), ForeignKey("shop_tables.id"), nullable=True)  # 割り当てられたテーブル
 
@@ -88,6 +89,7 @@ class Reservation(Base):
         Index("ix_reservations_date", "reservation_date"),
         Index("ix_reservations_status", "status"),
         Index("ix_reservations_staff", "staff_id"),
+        Index("ix_reservations_user", "user_id"),
     )
 
     def __repr__(self):

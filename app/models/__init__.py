@@ -24,6 +24,9 @@ from app.models.review import Review
 # Promotion & Coupon models
 from app.models.promotion import Promotion, Coupon, PromotionType
 
+# Social models (マイページ: 行きたい店・いいね)
+from app.models.social import UserShopRelation
+
 # Analytics models
 from app.models.analytics import ShopAnalytics, MonthlyAnalytics
 
@@ -61,7 +64,10 @@ __all__ = [
     "Promotion",
     "Coupon",
     "PromotionType",
-    
+
+    # Social
+    "UserShopRelation",
+
     # Analytics
     "ShopAnalytics",
     "MonthlyAnalytics",

@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>マイページ - レセプトラ</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #FF6B35;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --border: 1px solid #eee;
+        }
+        html, body { height: 100%; }
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            line-height: 1.6;
+        }
+        nav {
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 60px;
+        }
+        .nav-brand { text-decoration: none; color: var(--primary); font-size: 20px; font-weight: 700; }
+        .nav-right a { color: var(--dark); text-decoration: none; font-size: 13px; margin-left: 14px; }
+        main { max-width: 860px; margin: 0 auto; padding: 28px 20px 100px; }
+        .greeting { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+        .subtitle { color: #777; font-size: 14px; margin-bottom: 24px; }
+        .stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
+        .stat-box {
+            background: var(--white); border-radius: 14px; padding: 16px; text-align: center;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+        }
+        .stat-box .num { font-size: 26px; font-weight: 700; color: var(--primary-dark); }
+        .stat-box .label { font-size: 12px; color: #888; margin-top: 2px; }
+        @media (max-width: 480px) { .stat-row { grid-template-columns: repeat(3, 1fr); gap: 8px; } .stat-box { padding: 10px 6px; } .stat-box .num { font-size: 20px; } }
+        .card {
+            background: var(--white); border-radius: 16px; padding: 24px; margin-bottom: 20px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+        }
+        .card h2 {
+            font-size: 17px; margin-bottom: 14px; border-left: 4px solid var(--primary); padding-left: 10px;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .empty-hint { color: #aaa; font-size: 13px; padding: 6px 0; }
+        .shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
+        .shop-card { text-decoration: none; color: inherit; display: block; }
+        .shop-thumb {
+            width: 100%; aspect-ratio: 4/3; border-radius: 10px; background: #f0f0f0 center/cover no-repeat;
+            margin-bottom: 6px;
+        }
+        .shop-card .sname { font-size: 13px; font-weight: 700; }
+        .shop-card .scat { font-size: 11px; color: #999; }
+        .shop-card .svisit { font-size: 11px; color: var(--primary-dark); font-weight: 700; }
+        .review-item { padding: 14px 0; border-top: 1px solid #f2f2f2; }
+        .review-item:first-child { border-top: none; padding-top: 0; }
+        .review-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+        .review-shop-name { font-weight: 700; font-size: 14px; }
+        .review-stars { color: #fbbf24; font-size: 13px; }
+        .review-date { font-size: 12px; color: #999; }
+        .review-comment { font-size: 14px; margin-top: 2px; }
+        .shop-reply {
+            margin-top: 8px; background: #fff7f2; border-radius: 10px; padding: 8px 12px; font-size: 13px;
+        }
+        .shop-reply .reply-label { font-weight: 700; color: var(--primary-dark); margin-bottom: 2px; }
+        .coupon-item {
+            border: 2px dashed #ffd0b0; border-radius: 12px; padding: 14px; margin-bottom: 10px;
+            display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
+        }
+        .coupon-item .cvalue { font-size: 20px; font-weight: 700; color: var(--primary-dark); }
+        .coupon-item .ccode { font-size: 13px; color: #666; }
+        .coupon-item .cshop { font-size: 12px; color: #999; margin-top: 2px; }
+        #loading, #gate { text-align: center; padding: 100px 20px; color: #999; }
+        #gate { display: none; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/" class="nav-brand">∞ レセプトラ</a>
+        <div class="nav-right">
+            <a href="#" id="logout-link">ログアウト</a>
+        </div>
+    </nav>
+
+    <div id="loading">読み込み中…</div>
+    <div id="gate"><p>ログインが必要です。移動します…</p></div>
+
+    <main id="app" style="display:none;">
+        <div class="greeting" id="greeting">マイページ</div>
+        <div class="subtitle">よく行くお店や口コミ、使えるクーポンをまとめて確認できます。</div>
+
+        <div class="stat-row">
+            <div class="stat-box"><div class="num" id="stat-like">0</div><div class="label">いいねした数</div></div>
+            <div class="stat-box"><div class="num" id="stat-want">0</div><div class="label">行きたいお店</div></div>
+            <div class="stat-box"><div class="num" id="stat-review">0</div><div class="label">投稿した口コミ</div></div>
+        </div>
+
+        <div class="card">
+            <h2>🏠 よく行くお店</h2>
+            <div class="shop-grid" id="frequent-shops"></div>
+        </div>
+
+        <div class="card">
+            <h2>🔖 行きたいお店</h2>
+            <div class="shop-grid" id="want-shops"></div>
+        </div>
+
+        <div class="card">
+            <h2>❤️ いいねしたお店</h2>
+            <div class="shop-grid" id="liked-shops"></div>
+        </div>
+
+        <div class="card" id="pending-review-card" style="display:none;">
+            <h2>✍️ 口コミを書いてみませんか？</h2>
+            <p class="subtitle" style="margin-bottom:14px;">来店済みでまだ口コミを投稿していないお店です</p>
+            <div class="shop-grid" id="pending-review-shops"></div>
+        </div>
+
+        <div class="card">
+            <h2>🎟️ 使えるクーポン</h2>
+            <div id="coupon-list"></div>
+        </div>
+
+        <div class="card">
+            <h2>📝 自分の口コミ</h2>
+            <div id="review-list"></div>
+        </div>
+    </main>
+
+    <script>
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str || '';
+            return div.innerHTML;
+        }
+
+        function getToken() {
+            return localStorage.getItem('receptra_customer_token');
+        }
+
+        const token = getToken();
+        if (!token) {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('gate').style.display = 'block';
+            window.location.href = 'user-login.html';
+        } else {
+            loadSummary();
+        }
+
+        document.getElementById('logout-link').addEventListener('click', function (e) {
+            e.preventDefault();
+            localStorage.removeItem('receptra_customer_token');
+            localStorage.removeItem('receptra_customer_user');
+            window.location.href = '/';
+        });
+
+        function shopCard(shop, extra) {
+            const thumb = shop.thumbnail_url ? "style=\"background-image:url('" + shop.thumbnail_url.replace(/'/g, '') + "')\"" : '';
+            return '<a class="shop-card" href="shop.html?id=' + encodeURIComponent(shop.id) + '">' +
+                '<div class="shop-thumb" ' + thumb + '></div>' +
+                '<div class="sname">' + escapeHtml(shop.name) + '</div>' +
+                '<div class="scat">' + escapeHtml(shop.category || '') + '</div>' +
+                (extra || '') +
+            '</a>';
+        }
+
+        function renderShopGrid(elId, shops, extraFn) {
+            const el = document.getElementById(elId);
+            if (!shops || !shops.length) {
+                el.innerHTML = '<p class="empty-hint">まだありません</p>';
+                return;
+            }
+            el.innerHTML = shops.map(function (s) { return shopCard(s, extraFn ? extraFn(s) : ''); }).join('');
+        }
+
+        async function loadSummary() {
+            try {
+                const res = await fetch('/api/v1/mypage/summary', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (res.status === 401) {
+                    localStorage.removeItem('receptra_customer_token');
+                    localStorage.removeItem('receptra_customer_user');
+                    window.location.href = 'user-login.html';
+                    return;
+                }
+                if (!res.ok) throw new Error();
+                const data = await res.json();
+                render(data);
+            } catch (err) {
+                document.getElementById('loading').textContent = 'マイページを読み込めませんでした。';
+            }
+        }
+
+        function render(data) {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('app').style.display = 'block';
+
+            document.getElementById('greeting').textContent =
+                (data.display_name ? data.display_name + 'さんの' : '') + 'マイページ';
+
+            document.getElementById('stat-like').textContent = data.like_count || 0;
+            document.getElementById('stat-want').textContent = (data.want_to_go_shops || []).length;
+            document.getElementById('stat-review').textContent = (data.my_reviews || []).length;
+
+            renderShopGrid('frequent-shops', data.frequent_shops, function (s) {
+                return s.visit_count ? '<div class="svisit">' + s.visit_count + '回来店</div>' : '';
+            });
+            renderShopGrid('want-shops', data.want_to_go_shops);
+            renderShopGrid('liked-shops', data.liked_shops);
+
+            if (data.pending_review_shops && data.pending_review_shops.length) {
+                document.getElementById('pending-review-card').style.display = 'block';
+                renderShopGrid('pending-review-shops', data.pending_review_shops);
+            }
+
+            // クーポン
+            const couponEl = document.getElementById('coupon-list');
+            if (!data.available_coupons || !data.available_coupons.length) {
+                couponEl.innerHTML = '<p class="empty-hint">現在利用できるクーポンはありません</p>';
+            } else {
+                couponEl.innerHTML = data.available_coupons.map(function (c) {
+                    const value = c.discount_type === 'percentage' ? c.discount_value + '%OFF' : '¥' + c.discount_value.toLocaleString() + ' OFF';
+                    return '<div class="coupon-item">' +
+                        '<div>' +
+                            '<div class="cvalue">' + value + '</div>' +
+                            '<div class="ccode">コード: ' + escapeHtml(c.code) + (c.description ? '　' + escapeHtml(c.description) : '') + '</div>' +
+                            '<div class="cshop">' + escapeHtml(c.shop_name || '') + '</div>' +
+                        '</div>' +
+                    '</div>';
+                }).join('');
+            }
+
+            // 自分の口コミ
+            const reviewEl = document.getElementById('review-list');
+            if (!data.my_reviews || !data.my_reviews.length) {
+                reviewEl.innerHTML = '<p class="empty-hint">まだ口コミを投稿していません</p>';
+            } else {
+                reviewEl.innerHTML = data.my_reviews.map(function (r) {
+                    const fullStars = Math.round(r.overall_rating || 0);
+                    const stars = '★★★★★'.slice(0, fullStars) + '☆☆☆☆☆'.slice(0, 5 - fullStars);
+                    const date = r.created_at ? new Date(r.created_at).toLocaleDateString('ja-JP') : '';
+                    const reply = r.shop_response
+                        ? '<div class="shop-reply"><div class="reply-label">お店からの返信</div>' + escapeHtml(r.shop_response) + '</div>'
+                        : '';
+                    return '<div class="review-item">' +
+                        '<div class="review-head">' +
+                            '<a class="review-shop-name" href="shop.html?id=' + encodeURIComponent(r.shop_id) + '">' + escapeHtml(r.shop_name || '') + '</a>' +
+                            '<span class="review-stars">' + stars + '</span>' +
+                            '<span class="review-date">' + date + '</span>' +
+                        '</div>' +
+                        (r.comment ? '<div class="review-comment">' + escapeHtml(r.comment) + '</div>' : '') +
+                        reply +
+                    '</div>';
+                }).join('');
+            }
+        }
+    </script>
+</body>
+</html>

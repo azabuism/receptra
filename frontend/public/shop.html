@@ -94,6 +94,29 @@
         .cta-primary { background: var(--primary); color: var(--white); }
         .cta-primary:hover { background: var(--primary-dark); }
         .cta-secondary { background: var(--white); color: var(--primary); border: 2px solid var(--primary); }
+        .cta-toggle {
+            background: var(--white); color: #888; border: 2px solid #eee; cursor: pointer;
+            font-family: inherit;
+        }
+        .cta-toggle.active { background: #fff0e6; color: var(--primary-dark); border-color: var(--primary); }
+        .review-item { padding: 16px 0; border-top: 1px solid #f2f2f2; }
+        .review-item:first-child { border-top: none; padding-top: 0; }
+        .review-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+        .review-name { font-weight: 700; font-size: 14px; }
+        .review-date { font-size: 12px; color: #999; }
+        .review-stars { color: var(--rating-color); font-size: 13px; letter-spacing: 1px; }
+        .review-title { font-weight: 700; font-size: 14px; margin: 4px 0 2px; }
+        .review-comment { font-size: 14px; white-space: pre-wrap; }
+        .review-empty { color: #999; font-size: 14px; }
+        .shop-reply {
+            margin-top: 10px; background: #fff7f2; border-radius: 10px; padding: 10px 14px; font-size: 13px;
+        }
+        .shop-reply .reply-label { font-weight: 700; color: var(--primary-dark); margin-bottom: 4px; }
+        .review-form-note { font-size: 13px; color: #999; margin-bottom: 12px; }
+        .review-form-note a { color: var(--primary-dark); font-weight: 700; }
+        .star-picker { display: flex; gap: 4px; margin-bottom: 14px; }
+        .star-picker span { font-size: 26px; color: #ddd; cursor: pointer; }
+        .star-picker span.active { color: var(--rating-color); }
         .card {
             background: var(--white);
             border-radius: 16px;
@@ -216,6 +239,8 @@
                 <div class="cta-row">
                     <a href="#" class="cta-primary" id="call-btn">電話で問い合わせる</a>
                     <a href="#" class="cta-secondary" id="map-btn" target="_blank" rel="noopener">地図で見る</a>
+                    <button type="button" class="cta-secondary cta-toggle" id="like-btn">🤍 いいね</button>
+                    <button type="button" class="cta-secondary cta-toggle" id="want-btn">🔖 行きたい</button>
                 </div>
             </div>
 
@@ -288,6 +313,12 @@
             <div class="card" id="hours-card" style="display:none;">
                 <h2>営業時間</h2>
                 <table class="hours-table" id="hours-table"></table>
+            </div>
+
+            <div class="card" id="review-card">
+                <h2>口コミ</h2>
+                <div id="review-form-area"></div>
+                <div id="review-list">読み込み中…</div>
             </div>
         </main>
     </div>
@@ -405,6 +436,173 @@
             loadGallery(shop.id);
             loadMenu(shop.id);
             initMap(shop);
+            initRelationButtons(shop.id);
+            initReviewSection(shop.id);
+        }
+
+        // ---------- いいね・行きたい ----------
+        function getCustomerAuthHeaders() {
+            const token = localStorage.getItem('receptra_customer_token');
+            if (!token) return null;
+            return { 'Authorization': 'Bearer ' + token };
+        }
+
+        async function initRelationButtons(shopId) {
+            const likeBtn = document.getElementById('like-btn');
+            const wantBtn = document.getElementById('want-btn');
+
+            function setActive(btn, active, onLabel, offLabel) {
+                btn.classList.toggle('active', active);
+                btn.textContent = active ? onLabel : offLabel;
+            }
+
+            const headers = getCustomerAuthHeaders();
+            if (headers) {
+                try {
+                    const res = await fetch('/api/v1/mypage/relations/' + encodeURIComponent(shopId), { headers: headers });
+                    if (res.ok) {
+                        const status = await res.json();
+                        setActive(likeBtn, status.like, '❤️ いいね済み', '🤍 いいね');
+                        setActive(wantBtn, status.want_to_go, '✅ 行きたい登録済み', '🔖 行きたい');
+                    }
+                } catch (err) {}
+            }
+
+            async function toggle(relationType, btn, onLabel, offLabel) {
+                const currentHeaders = getCustomerAuthHeaders();
+                if (!currentHeaders) {
+                    if (confirm('この機能を使うにはログインが必要です。ログインページへ移動しますか？')) {
+                        window.location.href = 'user-login.html';
+                    }
+                    return;
+                }
+                btn.disabled = true;
+                try {
+                    const res = await fetch('/api/v1/mypage/relations/toggle', {
+                        method: 'POST',
+                        headers: Object.assign({ 'Content-Type': 'application/json' }, currentHeaders),
+                        body: JSON.stringify({ shop_id: shopId, relation_type: relationType })
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        setActive(btn, data.active, onLabel, offLabel);
+                    }
+                } catch (err) {
+                } finally {
+                    btn.disabled = false;
+                }
+            }
+
+            likeBtn.addEventListener('click', function () { toggle('like', likeBtn, '❤️ いいね済み', '🤍 いいね'); });
+            wantBtn.addEventListener('click', function () { toggle('want_to_go', wantBtn, '✅ 行きたい登録済み', '🔖 行きたい'); });
+        }
+
+        // ---------- 口コミ ----------
+        let selectedReviewRating = 0;
+
+        function initReviewSection(shopId) {
+            const formArea = document.getElementById('review-form-area');
+            const headers = getCustomerAuthHeaders();
+
+            if (!headers) {
+                formArea.innerHTML = '<p class="review-form-note">口コミを投稿するには <a href="user-login.html">ユーザーログイン</a> が必要です。</p>';
+            } else {
+                formArea.innerHTML =
+                    '<div class="review-form-note">この店舗を利用した感想を投稿できます</div>' +
+                    '<div class="star-picker" id="review-star-picker">' +
+                        [1, 2, 3, 4, 5].map(function (n) { return '<span data-value="' + n + '">★</span>'; }).join('') +
+                    '</div>' +
+                    '<div class="field"><label for="review-title">タイトル</label><input type="text" id="review-title" maxlength="255"></div>' +
+                    '<div class="field"><label for="review-comment">コメント</label><textarea id="review-comment" maxlength="2000" placeholder="お店の感想を教えてください"></textarea></div>' +
+                    '<button type="button" class="btn" id="review-submit-btn">口コミを投稿</button>' +
+                    '<div class="booking-msg" id="review-msg"></div>';
+
+                selectedReviewRating = 0;
+                const stars = document.querySelectorAll('#review-star-picker span');
+                stars.forEach(function (star) {
+                    star.addEventListener('click', function () {
+                        selectedReviewRating = parseInt(star.dataset.value, 10);
+                        stars.forEach(function (s) {
+                            s.classList.toggle('active', parseInt(s.dataset.value, 10) <= selectedReviewRating);
+                        });
+                    });
+                });
+
+                document.getElementById('review-submit-btn').addEventListener('click', async function () {
+                    const msgEl = document.getElementById('review-msg');
+                    if (!selectedReviewRating) {
+                        msgEl.textContent = '評価（星の数）を選んでください';
+                        msgEl.className = 'booking-msg error';
+                        return;
+                    }
+                    const title = document.getElementById('review-title').value.trim();
+                    const comment = document.getElementById('review-comment').value.trim();
+                    const btn = document.getElementById('review-submit-btn');
+                    btn.disabled = true;
+                    try {
+                        const currentHeaders = getCustomerAuthHeaders();
+                        const res = await fetch('/api/v1/reviews', {
+                            method: 'POST',
+                            headers: Object.assign({ 'Content-Type': 'application/json' }, currentHeaders),
+                            body: JSON.stringify({
+                                shop_id: shopId,
+                                overall_rating: selectedReviewRating,
+                                title: title || null,
+                                comment: comment || null
+                            })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || '口コミの投稿に失敗しました');
+                        msgEl.textContent = '口コミを投稿しました。ありがとうございます！';
+                        msgEl.className = 'booking-msg success';
+                        document.getElementById('review-title').value = '';
+                        document.getElementById('review-comment').value = '';
+                        selectedReviewRating = 0;
+                        stars.forEach(function (s) { s.classList.remove('active'); });
+                        loadReviews(shopId);
+                    } catch (err) {
+                        msgEl.textContent = typeof err.message === 'string' ? err.message : '口コミの投稿に失敗しました';
+                        msgEl.className = 'booking-msg error';
+                    } finally {
+                        btn.disabled = false;
+                    }
+                });
+            }
+
+            loadReviews(shopId);
+        }
+
+        async function loadReviews(shopId) {
+            const listEl = document.getElementById('review-list');
+            try {
+                const res = await fetch('/api/v1/reviews/shop/' + encodeURIComponent(shopId));
+                if (!res.ok) throw new Error();
+                const reviews = await res.json();
+                if (!reviews.length) {
+                    listEl.innerHTML = '<p class="review-empty">まだ口コミはありません。最初の口コミを投稿してみませんか？</p>';
+                    return;
+                }
+                listEl.innerHTML = reviews.map(function (r) {
+                    const fullStars = Math.round(r.overall_rating || 0);
+                    const stars = '★★★★★'.slice(0, fullStars) + '☆☆☆☆☆'.slice(0, 5 - fullStars);
+                    const date = r.created_at ? new Date(r.created_at).toLocaleDateString('ja-JP') : '';
+                    const reply = r.shop_response
+                        ? '<div class="shop-reply"><div class="reply-label">お店からの返信</div>' + escapeHtml(r.shop_response) + '</div>'
+                        : '';
+                    return '<div class="review-item">' +
+                        '<div class="review-head">' +
+                            '<span class="review-name">' + escapeHtml(r.reviewer_name || 'ゲスト') + '</span>' +
+                            '<span class="review-stars">' + stars + '</span>' +
+                            '<span class="review-date">' + date + '</span>' +
+                        '</div>' +
+                        (r.title ? '<div class="review-title">' + escapeHtml(r.title) + '</div>' : '') +
+                        (r.comment ? '<div class="review-comment">' + escapeHtml(r.comment) + '</div>' : '') +
+                        reply +
+                    '</div>';
+                }).join('');
+            } catch (err) {
+                listEl.innerHTML = '<p class="review-empty">口コミを読み込めませんでした。</p>';
+            }
         }
 
         // ---------- 写真ギャラリー ----------

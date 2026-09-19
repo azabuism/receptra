@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_optional_current_user
 from app.schemas.user import CurrentUser
 from app.models.reservation import Reservation, ReservationStatus
 from app.models.shop import Shop, ShopHours, ShopTable, ShopClosure
@@ -188,7 +188,8 @@ async def get_availability(
 )
 async def create_reservation(
     request: ReservationCreateRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[CurrentUser] = Depends(get_optional_current_user),
 ) -> ReservationCreateResponse:
     try:
         shop = await db.get(Shop, request.shop_id)
@@ -227,6 +228,7 @@ async def create_reservation(
             id=reservation_id,
             shop_id=request.shop_id,
             customer_id=None,
+            user_id=current_user.id if current_user else None,
             table_id=table_id,
             guest_name=request.guest_name,
             guest_phone=request.guest_phone,

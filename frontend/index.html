@@ -483,6 +483,7 @@
         </a>
         <div class="nav-right" id="nav-right">
             <span id="nav-status-label" style="display: none; font-size: 13px; color: var(--dark); white-space: nowrap;"></span>
+            <button class="nav-button primary" id="nav-mypage-btn" style="display: none;" onclick="location.href='mypage.html'">マイページ</button>
             <button class="nav-button" id="nav-owner-btn" onclick="location.href='owner-login.html'">オーナーログイン</button>
             <button class="nav-button primary" id="nav-user-btn" onclick="location.href='user-login.html'">ユーザーログイン</button>
             <button class="nav-button" id="nav-logout-btn" style="display: none;">ログアウト</button>
@@ -669,6 +670,7 @@
             const ownerBtn = document.getElementById('nav-owner-btn');
             const userBtn = document.getElementById('nav-user-btn');
             const logoutBtn = document.getElementById('nav-logout-btn');
+            const mypageBtn = document.getElementById('nav-mypage-btn');
 
             function parseName(raw) {
                 try {
@@ -693,10 +695,12 @@
             if (customerToken) {
                 if (!name) name = parseName(customerUserRaw);
                 userBtn.style.display = 'none';
+                mypageBtn.style.display = '';
             } else {
                 userBtn.style.display = '';
                 userBtn.textContent = 'ユーザーログイン';
                 userBtn.onclick = function () { location.href = 'user-login.html'; };
+                mypageBtn.style.display = 'none';
             }
 
             if (ownerToken || customerToken) {

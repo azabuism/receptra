@@ -30,6 +30,9 @@ from app.routers.shop_tables import router as shop_tables_router
 from app.routers.shop_closures import router as shop_closures_router
 from app.routers.shop_images import router as shop_images_router, media_router as shop_images_files_router
 from app.routers.taxonomy import router as taxonomy_router
+from app.routers.reviews import router as reviews_router
+from app.routers.mypage import router as mypage_router
+from app.routers.coupons import router as coupons_router
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -107,6 +110,24 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ business_type カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # マイページ機能: 予約・レビューをログイン中のプラットフォームアカウントに紐付けるための user_id カラム
+            try:
+                await conn.execute(text("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS user_id VARCHAR(36)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_reservations_user ON reservations (user_id)"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ reservations.user_id カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
+            try:
+                await conn.execute(text("ALTER TABLE reviews ALTER COLUMN customer_id DROP NOT NULL"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ reviews.customer_id の NOT NULL 解除に失敗（既に解除済みの場合は無視して問題ありません）: {alter_err}")
+
+            try:
+                await conn.execute(text("ALTER TABLE reviews ADD COLUMN IF NOT EXISTS user_id VARCHAR(36)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_reviews_user ON reviews (user_id)"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ reviews.user_id カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
             # 既存店舗（旧カテゴリー体系で登録されたもの）を新しいタクソノミーに移行する
             try:
                 from app.taxonomy import LEGACY_CATEGORY_MAP
@@ -170,6 +191,9 @@ def create_app() -> FastAPI:
     app.include_router(shop_images_router)
     app.include_router(shop_images_files_router)
     app.include_router(taxonomy_router)
+    app.include_router(reviews_router)
+    app.include_router(mypage_router)
+    app.include_router(coupons_router)
     app.include_router(vonage_voice_router)
 
     @app.get("/api/v1/debug/db-status", tags=["debug"])
