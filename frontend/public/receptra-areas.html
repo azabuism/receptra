@@ -13,7 +13,8 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'メイリオ', Meiryo, sans-serif;
-            background: linear-gradient(135deg, #FF6B35 0%, #ff9500 100%);
+            background: #f5f5f5;
+            color: #333333;
             min-height: 100vh;
         }
 
@@ -59,7 +60,7 @@
 
         .header {
             text-align: center;
-            color: white;
+            color: #333333;
             margin-bottom: 40px;
         }
 
@@ -71,7 +72,7 @@
 
         .header p {
             font-size: 14px;
-            opacity: 0.9;
+            color: #777777;
         }
 
         .breadcrumb {
@@ -79,29 +80,28 @@
         }
 
         .breadcrumb a {
-            color: white;
+            color: #999999;
             text-decoration: none;
             font-size: 14px;
             display: inline-flex;
             align-items: center;
             gap: 8px;
-            opacity: 0.9;
-            transition: opacity 0.3s;
+            transition: color 0.3s;
         }
 
         .breadcrumb a:hover {
-            opacity: 1;
+            color: #FF6B35;
         }
 
         .breadcrumb span {
-            color: white;
-            opacity: 0.7;
+            color: #bbbbbb;
             margin: 0 10px;
         }
 
         .current {
-            color: white;
+            color: #333333;
             font-size: 14px;
+            font-weight: 600;
             display: inline;
         }
 
@@ -110,12 +110,12 @@
         }
 
         .region-title {
-            color: white;
+            color: #333333;
             font-size: 18px;
             font-weight: 600;
             margin-bottom: 15px;
             padding-bottom: 10px;
-            border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+            border-bottom: 2px solid rgba(255, 107, 53, 0.2);
         }
 
         .prefecture-grid {
@@ -126,7 +126,7 @@
 
         .prefecture-btn {
             background: white;
-            border: none;
+            border: 1px solid #f0f0f0;
             border-radius: 12px;
             padding: 16px 12px;
             text-align: center;
@@ -136,31 +136,33 @@
             color: #333;
             font-size: 14px;
             font-weight: 500;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
             display: block;
         }
 
         .prefecture-btn:hover {
             transform: translateY(-4px);
-            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
-            background: #f0f0f0;
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+            background: #fff7f2;
+            border-color: #ffd0b0;
         }
 
         .prefecture-btn.active {
             background: linear-gradient(135deg, #FF6B35 0%, #e66d00 100%);
+            border-color: transparent;
             color: white;
         }
 
         .search-section {
-            background: rgba(255, 255, 255, 0.1);
+            background: #ffffff;
             border-radius: 16px;
             padding: 30px;
             margin-bottom: 40px;
-            backdrop-filter: blur(10px);
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
         }
 
         .search-section h3 {
-            color: white;
+            color: #333333;
             margin-bottom: 20px;
             font-size: 16px;
             font-weight: 600;
@@ -169,7 +171,7 @@
         .search-input {
             width: 100%;
             padding: 12px 16px;
-            border: 1px solid rgba(255, 255, 255, 0.3);
+            border: 2px solid #eeeeee;
             border-radius: 8px;
             font-size: 14px;
             background: white;
@@ -182,49 +184,48 @@
 
         .search-input:focus {
             outline: none;
-            border-color: white;
-            box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+            border-color: #FF6B35;
+            box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.1);
         }
 
         .search-button {
             width: 100%;
             padding: 12px 16px;
             margin-top: 12px;
-            background: white;
+            background: #FF6B35;
             border: none;
             border-radius: 8px;
             font-size: 14px;
             font-weight: 600;
-            color: #e66d00;
+            color: white;
             cursor: pointer;
             transition: all 0.3s;
         }
 
         .search-button:hover {
-            background: #f0f0f0;
+            background: #e66d00;
             transform: translateY(-2px);
         }
 
         .footer {
-            background: rgba(0, 0, 0, 0.1);
-            color: white;
+            background: transparent;
+            color: #999999;
             padding: 30px 20px;
             text-align: center;
-            border-radius: 12px;
             margin-top: 50px;
+            border-top: 1px solid #eeeeee;
         }
 
         .footer a {
-            color: white;
+            color: #777777;
             text-decoration: none;
             margin: 0 15px;
             font-size: 14px;
-            opacity: 0.8;
-            transition: opacity 0.3s;
+            transition: color 0.3s;
         }
 
         .footer a:hover {
-            opacity: 1;
+            color: #FF6B35;
             text-decoration: underline;
         }
 
