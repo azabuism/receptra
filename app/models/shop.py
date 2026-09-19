@@ -7,8 +7,8 @@ from datetime import datetime, time
 from typing import Optional
 import uuid
 
-from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Index, Text, Float, Integer, Time, Enum, JSON, LargeBinary
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Index, Text, Float, Integer, Time, Enum, JSON, LargeBinary, Date
+from sqlalchemy.orm import relationship, deferred
 from app.database import Base
 import enum
 
@@ -84,6 +84,14 @@ class Shop(Base):
     # 予約設定：1組あたりの標準滞在時間（分）。空き状況の計算に使用
     reservation_duration_minutes = Column(Integer, nullable=True, default=90)
 
+    # ロゴ・サムネイル・カバー画像（アップロードされたもの。deferred で一覧取得時には読み込まない）
+    logo_data = deferred(Column(LargeBinary, nullable=True))
+    logo_mime_type = Column(String(100), nullable=True)
+    thumbnail_data = deferred(Column(LargeBinary, nullable=True))
+    thumbnail_mime_type = Column(String(100), nullable=True)
+    cover_data = deferred(Column(LargeBinary, nullable=True))
+    cover_mime_type = Column(String(100), nullable=True)
+
     # 営業情報
     is_active = Column(Boolean, default=True, nullable=False)
     is_featured = Column(Boolean, default=False, nullable=False)  # 特集フラグ
@@ -110,6 +118,7 @@ class Shop(Base):
     photos = relationship("ShopPhoto", back_populates="shop", cascade="all, delete-orphan")
     menu_items = relationship("MenuItem", back_populates="shop", cascade="all, delete-orphan")
     tables = relationship("ShopTable", back_populates="shop", cascade="all, delete-orphan")
+    closures = relationship("ShopClosure", back_populates="shop", cascade="all, delete-orphan")
 
     # インデックス
     __table_args__ = (
@@ -248,3 +257,28 @@ class ShopTable(Base):
 
     def __repr__(self):
         return f"<ShopTable(id={self.id}, shop_id={self.shop_id}, name={self.name})>"
+
+
+class ShopClosure(Base):
+    """臨時休業日（不定期休業）。定休日とは別に特定の期間を休業扱いにする"""
+
+    __tablename__ = "shop_closures"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    shop_id = Column(String(36), ForeignKey("shops.id"), nullable=False, index=True)
+
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    reason = Column(String(200), nullable=True)  # 例：「天候」「設備メンテナンス」
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    shop = relationship("Shop", back_populates="closures")
+
+    __table_args__ = (
+        Index("ix_shop_closures_shop", "shop_id"),
+        Index("ix_shop_closures_dates", "start_date", "end_date"),
+    )
+
+    def __repr__(self):
+        return f"<ShopClosure(id={self.id}, shop_id={self.shop_id}, {self.start_date}~{self.end_date})>"

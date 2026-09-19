@@ -24,6 +24,18 @@ from app.schemas.user import CurrentUser
 router = APIRouter(prefix="/api/v1/shops", tags=["shops"])
 
 
+def _build_shop_response(shop: Shop) -> ShopResponse:
+    """ShopResponse を組み立てる。アップロード済み画像がある場合はそちらのURLを優先する"""
+    response = ShopResponse.from_orm(shop)
+    if getattr(shop, "thumbnail_mime_type", None):
+        response.thumbnail_url = f"/api/v1/media/shop-thumbnail/{shop.id}"
+    if getattr(shop, "cover_mime_type", None):
+        response.cover_image_url = f"/api/v1/media/shop-cover/{shop.id}"
+    if getattr(shop, "logo_mime_type", None):
+        response.logo_url = f"/api/v1/media/shop-logo/{shop.id}"
+    return response
+
+
 @router.post(
     "/register",
     response_model=ShopRegisterResponse,
@@ -103,7 +115,7 @@ async def register_shop(
         shop = result.scalar_one()
 
         # レスポンス作成
-        shop_response = ShopResponse.from_orm(shop)
+        shop_response = _build_shop_response(shop)
         
         return ShopRegisterResponse(
             success=True,
@@ -136,7 +148,7 @@ async def get_my_shops(
     stmt = select(Shop).options(selectinload(Shop.shop_hours)).filter(Shop.tenant_id == current_user.tenant_id).order_by(Shop.created_at.desc())
     result = await db.execute(stmt)
     shops = result.scalars().all()
-    shop_list = [ShopResponse.from_orm(shop) for shop in shops]
+    shop_list = [_build_shop_response(shop) for shop in shops]
     return ShopListResponse(
         total=len(shop_list),
         limit=len(shop_list),
@@ -174,7 +186,7 @@ async def update_shop(
         select(Shop).options(selectinload(Shop.shop_hours)).filter(Shop.id == shop_id)
     )
     shop = result.scalar_one()
-    return ShopResponse.from_orm(shop)
+    return _build_shop_response(shop)
 
 
 @router.put(
@@ -221,7 +233,7 @@ async def update_shop_hours(
         select(Shop).options(selectinload(Shop.shop_hours)).filter(Shop.id == shop_id)
     )
     shop = result.scalar_one()
-    return ShopResponse.from_orm(shop)
+    return _build_shop_response(shop)
 
 
 @router.delete(
@@ -324,7 +336,7 @@ async def search_shops(
         result = await db.execute(stmt)
         shops = result.scalars().all()
         
-        shop_list = [ShopResponse.from_orm(shop) for shop in shops]
+        shop_list = [_build_shop_response(shop) for shop in shops]
         
         return ShopListResponse(
             total=total or 0,
@@ -367,7 +379,7 @@ async def get_shop(
                 detail="店舗が見つかりません"
             )
         
-        return ShopResponse.from_orm(shop)
+        return _build_shop_response(shop)
     
     except HTTPException:
         raise

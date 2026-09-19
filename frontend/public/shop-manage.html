@@ -123,6 +123,19 @@
             padding: 3px 6px; cursor: pointer;
         }
         .empty-state { color: #999; font-size: 13px; padding: 10px 0; }
+        .image-slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-bottom: 6px; }
+        .image-slot { border: var(--border); border-radius: 10px; padding: 12px; text-align: center; }
+        .image-slot label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 8px; color: #666; }
+        .image-preview-box {
+            width: 100%; aspect-ratio: 1; background: #f0f0f0; border-radius: 8px; overflow: hidden;
+            margin-bottom: 8px; display: flex; align-items: center; justify-content: center;
+        }
+        .image-preview-box img { width: 100%; height: 100%; object-fit: cover; display: none; }
+        .image-slot input[type="file"] { width: 100%; font-size: 12px; margin-bottom: 8px; }
+        .image-slot-actions { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+        .image-slot-actions .btn-outline { font-size: 11px; padding: 5px 10px; }
+        .closure-item { display: flex; justify-content: space-between; align-items: center;
+            padding: 12px 14px; border: var(--border); border-radius: 10px; margin-bottom: 8px; gap: 12px; flex-wrap: wrap; }
         .menu-category-title { font-size: 14px; font-weight: 700; color: var(--primary-dark); margin: 18px 0 8px; }
         .menu-category-title:first-child { margin-top: 0; }
         .menu-row {
@@ -193,16 +206,6 @@
                         <input type="url" id="edit-website" placeholder="https://">
                     </div>
                 </div>
-                <div class="row-2">
-                    <div class="field">
-                        <label for="edit-thumbnail">サムネイル画像URL</label>
-                        <input type="url" id="edit-thumbnail" placeholder="https://">
-                    </div>
-                    <div class="field">
-                        <label for="edit-cover">カバー画像URL</label>
-                        <input type="url" id="edit-cover" placeholder="https://">
-                    </div>
-                </div>
                 <div class="field">
                     <label for="edit-description">お店の紹介文</label>
                     <textarea id="edit-description"></textarea>
@@ -210,6 +213,41 @@
                 <button type="submit" class="btn" id="basic-save-btn">保存する</button>
                 <div class="msg" id="basic-msg"></div>
             </form>
+        </div>
+
+        <div class="card">
+            <h2>画像設定</h2>
+            <p class="hint">ロゴ・お店のトップ画像（カバー）・一覧に表示されるサムネイル画像を設定できます。</p>
+            <div class="image-slots">
+                <div class="image-slot" data-slot="logo">
+                    <label>ロゴ</label>
+                    <div class="image-preview-box"><img id="preview-logo" alt=""></div>
+                    <input type="file" id="file-logo" accept="image/*">
+                    <div class="image-slot-actions">
+                        <button type="button" class="btn-outline" data-upload="logo">アップロード</button>
+                        <button type="button" class="btn-outline btn-danger" data-remove="logo">削除</button>
+                    </div>
+                </div>
+                <div class="image-slot" data-slot="thumbnail">
+                    <label>サムネイル画像</label>
+                    <div class="image-preview-box"><img id="preview-thumbnail" alt=""></div>
+                    <input type="file" id="file-thumbnail" accept="image/*">
+                    <div class="image-slot-actions">
+                        <button type="button" class="btn-outline" data-upload="thumbnail">アップロード</button>
+                        <button type="button" class="btn-outline btn-danger" data-remove="thumbnail">削除</button>
+                    </div>
+                </div>
+                <div class="image-slot" data-slot="cover">
+                    <label>カバー画像（トップ画像）</label>
+                    <div class="image-preview-box"><img id="preview-cover" alt=""></div>
+                    <input type="file" id="file-cover" accept="image/*">
+                    <div class="image-slot-actions">
+                        <button type="button" class="btn-outline" data-upload="cover">アップロード</button>
+                        <button type="button" class="btn-outline btn-danger" data-remove="cover">削除</button>
+                    </div>
+                </div>
+            </div>
+            <div class="msg" id="image-msg"></div>
         </div>
 
         <div class="card">
@@ -227,6 +265,33 @@
             </div>
             <button class="btn" id="hours-save-btn" style="margin-top: 12px;">保存する</button>
             <div class="msg" id="hours-msg"></div>
+        </div>
+
+        <div class="card">
+            <h2>臨時休業日</h2>
+            <p class="hint">
+                天候や設備都合などで急遽休業する場合はここで登録してください。登録した期間に確認待ち・確定中の予約がある場合は自動的にキャンセルされ、理由が予約管理に記録されます。<br>
+                ※ゲストへの自動メッセージ・自動架電でのご連絡は、電話番号の承認手続きが完了次第の対応となります。現時点ではキャンセル処理と理由の記録のみ自動で行われますので、念のためお客様へは直接ご連絡ください。
+            </p>
+            <form id="closure-form">
+                <div class="row-3">
+                    <div class="field">
+                        <label for="closure-start">開始日 *</label>
+                        <input type="date" id="closure-start" required>
+                    </div>
+                    <div class="field">
+                        <label for="closure-end">終了日 *</label>
+                        <input type="date" id="closure-end" required>
+                    </div>
+                    <div class="field">
+                        <label for="closure-reason">理由</label>
+                        <input type="text" id="closure-reason" placeholder="例：天候、設備メンテナンス">
+                    </div>
+                </div>
+                <button type="submit" class="btn" id="closure-add-btn">臨時休業日を登録</button>
+                <div class="msg" id="closure-msg"></div>
+            </form>
+            <div id="closure-list" style="margin-top: 18px;"></div>
         </div>
 
         <div class="card">
@@ -400,18 +465,151 @@
                     document.getElementById('edit-address').value = shop.address || '';
                     document.getElementById('edit-email').value = shop.email || '';
                     document.getElementById('edit-website').value = shop.website || '';
-                    document.getElementById('edit-thumbnail').value = shop.thumbnail_url || '';
-                    document.getElementById('edit-cover').value = shop.cover_image_url || '';
                     document.getElementById('edit-description').value = shop.description || '';
 
                     document.getElementById('reservation-duration').value = shop.reservation_duration_minutes || 90;
                     renderHoursForm(shop.shop_hours || []);
                 }
             } catch (e) {}
+            initImagePreviews();
             loadPhotos();
             loadMenu();
             loadTables();
             loadReservations();
+            loadClosures();
+        }
+
+        // ---------- 画像設定（ロゴ・サムネイル・カバー） ----------
+        const IMAGE_SLOTS = ['logo', 'thumbnail', 'cover'];
+        const SLOT_LABELS = { logo: 'ロゴ', thumbnail: 'サムネイル画像', cover: 'カバー画像' };
+
+        function initImagePreviews() {
+            IMAGE_SLOTS.forEach(function (slot) {
+                const img = document.getElementById('preview-' + slot);
+                img.onload = function () { img.style.display = 'block'; };
+                img.onerror = function () { img.style.display = 'none'; };
+                img.src = '/api/v1/media/shop-' + slot + '/' + encodeURIComponent(shopId) + '?t=' + Date.now();
+            });
+        }
+
+        document.querySelectorAll('[data-upload]').forEach(function (btn) {
+            btn.addEventListener('click', async function () {
+                const slot = btn.dataset.upload;
+                const msg = document.getElementById('image-msg');
+                const fileInput = document.getElementById('file-' + slot);
+                if (!fileInput.files.length) {
+                    showMsg(msg, '画像ファイルを選択してください', 'error');
+                    return;
+                }
+                btn.disabled = true;
+                try {
+                    const formData = new FormData();
+                    formData.append('file', fileInput.files[0]);
+                    const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/' + slot, {
+                        method: 'POST', body: formData
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error((data.detail && (data.detail.msg || data.detail)) || 'アップロードに失敗しました');
+                    showMsg(msg, SLOT_LABELS[slot] + 'をアップロードしました', 'success');
+                    fileInput.value = '';
+                    const img = document.getElementById('preview-' + slot);
+                    img.src = '/api/v1/media/shop-' + slot + '/' + encodeURIComponent(shopId) + '?t=' + Date.now();
+                } catch (err) {
+                    showMsg(msg, typeof err.message === 'string' ? err.message : 'アップロードに失敗しました', 'error');
+                } finally {
+                    btn.disabled = false;
+                }
+            });
+        });
+
+        document.querySelectorAll('[data-remove]').forEach(function (btn) {
+            btn.addEventListener('click', async function () {
+                const slot = btn.dataset.remove;
+                const msg = document.getElementById('image-msg');
+                if (!confirm(SLOT_LABELS[slot] + 'を削除しますか？')) return;
+                try {
+                    const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/' + slot, { method: 'DELETE' });
+                    if (!res.ok) throw new Error('削除に失敗しました');
+                    const img = document.getElementById('preview-' + slot);
+                    img.style.display = 'none';
+                    img.removeAttribute('src');
+                    showMsg(msg, SLOT_LABELS[slot] + 'を削除しました', 'success');
+                } catch (err) {
+                    showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
+                }
+            });
+        });
+
+        // ---------- 臨時休業日 ----------
+        async function loadClosures() {
+            const container = document.getElementById('closure-list');
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/closures');
+                const closures = await res.json();
+                if (!closures.length) {
+                    container.innerHTML = '<p class="empty-hint">登録されている臨時休業日はありません</p>';
+                    return;
+                }
+                container.innerHTML = closures.map(function (c) {
+                    const range = c.start_date === c.end_date ? c.start_date : (c.start_date + ' 〜 ' + c.end_date);
+                    return '<div class="closure-item">' +
+                        '<div><span class="name">' + escapeHtml(range) + '</span>' +
+                        (c.reason ? ' <span class="capacity">（' + escapeHtml(c.reason) + '）</span>' : '') + '</div>' +
+                        '<button type="button" class="btn-outline btn-danger closure-delete-btn" data-id="' + c.id + '">削除</button>' +
+                        '</div>';
+                }).join('');
+                container.querySelectorAll('.closure-delete-btn').forEach(function (btn) {
+                    btn.addEventListener('click', function () { deleteClosure(btn.dataset.id); });
+                });
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        document.getElementById('closure-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('closure-msg');
+            const btn = document.getElementById('closure-add-btn');
+            const start = document.getElementById('closure-start').value;
+            const end = document.getElementById('closure-end').value;
+            const reason = document.getElementById('closure-reason').value.trim();
+            if (!start || !end) return;
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/closures', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ start_date: start, end_date: end, reason: reason || null })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error((data.detail && (data.detail.msg || data.detail)) || '登録に失敗しました');
+                let successText = '臨時休業日を登録しました';
+                if (data.cancelled_count > 0) {
+                    successText += '（該当する予約' + data.cancelled_count + '件を自動的にキャンセルしました。お客様への直接のご連絡もお願いします）';
+                }
+                showMsg(msg, successText, 'success');
+                document.getElementById('closure-form').reset();
+                loadClosures();
+                loadReservations();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '登録に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        async function deleteClosure(closureId) {
+            if (!confirm('この臨時休業日を削除しますか？')) return;
+            const msg = document.getElementById('closure-msg');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/closures/' + encodeURIComponent(closureId), {
+                    method: 'DELETE'
+                });
+                if (!res.ok) throw new Error('削除に失敗しました');
+                loadClosures();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
+            }
         }
 
         // ---------- 営業時間・定休日 ----------
@@ -640,8 +838,6 @@
                 address: document.getElementById('edit-address').value.trim(),
                 email: document.getElementById('edit-email').value.trim() || null,
                 website: document.getElementById('edit-website').value.trim() || null,
-                thumbnail_url: document.getElementById('edit-thumbnail').value.trim() || null,
-                cover_image_url: document.getElementById('edit-cover').value.trim() || null,
                 description: document.getElementById('edit-description').value.trim() || null
             };
             btn.disabled = true;

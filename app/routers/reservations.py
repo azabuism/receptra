@@ -16,7 +16,7 @@ from app.database import get_db
 from app.deps import get_current_user
 from app.schemas.user import CurrentUser
 from app.models.reservation import Reservation, ReservationStatus
-from app.models.shop import Shop, ShopHours, ShopTable
+from app.models.shop import Shop, ShopHours, ShopTable, ShopClosure
 from app.schemas.reservation import (
     ReservationCreateRequest, ReservationResponse, ReservationCreateResponse,
     ReservationUpdateRequest, ReservationListResponse,
@@ -50,6 +50,17 @@ def _to_response(reservation: Reservation) -> ReservationResponse:
         created_at=reservation.created_at,
         updated_at=reservation.updated_at,
     )
+
+
+async def _get_closure_for_date(db: AsyncSession, shop_id: str, target_date: date_type) -> Optional[ShopClosure]:
+    result = await db.execute(
+        select(ShopClosure).filter(
+            ShopClosure.shop_id == shop_id,
+            ShopClosure.start_date <= target_date,
+            ShopClosure.end_date >= target_date,
+        )
+    )
+    return result.scalars().first()
 
 
 async def _find_available_table(
@@ -114,6 +125,15 @@ async def get_availability(
     except ValueError:
         raise HTTPException(status_code=400, detail="日付の形式が正しくありません（YYYY-MM-DD）")
 
+    closure = await _get_closure_for_date(db, shop_id, target_date)
+    if closure:
+        reason_text = (closure.reason or "").strip()
+        message = f"臨時休業日です（{reason_text}）" if reason_text else "臨時休業日です"
+        return AvailabilityResponse(
+            shop_id=shop_id, date=date, party_size=party_size, is_open=False,
+            message=message, slots=[]
+        )
+
     weekday = target_date.weekday()  # 0=月, 6=日
     hours_result = await db.execute(
         select(ShopHours).filter(ShopHours.shop_id == shop_id, ShopHours.day_of_week == weekday)
@@ -177,6 +197,10 @@ async def create_reservation(
 
         if request.reservation_date <= datetime.utcnow():
             raise HTTPException(status_code=400, detail="過去の日時で予約することはできません")
+
+        closure = await _get_closure_for_date(db, request.shop_id, request.reservation_date.date())
+        if closure:
+            raise HTTPException(status_code=400, detail="ご指定の日は臨時休業のため予約できません")
 
         weekday = request.reservation_date.weekday()
         hours_result = await db.execute(

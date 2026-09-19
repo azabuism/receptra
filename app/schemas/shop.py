@@ -98,6 +98,7 @@ class ShopResponse(BaseModel):
     shop_hours: Optional[List[ShopHoursResponse]] = []
     features: Optional[List[str]] = []
     reservation_duration_minutes: Optional[int] = 90
+    logo_url: Optional[str] = None
 
     class Config:
         from_attributes = True
