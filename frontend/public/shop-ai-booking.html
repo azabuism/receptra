@@ -183,12 +183,13 @@
             0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
             50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); }
         }
-        #voiceStatus {
+        #voiceStatus, #startCallHint {
             font-size: 12px;
             color: var(--primary);
             min-height: 16px;
             text-align: center;
         }
+        #startCallHint { font-size: 14px; font-weight: 700; margin-top: 4px; }
         .voice-hero {
             text-align: center;
             padding: 30px 10px 6px;
@@ -241,6 +242,13 @@
     <div id="loading" class="container">読み込み中…</div>
     <div id="not-found" class="container" style="display:none;">店舗が見つかりませんでした。</div>
 
+    <div class="container" id="startCallScreen" style="display:none;">
+        <div class="voice-hero">
+            <button type="button" class="big-mic" id="startCallBtn">📞</button>
+            <div id="startCallHint">タップして通話を開始してください</div>
+        </div>
+    </div>
+
     <div class="container" id="content" style="display:none;">
         <div class="voice-hero" id="voiceHero" style="display:none;">
             <button type="button" class="big-mic" id="bigMicBtn">🎤</button>
@@ -268,6 +276,8 @@
 
         const loadingEl = document.getElementById('loading');
         const notFoundEl = document.getElementById('not-found');
+        const startCallScreenEl = document.getElementById('startCallScreen');
+        const startCallBtn = document.getElementById('startCallBtn');
         const contentEl = document.getElementById('content');
         const chatWindow = document.getElementById('chatWindow');
         const inputForm = document.getElementById('inputForm');
@@ -289,6 +299,22 @@
 
         if (mode === 'voice') {
             voiceHero.style.display = 'block';
+        }
+
+        // 通話モードはスマホのブラウザ(特にiOS Safari)では、ユーザーの
+        // タップ操作なしに音声合成(読み上げ)やマイクを起動できないため、
+        // 「通話を開始する」ボタンのタップを起点にする。これによりAIの
+        // 最初の挨拶も声で流れるようになる。チャットモードは即開始でよい。
+        if (mode === 'voice') {
+            loadingEl.style.display = 'none';
+            startCallScreenEl.style.display = 'flex';
+            startCallBtn.addEventListener('click', () => {
+                startCallBtn.disabled = true;
+                document.getElementById('startCallHint').textContent = '接続しています…';
+                startCallScreenEl.style.display = 'none';
+                contentEl.style.display = 'flex';
+                startSession();
+            }, { once: true });
         }
 
         // ===== 音声認識(マイク入力) =====
@@ -417,7 +443,9 @@
                 chatWindow.scrollTop = chatWindow.scrollHeight;
             }
             if (mode === 'voice' && !ended) {
-                speak(text, () => window.__startListening());
+                // iOSではTTSとマイクが音声セッションを奪い合うことがあるため、
+                // 読み上げ終了から少し間を空けてからマイクを再開する
+                speak(text, () => setTimeout(() => window.__startListening(), 400));
             } else if (mode === 'voice' && ended) {
                 speak(text);
             }
@@ -429,12 +457,15 @@
                 sessionId = data.session_id;
                 pageShopName.textContent = data.shop_name + ' - AIでご予約';
                 loadingEl.style.display = 'none';
+                notFoundEl.style.display = 'none';
                 contentEl.style.display = 'flex';
 
-                const greeting = data.shop_name + 'のAI予約受付です。ご希望の来店日時・人数・お名前・お電話番号を教えてください。';
+                const greeting = 'お電話ありがとうございます。こちら' + data.shop_name + 'の予約受付AIです。'
+                    + 'ご来店のご希望日時やお名前などをお聞かせください。';
                 onAiReply(greeting, {});
             } catch (e) {
                 loadingEl.style.display = 'none';
+                startCallScreenEl.style.display = 'none';
                 notFoundEl.style.display = 'block';
                 notFoundEl.textContent = 'ご案内の準備に失敗しました: ' + e.message;
             }
@@ -474,7 +505,9 @@
             }
         });
 
-        startSession();
+        if (mode !== 'voice') {
+            startSession();
+        }
     </script>
 </body>
 </html>
