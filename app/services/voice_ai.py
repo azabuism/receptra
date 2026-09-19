@@ -43,7 +43,7 @@ USD_TO_JPY_APPROX = 157.0
 SYSTEM_PROMPT_TEMPLATE = """\
 あなたは飲食店・サロン等の予約管理システム「RECEPTRA」の電話AI受付です。
 店舗名「{shop_name}」にかかってきた電話に、実際のスタッフのように丁寧な日本語（敬語）で対応します。
-
+{caller_context_block}
 # あなたの役割
 1. 電話がかかってきたら、まず要件が次のどちらかを自然な会話で見極めます。
    - 「reservation」: 来店予定のお客様からの、予約の確認・来店連絡・キャンセル・日時変更などの連絡
@@ -87,32 +87,124 @@ def _get_client() -> AsyncOpenAI:
 
 # session_id -> {"messages": [...], "shop_name": str, "turn_count": int,
 #                "usage": {"prompt_tokens": int, "completion_tokens": int},
-#                "started_at": datetime}
+#                "started_at": datetime, "phone_number": str|None, "tenant_id": str|None}
 _sessions: dict[str, dict] = {}
 
 
-def _new_session(shop_name: str) -> dict:
+def _build_caller_context_block(caller_context: Optional[str]) -> str:
+    if not caller_context:
+        return ""
+    return (
+        "\n# このお客様の過去の通話履歴（当店記録より、新しい順）\n"
+        f"{caller_context}\n"
+        "上記の履歴があるお客様です。最初の応答で「いつもありがとうございます」等、"
+        "常連のお客様への一言を自然に添えてください（馴れ馴れしくなりすぎず、簡潔に）。\n"
+    )
+
+
+def _new_session(
+    shop_name: str,
+    caller_context: Optional[str] = None,
+    phone_number: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> dict:
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+        shop_name=shop_name,
+        caller_context_block=_build_caller_context_block(caller_context),
+    )
     return {
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(shop_name=shop_name)}
-        ],
+        "messages": [{"role": "system", "content": system_prompt}],
         "shop_name": shop_name,
         "turn_count": 0,
         "usage": {"prompt_tokens": 0, "completion_tokens": 0},
         "started_at": datetime.now(timezone.utc),
+        "phone_number": phone_number,
+        "tenant_id": tenant_id,
     }
 
 
-def start_session(session_id: str, shop_name: str = "当店") -> dict:
+def start_session(
+    session_id: str,
+    shop_name: str = "当店",
+    caller_context: Optional[str] = None,
+    phone_number: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> dict:
     """通話開始時にセッションを初期化（既存があれば上書きしない）"""
     if session_id not in _sessions:
-        _sessions[session_id] = _new_session(shop_name)
+        _sessions[session_id] = _new_session(shop_name, caller_context, phone_number, tenant_id)
     return _sessions[session_id]
 
 
 def end_session(session_id: str) -> Optional[dict]:
     """通話終了時にセッションを破棄し、最終状態を返す（ログ用）"""
     return _sessions.pop(session_id, None)
+
+
+_CATEGORY_LABELS = {
+    "reservation": "予約関連",
+    "business_call": "営業電話",
+    "unclear": "内容不明",
+}
+
+
+async def get_caller_context(db, phone_number: str, tenant_id: Optional[str], limit: int = 3) -> Optional[str]:
+    """
+    指定の電話番号(・店舗)について、過去の通話ログを新しい順に取得し、
+    システムプロンプトに埋め込むための短い要約テキストを組み立てる。
+    履歴が無ければ None を返す（＝通常の初回応対になる）。
+    """
+    from sqlalchemy import select
+    from app.models.voice_call_log import VoiceCallLog
+
+    if not phone_number:
+        return None
+
+    query = select(VoiceCallLog).where(VoiceCallLog.phone_number == phone_number)
+    query = query.where(VoiceCallLog.tenant_id == tenant_id) if tenant_id is not None else query.where(
+        VoiceCallLog.tenant_id.is_(None)
+    )
+    query = query.order_by(VoiceCallLog.created_at.desc()).limit(limit)
+
+    result = await db.execute(query)
+    logs = list(result.scalars().all())
+    if not logs:
+        return None
+
+    lines = []
+    for log in reversed(logs):  # 古い順に並べ直して自然な時系列にする
+        date_str = log.created_at.strftime("%m/%d")
+        label = _CATEGORY_LABELS.get(log.category, log.category or "不明")
+        lines.append(f"・{date_str} {label}: {log.summary or '(要約なし)'}")
+    return "\n".join(lines)
+
+
+async def save_call_log(
+    db,
+    phone_number: Optional[str],
+    tenant_id: Optional[str],
+    category: Optional[str],
+    urgency: Optional[str],
+    summary: Optional[str],
+) -> None:
+    """通話終了時に、次回の来店・架電時に参照できるよう要約をDBへ保存する"""
+    from app.models.voice_call_log import VoiceCallLog
+
+    if not phone_number:
+        return
+    try:
+        log = VoiceCallLog(
+            phone_number=phone_number,
+            tenant_id=tenant_id,
+            category=category,
+            urgency=urgency,
+            summary=summary,
+        )
+        db.add(log)
+        await db.commit()
+    except Exception as e:
+        logger.error("通話ログの保存に失敗 (phone=%s): %s", phone_number, e)
+        await db.rollback()
 
 
 def _resolve_model() -> str:

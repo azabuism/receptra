@@ -174,6 +174,66 @@
             color: #aaa;
             padding: 12px;
         }
+        /* トークン消費量を最優先で見せるための強調スタイル */
+        #statsBar {
+            background: #1f1f1f;
+            color: #fff;
+            border: none;
+            font-size: 13px;
+        }
+        #statsBar .stat-value { color: var(--primary-light); font-size: 15px; font-weight: 700; }
+        #statsBar .stat-label { color: #bbb; }
+        .phone-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .phone-row input[type=text] { width: 180px; }
+        #historyBadge {
+            font-size: 12px;
+            padding: 3px 10px;
+            border-radius: 999px;
+            background: #fef3c7;
+            color: #92400e;
+            display: none;
+        }
+        .mic-btn {
+            background: var(--white);
+            border: 2px solid var(--primary);
+            color: var(--primary);
+            border-radius: 50%;
+            width: 42px;
+            height: 42px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            padding: 0;
+            flex-shrink: 0;
+        }
+        .mic-btn.listening {
+            background: var(--error);
+            border-color: var(--error);
+            color: #fff;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
+            50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); }
+        }
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: #666;
+        }
+        #voiceStatus {
+            font-size: 12px;
+            color: var(--primary);
+            min-height: 16px;
+        }
         @media (max-width: 480px) {
             header h1 { font-size: 16px; }
         }
@@ -188,8 +248,21 @@
     </header>
 
     <div class="container">
+        <div id="statsBar">
+            <span class="stat-label">モデル</span> <span class="stat-value" id="statModel">-</span>
+            <span class="stat-label">累計トークン</span> <span class="stat-value" id="statTokens">0</span>
+            <span class="stat-label">（入力 <span id="statPrompt">0</span> / 出力 <span id="statCompletion">0</span>）</span>
+            <span class="stat-label">概算コスト</span> <span class="stat-value" id="statCost">-</span>
+        </div>
+
         <div class="notice">
-            ここでの発話は、実際にお客様から電話がかかってきたとき想定で自由に入力してください（例：「明日19時の予約の田中です」「営業のお電話です」など）。実際にOpenAI APIを呼び出すため、わずかに課金が発生します。会話は「AIが用件を聞き終えた」と判断すると自動的に終了します。
+            ここでの発話は、実際にお客様から電話がかかってきたとき想定で入力してください（例：「明日19時の予約の田中です」「営業のお電話です」など）。マイクボタンで話しかけると音声認識され、AIの返答も読み上げられます（対応ブラウザのみ）。実際にOpenAI APIを呼び出すため、わずかに課金が発生します。
+        </div>
+
+        <div class="phone-row">
+            <label for="phoneInput" style="font-size:13px;color:#666;">お客様の電話番号(テスト用):</label>
+            <input type="text" id="phoneInput" placeholder="09012345678" value="09012345678" />
+            <span id="historyBadge">🔁 過去の通話履歴あり</span>
         </div>
 
         <div class="controls">
@@ -200,21 +273,21 @@
                 <option value="gpt-5.6-terra">gpt-5.6-terra</option>
                 <option value="gpt-5.6-sol">gpt-5.6-sol（高精度）</option>
             </select>
-            <button class="btn-secondary" id="resetBtn" type="button">会話をリセット</button>
+            <div class="toggle-row">
+                <input type="checkbox" id="speakToggle" checked />
+                <label for="speakToggle">AIの返答を読み上げる</label>
+            </div>
+            <button class="btn-secondary" id="resetBtn" type="button">同じ番号で新しい通話を開始</button>
         </div>
 
         <div id="chatWindow"></div>
+        <div id="voiceStatus"></div>
 
         <form id="inputForm">
-            <input type="text" id="messageInput" placeholder="お客様の発話を入力..." autocomplete="off" />
+            <button class="mic-btn" id="micBtn" type="button" title="話す">🎤</button>
+            <input type="text" id="messageInput" placeholder="お客様の発話を入力、またはマイクで話す..." autocomplete="off" />
             <button class="btn-primary" type="submit">送信</button>
         </form>
-
-        <div id="statsBar">
-            <span>モデル: <b id="statModel">-</b></span>
-            <span>累計トークン: <b id="statTokens">0</b>（入力 <span id="statPrompt">0</span> / 出力 <span id="statCompletion">0</span>）</span>
-            <span>概算コスト: <b id="statCost">-</b></span>
-        </div>
     </div>
 
     <footer>RECEPTRA 電話AI受付 検証用ページ（オーナー専用）</footer>
@@ -230,6 +303,11 @@
         const messageInput = document.getElementById('messageInput');
         const resetBtn = document.getElementById('resetBtn');
         const modelSelect = document.getElementById('modelSelect');
+        const phoneInput = document.getElementById('phoneInput');
+        const historyBadge = document.getElementById('historyBadge');
+        const micBtn = document.getElementById('micBtn');
+        const speakToggle = document.getElementById('speakToggle');
+        const voiceStatus = document.getElementById('voiceStatus');
         const statModel = document.getElementById('statModel');
         const statTokens = document.getElementById('statTokens');
         const statPrompt = document.getElementById('statPrompt');
@@ -238,6 +316,74 @@
 
         let sessionId = null;
         let ended = false;
+
+        // ===== 音声認識(マイク入力) =====
+        const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognizer = null;
+        let listening = false;
+
+        if (SpeechRecognitionCtor) {
+            recognizer = new SpeechRecognitionCtor();
+            recognizer.lang = 'ja-JP';
+            recognizer.interimResults = true;
+            recognizer.continuous = false;
+
+            recognizer.onstart = () => {
+                listening = true;
+                micBtn.classList.add('listening');
+                voiceStatus.textContent = '🎤 聞いています...';
+            };
+            recognizer.onresult = (ev) => {
+                let transcript = '';
+                for (let i = 0; i < ev.results.length; i++) {
+                    transcript += ev.results[i][0].transcript;
+                }
+                messageInput.value = transcript;
+                if (ev.results[ev.results.length - 1].isFinal) {
+                    voiceStatus.textContent = '認識結果: 「' + transcript + '」';
+                }
+            };
+            recognizer.onerror = (ev) => {
+                voiceStatus.textContent = '音声認識エラー: ' + ev.error;
+            };
+            recognizer.onend = () => {
+                listening = false;
+                micBtn.classList.remove('listening');
+                // 認識できた発話があれば自動送信（実際の電話のように）
+                if (messageInput.value.trim()) {
+                    inputForm.requestSubmit();
+                }
+            };
+
+            micBtn.addEventListener('click', () => {
+                if (listening) {
+                    recognizer.stop();
+                } else {
+                    messageInput.value = '';
+                    try { recognizer.start(); } catch (e) { /* 連打対策 */ }
+                }
+            });
+        } else {
+            micBtn.disabled = true;
+            micBtn.title = 'このブラウザは音声入力に対応していません';
+            micBtn.style.opacity = '0.4';
+        }
+
+        // ===== 音声合成(AIの返答を読み上げ) =====
+        function speak(text) {
+            if (!speakToggle.checked) return;
+            if (!('speechSynthesis' in window)) return;
+            try {
+                window.speechSynthesis.cancel();
+                const utter = new SpeechSynthesisUtterance(text);
+                utter.lang = 'ja-JP';
+                const jaVoice = window.speechSynthesis.getVoices().find(v => v.lang && v.lang.startsWith('ja'));
+                if (jaVoice) utter.voice = jaVoice;
+                window.speechSynthesis.speak(utter);
+            } catch (e) { /* 読み上げできない環境は無視 */ }
+        }
+        // 一部ブラウザは非同期にvoiceリストを読み込むため先に触れておく
+        if ('speechSynthesis' in window) { window.speechSynthesis.getVoices(); }
 
         function addBubble(text, cls) {
             const el = document.createElement('div');
@@ -292,12 +438,20 @@
         async function startSession() {
             chatWindow.innerHTML = '';
             ended = false;
-            inputForm.querySelector('button').disabled = false;
+            inputForm.querySelector('button[type=submit]').disabled = false;
             messageInput.disabled = false;
+            voiceStatus.textContent = '';
+            historyBadge.style.display = 'none';
             try {
-                const data = await apiFetch('/chat/start', {});
+                const data = await apiFetch('/chat/start', {
+                    phone_number: phoneInput.value.trim() || undefined,
+                });
                 sessionId = data.session_id;
-                addMeta('新しい通話を開始しました。お客様の発話を入力してください。');
+                if (data.has_history) {
+                    historyBadge.style.display = 'inline-block';
+                    addMeta('この電話番号には過去の通話履歴があります。AIが「いつもありがとうございます」のように応対するか確認してみてください。');
+                }
+                addMeta('新しい通話を開始しました。お客様の発話を入力するか、マイクで話しかけてください。');
             } catch (e) {
                 addBubble('セッション開始に失敗しました: ' + e.message, 'system');
             }
@@ -309,8 +463,9 @@
             if (!text || ended || !sessionId) return;
             messageInput.value = '';
             addBubble(text, 'caller');
-            const sendBtn = inputForm.querySelector('button');
+            const sendBtn = inputForm.querySelector('button[type=submit]');
             sendBtn.disabled = true;
+            micBtn.disabled = true;
 
             try {
                 const data = await apiFetch('/chat', {
@@ -321,6 +476,7 @@
                 addBubble(data.reply, 'ai');
                 addMeta('分類: ' + data.category + ' / 緊急度: ' + (data.urgency || '-') + (data.summary ? ' / 要約: ' + data.summary : ''));
                 updateStats(data);
+                speak(data.reply);
                 if (data.end_call) {
                     ended = true;
                     const banner = document.createElement('div');
@@ -329,11 +485,13 @@
                     chatWindow.appendChild(banner);
                     chatWindow.scrollTop = chatWindow.scrollHeight;
                     messageInput.disabled = true;
+                    micBtn.disabled = true;
                 }
             } catch (e) {
                 addBubble('エラー: ' + e.message, 'system');
             } finally {
                 sendBtn.disabled = false;
+                if (SpeechRecognitionCtor) micBtn.disabled = false;
             }
         });
 

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
-from app.deps import get_current_tenant
+from app.deps import get_current_tenant, get_db
 from app.models.user import Tenant
 from app.services import voice_ai
 from vonage import Vonage, Auth
@@ -72,15 +73,30 @@ def _base_url(request: Request) -> str:
 
 
 @router.post("/answer")
-async def answer_call(request: Request):
+async def answer_call(request: Request, db: AsyncSession = Depends(get_db)):
     """着信通話を受け入れて、AI受付との会話を開始するNCCOを返す"""
     try:
         data = await request.json()
         logger.info(f"Incoming call: {data}")
 
         conversation_uuid = data.get("conversation_uuid") or data.get("uuid")
+        phone_number = data.get("from")
+
+        # 着信番号→店舗の振り分けは未実装のため、tenant_id=None（店舗をまたがない
+        # 共有プール）で過去の通話履歴を参照する。将来番号ごとの店舗判定ができたら
+        # ここで解決したテナントIDを渡すように変更する。
+        caller_context = None
+        if phone_number:
+            caller_context = await voice_ai.get_caller_context(db, phone_number, tenant_id=None)
+
         if conversation_uuid:
-            voice_ai.start_session(conversation_uuid, shop_name=DEFAULT_SHOP_NAME)
+            voice_ai.start_session(
+                conversation_uuid,
+                shop_name=DEFAULT_SHOP_NAME,
+                caller_context=caller_context,
+                phone_number=phone_number,
+                tenant_id=None,
+            )
 
         event_url = f"{_base_url(request)}/webhook/voice/speech"
 
@@ -101,13 +117,14 @@ async def answer_call(request: Request):
 
 
 @router.post("/speech")
-async def handle_speech(request: Request):
+async def handle_speech(request: Request, db: AsyncSession = Depends(get_db)):
     """音声認識結果を受け取り、AI受付の次の応答(NCCO)を返す"""
     try:
         data = await request.json()
         logger.info(f"Speech input event: {data}")
 
         conversation_uuid = data.get("conversation_uuid") or data.get("uuid")
+        phone_number = data.get("from")
         speech = data.get("speech") or {}
         results = speech.get("results") or []
 
@@ -142,8 +159,16 @@ async def handle_speech(request: Request):
             }
         ]
         if ai_result["end_call"]:
-            if conversation_uuid:
-                voice_ai.end_session(conversation_uuid)
+            session_data = voice_ai.end_session(conversation_uuid) if conversation_uuid else None
+            log_phone = phone_number or (session_data or {}).get("phone_number")
+            await voice_ai.save_call_log(
+                db,
+                phone_number=log_phone,
+                tenant_id=(session_data or {}).get("tenant_id"),
+                category=ai_result["category"],
+                urgency=ai_result["urgency"],
+                summary=ai_result["summary"],
+            )
             # NOTE: 現状は最後のtalkの後、明示的な通話切断は行っていない
             # (発信者側の切断待ち)。Vonage Call Control API
             # (PUT /v1/calls/{uuid} action=hangup) を使った能動的な
@@ -300,27 +325,52 @@ async def simulate_conversation(
 async def chat_start(
     request: Request,
     tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
 ):
-    """自由入力チャットのセッションを新規開始し、session_idを発行する"""
+    """
+    自由入力チャットのセッションを新規開始し、session_idを発行する。
+    phone_number（テスト用の電話番号）を指定すると、同じ番号での過去の
+    通話履歴（要約）をAIに引き継がせて「いつもありがとうございます」的な
+    応対の再現をテストできる。
+    """
     try:
         body = await request.json()
     except Exception:
         body = {}
     shop_name = body.get("shop_name") or DEFAULT_SHOP_NAME
+    phone_number = (body.get("phone_number") or "").strip() or None
     session_id = f"chat-{tenant.id}-{uuid.uuid4()}"
-    voice_ai.start_session(session_id, shop_name=shop_name)
-    return {"session_id": session_id, "shop_name": shop_name}
+
+    caller_context = None
+    if phone_number:
+        caller_context = await voice_ai.get_caller_context(db, phone_number, tenant_id=tenant.id)
+
+    voice_ai.start_session(
+        session_id,
+        shop_name=shop_name,
+        caller_context=caller_context,
+        phone_number=phone_number,
+        tenant_id=tenant.id,
+    )
+    return {
+        "session_id": session_id,
+        "shop_name": shop_name,
+        "phone_number": phone_number,
+        "has_history": caller_context is not None,
+    }
 
 
 @test_router.post("/chat")
 async def chat_turn(
     request: Request,
     tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     自由に入力した1メッセージをAI受付に送り、応答を1ターン分返す。
     実際の電話がまだ使えない状態でも、ブラウザから直接AIと会話できるようにするための
     検証用エンドポイント（/webhook/voice/speech と同じ会話ロジックを使う）。
+    AIが通話終了と判断した場合、要約をこの電話番号の履歴として保存する。
     """
     body = await request.json()
     session_id = body.get("session_id")
@@ -342,6 +392,18 @@ async def chat_turn(
         result = await voice_ai.get_ai_reply(session_id, message, shop_name=shop_name)
     finally:
         settings.VOICE_AI_MODEL = original_model_override
+
+    if result["end_call"]:
+        session_data = voice_ai.end_session(session_id)
+        if session_data and session_data.get("phone_number"):
+            await voice_ai.save_call_log(
+                db,
+                phone_number=session_data.get("phone_number"),
+                tenant_id=session_data.get("tenant_id"),
+                category=result["category"],
+                urgency=result["urgency"],
+                summary=result["summary"],
+            )
 
     model_used = model_override or settings.VOICE_AI_MODEL or settings.OPENAI_MODEL
     cost_usd = voice_ai.estimate_cost_usd(result["cumulative_usage"], model_used)

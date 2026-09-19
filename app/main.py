@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.config import get_settings
 from app.database import init_db
 from app.models.user import Base
-from app.models import receptionist, visitor
+from app.models import receptionist, visitor, voice_call_log
 from app.routers.users import router as users_router
 from app.routers.receptionists import router as receptionists_router
 from app.routers.auth import router as auth_router
