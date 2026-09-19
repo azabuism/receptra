@@ -34,6 +34,7 @@ class Reservation(Base):
     staff_id = Column(String(36), ForeignKey("staff.id"), nullable=True)  # スタッフ指名（オプション）
     table_id = Column(String(36), ForeignKey("shop_tables.id"), nullable=True)  # 割り当てられたテーブル
     service_id = Column(String(36), ForeignKey("services.id"), nullable=True, index=True)  # 予約対象のサービス（美容院・クリニックなど、サービス単位で予約する業種の場合）
+    coupon_id = Column(String(36), ForeignKey("coupons.id"), nullable=True, index=True)  # 予約時に適用されたクーポン（オプション）
 
     # ゲスト予約情報（会員登録なしで予約する場合に使用）
     guest_name = Column(String(255), nullable=True)
@@ -66,7 +67,8 @@ class Reservation(Base):
     table_number = Column(String(50), nullable=True)  # テーブル番号
     
     # 支払い情報（新規）
-    total_price = Column(Integer, nullable=True)  # 合計金額（円）
+    total_price = Column(Integer, nullable=True)  # 合計金額（円、クーポン適用後）
+    discount_amount = Column(Integer, nullable=True)  # クーポン等による割引額（円）。予約時点の金額を記録として保持する
     payment_method = Column(String(50), nullable=True)  # credit_card, cash, etc
     payment_status = Column(String(50), nullable=True)  # unpaid, paid, refunded
     
@@ -83,6 +85,7 @@ class Reservation(Base):
     staff = relationship("Staff", back_populates="reservations", foreign_keys=[staff_id])
     table = relationship("ShopTable")
     service = relationship("Service", foreign_keys=[service_id])
+    coupon = relationship("Coupon", foreign_keys=[coupon_id])
 
     # インデックス
     __table_args__ = (

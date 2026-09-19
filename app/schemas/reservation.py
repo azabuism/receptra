@@ -15,6 +15,7 @@ class ReservationCreateRequest(BaseModel):
     number_of_people: int = Field(1, ge=1, le=999, description="人数（美容院・クリニックなどサービス単位の予約では省略可、既定値1）")
     service_id: Optional[str] = Field(None, description="サービスID（美容院・クリニック・スクール・フィットネスなど、サービス単位で予約する業種の場合に指定）")
     staff_id: Optional[str] = Field(None, description="スタッフ指名がある場合に指定（省略時は指名なし・お任せ）")
+    coupon_code: Optional[str] = Field(None, max_length=50, description="クーポンコード（サービス単位の予約でのみ利用可能）")
     guest_name: str = Field(..., min_length=1, max_length=255, description="予約者名")
     guest_phone: str = Field(..., min_length=1, max_length=20, description="連絡先電話番号")
     guest_email: Optional[EmailStr] = Field(None, description="連絡先メールアドレス")
@@ -41,6 +42,9 @@ class ReservationResponse(BaseModel):
     service_name: Optional[str] = None
     staff_id: Optional[str] = None
     staff_name: Optional[str] = None
+    coupon_id: Optional[str] = None
+    coupon_code: Optional[str] = None
+    discount_amount: Optional[int] = None
     guest_name: Optional[str] = None
     guest_phone: Optional[str] = None
     guest_email: Optional[str] = None

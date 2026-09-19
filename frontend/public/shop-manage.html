@@ -1230,6 +1230,10 @@
                     if (r.service_name) serviceBits.push('サービス：' + escapeHtml(r.service_name));
                     if (r.staff_name) serviceBits.push('担当：' + escapeHtml(r.staff_name));
                     if (r.total_price != null) serviceBits.push('¥' + Number(r.total_price).toLocaleString());
+                    if (r.coupon_code) {
+                        serviceBits.push('🎟 ' + escapeHtml(r.coupon_code)
+                            + (r.discount_amount != null ? '（' + Number(r.discount_amount).toLocaleString() + '円引き）' : ''));
+                    }
                     const noteBits = [];
                     if (r.special_requests) noteBits.push('備考：' + escapeHtml(r.special_requests));
                     if (r.status === 'cancelled' && r.cancellation_reason) noteBits.push('理由：' + escapeHtml(r.cancellation_reason));

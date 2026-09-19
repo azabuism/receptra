@@ -19,6 +19,7 @@ from app.models.reservation import Reservation, ReservationStatus
 from app.models.shop import Shop, ShopHours, ShopTable, ShopClosure
 from app.models.service import Service
 from app.models.staff import Staff, StaffService
+from app.models.promotion import Coupon
 from app.schemas.reservation import (
     ReservationCreateRequest, ReservationResponse, ReservationCreateResponse,
     ReservationUpdateRequest, ReservationListResponse,
@@ -42,6 +43,9 @@ def _to_response(reservation: Reservation) -> ReservationResponse:
         service_name=(reservation.service.name if reservation.service else None),
         staff_id=reservation.staff_id,
         staff_name=(reservation.staff.name if reservation.staff else None),
+        coupon_id=reservation.coupon_id,
+        coupon_code=(reservation.coupon.code if reservation.coupon else None),
+        discount_amount=reservation.discount_amount,
         guest_name=reservation.guest_name,
         guest_phone=reservation.guest_phone,
         guest_email=reservation.guest_email,
@@ -160,6 +164,41 @@ async def _find_available_staff_for_service(
             return staff.id, False
 
     return None, False
+
+
+async def _resolve_coupon_for_booking(
+    db: AsyncSession, shop_id: str, code: str, base_amount: float
+) -> tuple[Coupon, int, int]:
+    """
+    予約時に入力されたクーポンコードを検証し、割引後の合計金額を計算する。
+    戻り値: (Coupon, discounted_total(円), discount_amount(円))
+    無効なクーポンの場合は HTTPException(400) を送出する。
+    """
+    result = await db.execute(
+        select(Coupon).filter(Coupon.shop_id == shop_id, Coupon.code == code)
+    )
+    coupon = result.scalar_one_or_none()
+    if not coupon:
+        raise HTTPException(status_code=400, detail="クーポンコードが見つかりません")
+    if not coupon.is_active:
+        raise HTTPException(status_code=400, detail="このクーポンは現在ご利用いただけません")
+
+    now = datetime.utcnow()
+    if coupon.start_date and now < coupon.start_date:
+        raise HTTPException(status_code=400, detail="このクーポンはまだご利用いただけません")
+    if coupon.end_date and now > coupon.end_date:
+        raise HTTPException(status_code=400, detail="このクーポンの有効期限が切れています")
+    if coupon.usage_limit is not None and (coupon.usage_count or 0) >= coupon.usage_limit:
+        raise HTTPException(status_code=400, detail="このクーポンは利用上限に達しています")
+
+    if coupon.discount_type == "percentage":
+        raw_discount = base_amount * (coupon.discount_value / 100.0)
+    else:
+        raw_discount = coupon.discount_value
+
+    discount_amount = int(round(max(0.0, min(raw_discount, base_amount))))
+    discounted_total = int(round(base_amount)) - discount_amount
+    return coupon, discounted_total, discount_amount
 
 
 @router.get(
@@ -319,6 +358,16 @@ async def create_reservation(
             if not unmanaged and table_id is None:
                 raise HTTPException(status_code=400, detail="ご希望の時間は満席です。他の時間をお試しください")
 
+        coupon: Optional[Coupon] = None
+        discount_amount = 0
+        total_price = int(round(service.base_price)) if service else None
+        if request.coupon_code:
+            if not service:
+                raise HTTPException(status_code=400, detail="クーポンはサービスの予約にのみご利用いただけます")
+            coupon, total_price, discount_amount = await _resolve_coupon_for_booking(
+                db, request.shop_id, request.coupon_code, service.base_price
+            )
+
         reservation_id = str(uuid.uuid4())
         reservation = Reservation(
             id=reservation_id,
@@ -328,6 +377,7 @@ async def create_reservation(
             staff_id=final_staff_id,
             table_id=table_id,
             service_id=service.id if service else None,
+            coupon_id=coupon.id if coupon else None,
             guest_name=request.guest_name,
             guest_phone=request.guest_phone,
             guest_email=request.guest_email,
@@ -335,13 +385,19 @@ async def create_reservation(
             number_of_people=request.number_of_people,
             status=ReservationStatus.PENDING.value,
             special_requests=request.special_requests,
-            total_price=int(round(service.base_price)) if service else None,
+            total_price=total_price,
+            discount_amount=(discount_amount if coupon else None),
             payment_status=("unpaid" if service else None),
-            reservation_source="online",
+            reservation_source=("coupon" if coupon else "online"),
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
         )
         db.add(reservation)
+
+        if coupon:
+            coupon.usage_count = (coupon.usage_count or 0) + 1
+            coupon.total_discount_given = (coupon.total_discount_given or 0.0) + discount_amount
+            coupon.updated_at = datetime.utcnow()
 
         if shop.total_reservations is None:
             shop.total_reservations = 0
@@ -351,7 +407,7 @@ async def create_reservation(
         await db.commit()
 
         result = await db.execute(
-            select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service)).filter(Reservation.id == reservation_id)
+            select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon)).filter(Reservation.id == reservation_id)
         )
         reservation = result.scalar_one()
 
@@ -380,7 +436,7 @@ async def get_reservation(
     db: AsyncSession = Depends(get_db)
 ) -> ReservationResponse:
     result = await db.execute(
-        select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service)).filter(Reservation.id == reservation_id)
+        select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon)).filter(Reservation.id == reservation_id)
     )
     reservation = result.scalar_one_or_none()
     if not reservation:
@@ -408,7 +464,7 @@ async def get_shop_reservations(
     if shop.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="この店舗の予約を閲覧する権限がありません")
 
-    stmt = select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service)).filter(Reservation.shop_id == shop_id)
+    stmt = select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon)).filter(Reservation.shop_id == shop_id)
     if status:
         stmt = stmt.filter(Reservation.status == status.lower())
 
@@ -440,7 +496,7 @@ async def update_reservation(
 ) -> ReservationResponse:
     try:
         result = await db.execute(
-            select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service)).filter(Reservation.id == reservation_id)
+            select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon)).filter(Reservation.id == reservation_id)
         )
         reservation = result.scalar_one_or_none()
         if not reservation:
@@ -473,7 +529,7 @@ async def update_reservation(
 
         reservation.updated_at = datetime.utcnow()
         await db.commit()
-        await db.refresh(reservation, attribute_names=["table", "staff", "service"])
+        await db.refresh(reservation, attribute_names=["table", "staff", "service", "coupon"])
 
         return _to_response(reservation)
 

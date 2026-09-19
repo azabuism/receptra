@@ -126,6 +126,14 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ reservations.service_id カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # 予約システム作り込み: 予約時のクーポン適用（coupon_id・discount_amount）に対応するためのカラム
+            try:
+                await conn.execute(text("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS coupon_id VARCHAR(36)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_reservations_coupon ON reservations (coupon_id)"))
+                await conn.execute(text("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS discount_amount INTEGER"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ reservations.coupon_id/discount_amount カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
             try:
                 await conn.execute(text("ALTER TABLE reviews ALTER COLUMN customer_id DROP NOT NULL"))
             except Exception as alter_err:

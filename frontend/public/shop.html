@@ -207,6 +207,7 @@
         .slot-btn.selected { background: var(--primary); border-color: var(--primary); color: var(--white); }
         .slot-btn.unavailable { color: #ccc; border-color: #f0f0f0; cursor: not-allowed; text-decoration: line-through; }
         .booking-hint { font-size: 13px; color: #999; margin-bottom: 14px; }
+        .booking-hint.error { color: #ef4444; }
         .booking-msg {
             font-size: 13px; margin-top: 12px; padding: 10px 12px; border-radius: 8px; display: none;
         }
@@ -291,6 +292,11 @@
                     <div class="field">
                         <label for="booking-notes">ご要望・備考</label>
                         <textarea id="booking-notes" placeholder="アレルギーや個室希望など"></textarea>
+                    </div>
+                    <div class="field" id="booking-coupon-field" style="display:none;">
+                        <label for="booking-coupon">クーポンコード（お持ちの方）</label>
+                        <input type="text" id="booking-coupon" placeholder="例：SAVE20" autocapitalize="characters">
+                        <p class="booking-hint" id="booking-coupon-msg" style="margin-top:6px;"></p>
                     </div>
                     <button type="button" class="btn" id="booking-submit-btn">この内容で予約する</button>
                     <div class="booking-msg" id="booking-msg"></div>
@@ -739,6 +745,7 @@
             document.getElementById('booking-service-field').style.display = isServiceBased ? 'block' : 'none';
             document.getElementById('booking-staff-field').style.display = isServiceBased ? 'block' : 'none';
             document.getElementById('booking-party-field').style.display = isServiceBased ? 'none' : 'block';
+            document.getElementById('booking-coupon-field').style.display = isServiceBased ? 'block' : 'none';
             document.querySelector('.booking-row').style.gridTemplateColumns = isServiceBased ? '1fr' : '';
             document.getElementById('booking-intro-hint').textContent = isServiceBased
                 ? '会員登録は不要です。サービスと日時を選んで、そのまま予約できます。'
@@ -898,6 +905,7 @@
             const partySize = parseInt(document.getElementById('booking-party').value, 10) || 1;
             const serviceId = isServiceBased ? document.getElementById('booking-service').value : '';
             const staffId = isServiceBased ? document.getElementById('booking-staff').value : '';
+            const couponCode = isServiceBased ? document.getElementById('booking-coupon').value.trim() : '';
             const name = document.getElementById('booking-name').value.trim();
             const phone = document.getElementById('booking-phone').value.trim();
             const email = document.getElementById('booking-email').value.trim();
@@ -911,6 +919,8 @@
             const reservationDate = date + 'T' + selectedBookingTime + ':00';
             const btn = document.getElementById('booking-submit-btn');
             btn.disabled = true;
+            const couponMsgEl = document.getElementById('booking-coupon-msg');
+            if (couponMsgEl) { couponMsgEl.textContent = ''; couponMsgEl.className = 'booking-hint'; }
 
             const payload = {
                 shop_id: currentShopId,
@@ -923,6 +933,7 @@
             if (isServiceBased) {
                 payload.service_id = serviceId;
                 if (staffId) payload.staff_id = staffId;
+                if (couponCode) payload.coupon_code = couponCode;
             } else {
                 payload.number_of_people = partySize;
             }
@@ -936,15 +947,31 @@
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || '予約に失敗しました');
 
-                showBookingMsg('ご予約ありがとうございます。' + data.message, 'success');
+                const reservation = data.reservation || {};
+                let successMsg = 'ご予約ありがとうございます。' + data.message;
+                if (reservation.coupon_code && reservation.total_price != null) {
+                    successMsg += '（クーポン「' + reservation.coupon_code + '」適用: '
+                        + Number(reservation.discount_amount || 0).toLocaleString() + '円引き、お会計予定額 ¥'
+                        + Number(reservation.total_price).toLocaleString() + '）';
+                } else if (reservation.total_price != null) {
+                    successMsg += '（お会計予定額 ¥' + Number(reservation.total_price).toLocaleString() + '）';
+                }
+                showBookingMsg(successMsg, 'success');
                 document.getElementById('booking-slots-wrap').style.display = 'none';
                 document.getElementById('booking-name').value = '';
                 document.getElementById('booking-phone').value = '';
                 document.getElementById('booking-email').value = '';
                 document.getElementById('booking-notes').value = '';
+                document.getElementById('booking-coupon').value = '';
                 selectedBookingTime = null;
             } catch (err) {
-                showBookingMsg(typeof err.message === 'string' ? err.message : '予約に失敗しました', 'error');
+                const msg = typeof err.message === 'string' ? err.message : '予約に失敗しました';
+                if (couponCode && msg.indexOf('クーポン') !== -1 && couponMsgEl) {
+                    couponMsgEl.textContent = msg;
+                    couponMsgEl.className = 'booking-hint error';
+                } else {
+                    showBookingMsg(msg, 'error');
+                }
             } finally {
                 btn.disabled = false;
             }
