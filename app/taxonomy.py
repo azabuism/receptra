@@ -47,7 +47,7 @@ TAXONOMY: List[TaxonomyGroup] = [
             {"name": "ステーキ", "icon": "🥩", "image": "restaurant-steak"},
             {"name": "パン屋", "icon": "🥐", "image": "restaurant-bakery"},
             {"name": "デリ・弁当", "icon": "🍱", "image": "restaurant-deli-bento"},
-            {"name": "その他（飲食店）", "icon": "🍴"},
+            {"name": "その他（飲食店）", "icon": "🍴", "image": "restaurant-other"},
         ],
     },
     {
@@ -89,7 +89,7 @@ TAXONOMY: List[TaxonomyGroup] = [
             {"name": "アート教室", "icon": "🎨", "image": "education-art"},
             {"name": "家庭教師・塾", "icon": "📖", "image": "education-tutoring"},
             {"name": "ヨガ・ダンス", "icon": "💃", "image": "education-yoga"},
-            {"name": "その他（教育）", "icon": "🎓"},
+            {"name": "その他（教育）", "icon": "🎓", "image": "education-other"},
         ],
     },
     {
