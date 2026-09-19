@@ -120,6 +120,29 @@ def _resolve_model() -> str:
     return settings.VOICE_AI_MODEL or settings.OPENAI_MODEL
 
 
+async def _create_completion(client: AsyncOpenAI, model: str, messages: list, max_tokens: int):
+    """
+    OpenAIのモデルによって、出力トークン上限の指定パラメータ名が異なる
+    (新しいモデル系列は max_tokens を廃止し max_completion_tokens を要求する)。
+    まず現行の max_completion_tokens で呼び出し、
+    "unsupported_parameter" で拒否された場合のみ旧来の max_tokens にフォールバックする。
+    """
+    kwargs = dict(
+        model=model,
+        messages=messages,
+        response_format={"type": "json_object"},
+        temperature=0.4,
+    )
+    try:
+        return await client.chat.completions.create(max_completion_tokens=max_tokens, **kwargs)
+    except Exception as e:
+        message = str(e)
+        if "max_completion_tokens" in message and ("unsupported_parameter" in message or "Unsupported parameter" in message):
+            logger.info("モデル %s は max_completion_tokens 未対応のため max_tokens にフォールバック", model)
+            return await client.chat.completions.create(max_tokens=max_tokens, **kwargs)
+        raise
+
+
 def estimate_cost_usd(usage: dict, model: str) -> Optional[float]:
     pricing = _PRICING_USD_PER_1M_TOKENS.get(model)
     if not pricing:
@@ -156,13 +179,7 @@ async def get_ai_reply(session_id: str, user_text: str, shop_name: str = "当店
 
     client = _get_client()
     try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=session["messages"],
-            max_tokens=settings.VOICE_AI_MAX_TOKENS,
-            response_format={"type": "json_object"},
-            temperature=0.4,
-        )
+        response = await _create_completion(client, model, session["messages"], settings.VOICE_AI_MAX_TOKENS)
     except Exception as e:
         logger.error("OpenAI呼び出しエラー (session=%s): %s", session_id, e)
         # API障害時のフォールバック応答（通話自体は継続させず丁寧に終える）
