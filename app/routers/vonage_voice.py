@@ -183,7 +183,7 @@ async def handle_speech(request: Request, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/events")
-async def handle_events(request: Request):
+async def handle_events(request: Request, db: AsyncSession = Depends(get_db)):
     """通話イベントの処理（接続、切断など）"""
     try:
         data = await request.json()
@@ -196,10 +196,25 @@ async def handle_events(request: Request):
 
         if status in ("completed", "failed", "rejected", "busy", "cancelled"):
             logger.info(f"Call ended (status={status}): {uuid}")
-            # 通話終了時にセッションが残っていれば掃除しておく
+            # 通話終了時にセッションが残っていれば掃除する。
+            # AIが end_call=true で自発的に終えた場合はすでに /speech 側で
+            # ログ保存・セッション破棄済みなのでここでは None が返るだけ。
+            # 発信者が途中で切った等でセッションが残っている場合は、
+            # それまでの直近の分類結果でフォールバックログを残す。
             for key in (conversation_uuid, uuid):
-                if key:
-                    voice_ai.end_session(key)
+                if not key:
+                    continue
+                session_data = voice_ai.end_session(key)
+                if session_data and session_data.get("phone_number") and session_data.get("turn_count", 0) > 0:
+                    fallback = voice_ai.build_fallback_log_fields(session_data)
+                    await voice_ai.save_call_log(
+                        db,
+                        phone_number=session_data.get("phone_number"),
+                        tenant_id=session_data.get("tenant_id"),
+                        category=fallback["category"],
+                        urgency=fallback["urgency"],
+                        summary=fallback["summary"],
+                    )
 
         return {"status": "ok"}
     except Exception as e:
@@ -427,10 +442,25 @@ async def chat_turn(
 async def chat_end(
     request: Request,
     tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
 ):
-    """チャットセッションを破棄する（ページを閉じる/リセットする際に呼ぶ）"""
+    """
+    チャットセッションを破棄する（ページを閉じる/リセットする際に呼ぶ）。
+    AIが自発的に end_call=true で終える前に打ち切られた場合でも、それまでの
+    会話に分かる範囲でログを残しておく（次回同じ番号での応対に活かすため）。
+    """
     body = await request.json()
     session_id = body.get("session_id")
     if session_id:
-        voice_ai.end_session(session_id)
+        session_data = voice_ai.end_session(session_id)
+        if session_data and session_data.get("phone_number") and session_data.get("turn_count", 0) > 0:
+            fallback = voice_ai.build_fallback_log_fields(session_data)
+            await voice_ai.save_call_log(
+                db,
+                phone_number=session_data.get("phone_number"),
+                tenant_id=session_data.get("tenant_id"),
+                category=fallback["category"],
+                urgency=fallback["urgency"],
+                summary=fallback["summary"],
+            )
     return {"ended": True}

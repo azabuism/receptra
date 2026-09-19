@@ -120,6 +120,12 @@ def _new_session(
         "started_at": datetime.now(timezone.utc),
         "phone_number": phone_number,
         "tenant_id": tenant_id,
+        # AIが明示的に end_call=true を返す前に通話が打ち切られた場合
+        # (発信者が途中で切った、テストページでリセットされた等)でも
+        # それまでの直近の分類結果からログを残せるようにするための記録。
+        "last_category": None,
+        "last_urgency": None,
+        "last_summary": None,
     }
 
 
@@ -139,6 +145,21 @@ def start_session(
 def end_session(session_id: str) -> Optional[dict]:
     """通話終了時にセッションを破棄し、最終状態を返す（ログ用）"""
     return _sessions.pop(session_id, None)
+
+
+def build_fallback_log_fields(session_data: dict) -> dict:
+    """
+    AIが自発的に end_call=true で会話を締めくくる前に通話が終わった場合
+    (発信者が途中で電話を切った、テストページで「新しい通話を開始」を
+    押してリセットされた等)でも、それまでの会話で分かっている直近の
+    分類結果を使って、次回のために最低限のログを残すためのフォールバック値。
+    """
+    return {
+        "category": session_data.get("last_category") or "unclear",
+        "urgency": session_data.get("last_urgency"),
+        "summary": session_data.get("last_summary")
+        or "（通話が途中で終了したため要約なし。必要に応じて内容をご確認ください）",
+    }
 
 
 _CATEGORY_LABELS = {
@@ -327,6 +348,12 @@ async def get_ai_reply(session_id: str, user_text: str, shop_name: str = "当店
     end_call = bool(parsed.get("end_call")) or force_end
     if force_end and not parsed.get("summary"):
         parsed["summary"] = "（会話が長引いたため自動終話。手動で内容を確認してください）"
+
+    # 通話が途中で打ち切られた場合のフォールバックログ用に、直近の分類結果を記録しておく
+    session["last_category"] = parsed.get("category", "unclear")
+    session["last_urgency"] = parsed.get("urgency")
+    if parsed.get("summary"):
+        session["last_summary"] = parsed.get("summary")
 
     # 会話履歴にはAIの発話文のみを積む（JSON構造そのものは次ターンの文脈として不要）
     session["messages"].append({"role": "assistant", "content": reply_text})
