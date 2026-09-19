@@ -122,25 +122,48 @@ def _resolve_model() -> str:
 
 async def _create_completion(client: AsyncOpenAI, model: str, messages: list, max_tokens: int):
     """
-    OpenAIのモデルによって、出力トークン上限の指定パラメータ名が異なる
-    (新しいモデル系列は max_tokens を廃止し max_completion_tokens を要求する)。
-    まず現行の max_completion_tokens で呼び出し、
-    "unsupported_parameter" で拒否された場合のみ旧来の max_tokens にフォールバックする。
+    OpenAIのモデル世代によってサポートするパラメータが異なるため
+    (例: gpt-5.6系は max_tokens ではなく max_completion_tokens を要求し、
+    temperature のカスタム値も受け付けずデフォルト値のみ許可する)、
+    まず現行仕様のパラメータ一式で呼び出し、モデルがサポートしないパラメータを
+    エラー内容から特定して1つずつ取り除きながら再試行する。
     """
     kwargs = dict(
         model=model,
         messages=messages,
         response_format={"type": "json_object"},
         temperature=0.4,
+        max_completion_tokens=max_tokens,
     )
-    try:
-        return await client.chat.completions.create(max_completion_tokens=max_tokens, **kwargs)
-    except Exception as e:
-        message = str(e)
-        if "max_completion_tokens" in message and ("unsupported_parameter" in message or "Unsupported parameter" in message):
-            logger.info("モデル %s は max_completion_tokens 未対応のため max_tokens にフォールバック", model)
-            return await client.chat.completions.create(max_tokens=max_tokens, **kwargs)
-        raise
+
+    for _ in range(len(kwargs)):
+        try:
+            return await client.chat.completions.create(**kwargs)
+        except Exception as e:
+            message = str(e)
+            adjusted = False
+
+            if "max_completion_tokens" in kwargs and "max_completion_tokens" in message and (
+                "unsupported_parameter" in message or "Unsupported parameter" in message
+            ):
+                logger.info("モデル %s は max_completion_tokens 未対応のため max_tokens にフォールバック", model)
+                kwargs.pop("max_completion_tokens")
+                kwargs["max_tokens"] = max_tokens
+                adjusted = True
+            elif "temperature" in kwargs and "temperature" in message and (
+                "unsupported_value" in message or "Unsupported value" in message
+            ):
+                logger.info("モデル %s はカスタムtemperature未対応のためデフォルト値にフォールバック", model)
+                kwargs.pop("temperature")
+                adjusted = True
+
+            if not adjusted:
+                raise
+
+    # ここには通常到達しない（全パラメータを外しても失敗する異常系）
+    return await client.chat.completions.create(
+        model=model, messages=messages, response_format={"type": "json_object"}
+    )
 
 
 def estimate_cost_usd(usage: dict, model: str) -> Optional[float]:
