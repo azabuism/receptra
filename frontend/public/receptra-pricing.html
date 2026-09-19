@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>料金プラン - レセプトラ</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #FF6B35;
+            --primary-light: #ff9500;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --error: #ef4444;
+            --success: #10b981;
+            --border: 1px solid #ddd;
+        }
+        html, body { height: 100%; overflow-x: hidden; max-width: 100%; }
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            line-height: 1.6;
+            display: flex;
+            flex-direction: column;
+            min-height: 100%;
+        }
+        nav {
+            position: sticky; top: 0; z-index: 10;
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            row-gap: 6px;
+            min-height: 60px;
+        }
+        .nav-brand {
+            text-decoration: none;
+            color: var(--primary);
+            font-size: 20px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .nav-logo-img { width: 32px; height: 32px; object-fit: contain; flex-shrink: 0; }
+        .nav-right { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; font-size: 14px; }
+        .nav-right a { color: var(--dark); text-decoration: none; font-size: 13px; white-space: nowrap; }
+        main { flex: 1; max-width: 560px; margin: 0 auto; padding: 40px 20px 60px; width: 100%; }
+        .page-head { text-align: center; margin-bottom: 32px; }
+        .page-head .badge {
+            display: inline-block;
+            background: #fff0e6;
+            color: var(--primary-dark);
+            font-size: 12px;
+            font-weight: 700;
+            padding: 4px 12px;
+            border-radius: 12px;
+            margin-bottom: 12px;
+        }
+        .page-head h1 { font-size: 26px; margin-bottom: 8px; }
+        .page-head p { color: #777; font-size: 14px; }
+        .plan-card {
+            background: var(--white);
+            border-radius: 20px;
+            padding: 32px 28px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            border: 2px solid #ffe0cc;
+            margin-bottom: 28px;
+        }
+        .plan-name {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--primary);
+            letter-spacing: 0.05em;
+            margin-bottom: 4px;
+        }
+        .plan-title { font-size: 22px; font-weight: 700; margin-bottom: 20px; }
+        .price-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+        .price-strike { color: #aaa; text-decoration: line-through; font-size: 15px; }
+        .price-campaign-label {
+            display: inline-block;
+            background: var(--primary);
+            color: var(--white);
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 10px;
+            margin-left: 4px;
+        }
+        .price-main { font-size: 32px; font-weight: 700; color: var(--dark); }
+        .price-unit { font-size: 14px; color: #777; }
+        .price-sub { font-size: 13px; color: #999; margin-bottom: 20px; }
+        .price-divider { height: 1px; background: #f0f0f0; margin: 16px 0; }
+        .monthly-row { display: flex; align-items: baseline; gap: 6px; margin-bottom: 6px; }
+        .monthly-main { font-size: 28px; font-weight: 700; color: var(--dark); }
+        .feature-list { list-style: none; margin: 20px 0 24px; }
+        .feature-list li {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            font-size: 14px;
+            margin-bottom: 12px;
+            color: #444;
+        }
+        .feature-list li::before {
+            content: "✓";
+            color: var(--primary);
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+        .btn-cta {
+            display: block;
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 24px;
+            font-size: 16px;
+            font-weight: 700;
+            font-family: inherit;
+            cursor: pointer;
+            background: var(--primary);
+            color: var(--white);
+            text-align: center;
+            text-decoration: none;
+            transition: background 0.2s;
+        }
+        .btn-cta:hover { background: var(--primary-dark); }
+        .note-box {
+            background: var(--white);
+            border-radius: 14px;
+            padding: 20px 22px;
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 24px;
+        }
+        .note-box h3 { font-size: 14px; color: var(--dark); margin-bottom: 10px; }
+        .note-box ul { padding-left: 18px; }
+        .note-box li { margin-bottom: 6px; }
+        .legal-links { text-align: center; font-size: 13px; }
+        .legal-links a { color: var(--primary); text-decoration: none; }
+        .legal-links a:hover { text-decoration: underline; }
+        footer {
+            text-align: center;
+            padding: 24px 20px 32px;
+            border-top: 1px solid #eee;
+            background: var(--white);
+        }
+        footer .footer-links { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 12px; }
+        footer a { color: #777; text-decoration: none; font-size: 13px; }
+        footer a:hover { color: var(--primary); }
+        footer p { color: #aaa; font-size: 12px; }
+        @media (max-width: 480px) {
+            .nav-brand { font-size: 17px; }
+            .price-main { font-size: 26px; }
+            .monthly-main { font-size: 22px; }
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/" class="nav-brand"><img src="/images/receptra-logo.png" alt="RECEPTRA Logo" class="nav-logo-img">レセプトラ</a>
+        <div class="nav-right"><a href="/">← ホームに戻る</a></div>
+    </nav>
+    <main>
+        <div class="page-head">
+            <span class="badge">店舗オーナー様向け</span>
+            <h1>料金プラン</h1>
+            <p>予約管理からAI電話対応まで、店舗運営をまるごとサポート</p>
+        </div>
+
+        <div class="plan-card">
+            <div class="plan-name">スタンダードプラン</div>
+            <div class="plan-title">レセプトラ 店舗オーナープラン</div>
+
+            <div class="price-row">
+                <span class="price-strike">初期導入費 通常 40,000円</span>
+                <span class="price-campaign-label">今だけキャンペーン</span>
+            </div>
+            <div class="price-row">
+                <span class="price-main">20,000円</span>
+                <span class="price-unit">（税込・初回のみ）</span>
+            </div>
+            <div class="price-sub">導入時に一度だけお支払いいただく費用です</div>
+
+            <div class="price-divider"></div>
+
+            <div class="monthly-row">
+                <span class="monthly-main">5,000円</span>
+                <span class="price-unit">/ 月（税込）</span>
+            </div>
+            <div class="price-sub">ご利用中は毎月自動でお支払いいただきます</div>
+
+            <ul class="feature-list">
+                <li>予約の受付・管理（Web予約台帳）</li>
+                <li>AIによるコールバックリマインダー（お電話対応）</li>
+                <li>予約時クーポンの発行・管理</li>
+                <li>店舗ページ・エリア検索への掲載</li>
+                <li>店舗オーナー用マイページ</li>
+            </ul>
+
+            <a href="register.html?type=owner" class="btn-cta">このプランで店舗オーナー登録</a>
+        </div>
+
+        <div class="note-box">
+            <h3>お支払いについて</h3>
+            <ul>
+                <li>お支払い方法はクレジットカード（PAY.jp決済）です。</li>
+                <li>初期導入費は登録時に一度のみ、月額利用料は毎月自動更新でのお支払いとなります。</li>
+                <li>解約はいつでも可能です。日割りでの返金は行っておりません。</li>
+                <li>表示価格はすべて消費税込みです。</li>
+            </ul>
+        </div>
+
+        <div class="legal-links">
+            詳しい取引条件は<a href="https://www.bariyon.com/tokushoho.html" target="_blank" rel="noopener">特定商取引法に基づく表記</a>をご確認ください
+        </div>
+    </main>
+
+    <footer>
+        <div class="footer-links">
+            <a href="receptra-pricing.html">料金プラン</a>
+            <a href="https://www.bariyon.com/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>
+            <a href="https://www.bariyon.com/terms.html" target="_blank" rel="noopener">利用規約</a>
+            <a href="https://www.bariyon.com/tokushoho.html" target="_blank" rel="noopener">特定商取引法に基づく表記</a>
+            <a href="https://www.bariyon.com/contact.html" target="_blank" rel="noopener">お問い合わせ</a>
+        </div>
+        <p>&copy; 2026 BARIYON レセプトラ. All rights reserved.</p>
+    </footer>
+</body>
+</html>
