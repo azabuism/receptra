@@ -5,6 +5,7 @@ from app.models.user import Tenant
 from app.services import voice_ai
 from vonage import Vonage, Auth
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -293,3 +294,81 @@ async def simulate_conversation(
         "estimated_cost_jpy": round(cost_usd * voice_ai.USD_TO_JPY_APPROX, 2) if cost_usd is not None else None,
         "note": "円換算は概算レート(1USD≈157円, 2026年9月時点)によるものです。正確な料金はOpenAIの請求ダッシュボードを確認してください。",
     }
+
+
+@test_router.post("/chat/start")
+async def chat_start(
+    request: Request,
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """自由入力チャットのセッションを新規開始し、session_idを発行する"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    shop_name = body.get("shop_name") or DEFAULT_SHOP_NAME
+    session_id = f"chat-{tenant.id}-{uuid.uuid4()}"
+    voice_ai.start_session(session_id, shop_name=shop_name)
+    return {"session_id": session_id, "shop_name": shop_name}
+
+
+@test_router.post("/chat")
+async def chat_turn(
+    request: Request,
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """
+    自由に入力した1メッセージをAI受付に送り、応答を1ターン分返す。
+    実際の電話がまだ使えない状態でも、ブラウザから直接AIと会話できるようにするための
+    検証用エンドポイント（/webhook/voice/speech と同じ会話ロジックを使う）。
+    """
+    body = await request.json()
+    session_id = body.get("session_id")
+    message = body.get("message")
+    shop_name = body.get("shop_name") or DEFAULT_SHOP_NAME
+    model_override = body.get("model")
+
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id は必須です（先に /chat/start を呼んでください）")
+    if not message:
+        raise HTTPException(status_code=400, detail="message は必須です")
+
+    settings = get_settings()
+    original_model_override = settings.VOICE_AI_MODEL
+    if model_override:
+        settings.VOICE_AI_MODEL = model_override
+
+    try:
+        result = await voice_ai.get_ai_reply(session_id, message, shop_name=shop_name)
+    finally:
+        settings.VOICE_AI_MODEL = original_model_override
+
+    model_used = model_override or settings.VOICE_AI_MODEL or settings.OPENAI_MODEL
+    cost_usd = voice_ai.estimate_cost_usd(result["cumulative_usage"], model_used)
+
+    return {
+        "session_id": session_id,
+        "reply": result["reply"],
+        "category": result["category"],
+        "urgency": result["urgency"],
+        "end_call": result["end_call"],
+        "summary": result["summary"],
+        "turn_usage": result["turn_usage"],
+        "cumulative_usage": result["cumulative_usage"],
+        "model": model_used,
+        "estimated_cost_usd": cost_usd,
+        "estimated_cost_jpy": round(cost_usd * voice_ai.USD_TO_JPY_APPROX, 2) if cost_usd is not None else None,
+    }
+
+
+@test_router.post("/chat/end")
+async def chat_end(
+    request: Request,
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """チャットセッションを破棄する（ページを閉じる/リセットする際に呼ぶ）"""
+    body = await request.json()
+    session_id = body.get("session_id")
+    if session_id:
+        voice_ai.end_session(session_id)
+    return {"ended": True}
