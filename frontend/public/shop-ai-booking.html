@@ -332,11 +332,34 @@
             recognizer = new SpeechRecognitionCtor();
             recognizer.lang = 'ja-JP';
             recognizer.interimResults = true;
-            recognizer.continuous = false;
+            // ブラウザ(特にiOS Safari)側の「発話終了」自動判定は精度がまちまちで、
+            // 話し終えてもボタンを押すまで認識が終わらないことがある。実際の電話回線
+            // (Vonage側)では無音1.5秒程度でこちらから聞き取りを打ち切っているのと同様に、
+            // ここでも認識結果イベントを基準に無音タイマーを独自に持たせ、自動で
+            // recognizer.stop() を呼ぶことで、ボタン操作なしでターンが進むようにする。
+            recognizer.continuous = true;
+
+            const SILENCE_MS = 1600;   // 最後の認識結果からこの時間だけ発話が無ければ聞き取り終了とみなす
+            const MAX_LISTEN_MS = 20000; // 万一無音判定が効かなかった場合の強制打ち切り
+            let silenceTimer = null;
+            let hardStopTimer = null;
+
+            function clearAutoStopTimers() {
+                clearTimeout(silenceTimer);
+                clearTimeout(hardStopTimer);
+            }
+            function scheduleSilenceStop() {
+                clearTimeout(silenceTimer);
+                silenceTimer = setTimeout(() => {
+                    try { recognizer.stop(); } catch (e) {}
+                }, SILENCE_MS);
+            }
 
             recognizer.onstart = () => {
                 setListeningUI(true);
                 voiceStatus.textContent = '🎤 聞いています...';
+                scheduleSilenceStop();
+                hardStopTimer = setTimeout(() => { try { recognizer.stop(); } catch (e) {} }, MAX_LISTEN_MS);
             };
             recognizer.onresult = (ev) => {
                 let transcript = '';
@@ -347,11 +370,13 @@
                 if (ev.results[ev.results.length - 1].isFinal) {
                     voiceStatus.textContent = '認識結果: 「' + transcript + '」';
                 }
+                scheduleSilenceStop();
             };
             recognizer.onerror = (ev) => {
                 voiceStatus.textContent = ev.error === 'no-speech' ? '' : ('音声認識エラー: ' + ev.error);
             };
             recognizer.onend = () => {
+                clearAutoStopTimers();
                 setListeningUI(false);
                 if (messageInput.value.trim()) {
                     inputForm.requestSubmit();
@@ -364,6 +389,7 @@
                 try { recognizer.start(); } catch (e) { /* 連打対策 */ }
             };
 
+            // 手動でのタップも引き続き可能（自動判定が誤って早く/遅く切れた場合の保険）
             micBtn.addEventListener('click', () => { listening ? recognizer.stop() : startListening(); });
             bigMicBtn.addEventListener('click', () => { listening ? recognizer.stop() : startListening(); });
 
