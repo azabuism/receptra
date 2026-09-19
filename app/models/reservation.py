@@ -33,6 +33,7 @@ class Reservation(Base):
     user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)  # ログイン中のプラットフォームアカウント（マイページの「よく行く店」集計に使用）
     staff_id = Column(String(36), ForeignKey("staff.id"), nullable=True)  # スタッフ指名（オプション）
     table_id = Column(String(36), ForeignKey("shop_tables.id"), nullable=True)  # 割り当てられたテーブル
+    service_id = Column(String(36), ForeignKey("services.id"), nullable=True, index=True)  # 予約対象のサービス（美容院・クリニックなど、サービス単位で予約する業種の場合）
 
     # ゲスト予約情報（会員登録なしで予約する場合に使用）
     guest_name = Column(String(255), nullable=True)
@@ -81,6 +82,7 @@ class Reservation(Base):
     customer = relationship("Customer", back_populates="reservations")
     staff = relationship("Staff", back_populates="reservations", foreign_keys=[staff_id])
     table = relationship("ShopTable")
+    service = relationship("Service", foreign_keys=[service_id])
 
     # インデックス
     __table_args__ = (

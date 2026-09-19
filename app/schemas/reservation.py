@@ -12,7 +12,9 @@ class ReservationCreateRequest(BaseModel):
     """予約作成リクエストスキーマ（ゲスト予約・会員登録不要）"""
     shop_id: str = Field(..., description="店舗ID")
     reservation_date: datetime = Field(..., description="予約日時")
-    number_of_people: int = Field(..., ge=1, le=999, description="人数")
+    number_of_people: int = Field(1, ge=1, le=999, description="人数（美容院・クリニックなどサービス単位の予約では省略可、既定値1）")
+    service_id: Optional[str] = Field(None, description="サービスID（美容院・クリニック・スクール・フィットネスなど、サービス単位で予約する業種の場合に指定）")
+    staff_id: Optional[str] = Field(None, description="スタッフ指名がある場合に指定（省略時は指名なし・お任せ）")
     guest_name: str = Field(..., min_length=1, max_length=255, description="予約者名")
     guest_phone: str = Field(..., min_length=1, max_length=20, description="連絡先電話番号")
     guest_email: Optional[EmailStr] = Field(None, description="連絡先メールアドレス")
@@ -34,6 +36,10 @@ class ReservationResponse(BaseModel):
     customer_id: Optional[str] = None
     table_id: Optional[str] = None
     table_name: Optional[str] = None
+    service_id: Optional[str] = None
+    service_name: Optional[str] = None
+    staff_id: Optional[str] = None
+    staff_name: Optional[str] = None
     guest_name: Optional[str] = None
     guest_phone: Optional[str] = None
     guest_email: Optional[str] = None
@@ -44,6 +50,8 @@ class ReservationResponse(BaseModel):
     cancelled_at: Optional[datetime]
     cancellation_reason: Optional[str]
     arrived_at: Optional[datetime]
+    total_price: Optional[int] = None
+    payment_status: Optional[str] = None
     reservation_source: Optional[str]
     created_at: datetime
     updated_at: datetime
@@ -79,6 +87,8 @@ class AvailabilityResponse(BaseModel):
     shop_id: str
     date: str
     party_size: int
+    service_id: Optional[str] = None
+    staff_id: Optional[str] = None
     is_open: bool
     message: Optional[str] = None
     slots: List[AvailabilitySlot] = []

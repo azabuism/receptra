@@ -17,6 +17,8 @@ from app.deps import get_current_user, get_optional_current_user
 from app.schemas.user import CurrentUser
 from app.models.reservation import Reservation, ReservationStatus
 from app.models.shop import Shop, ShopHours, ShopTable, ShopClosure
+from app.models.service import Service
+from app.models.staff import Staff, StaffService
 from app.schemas.reservation import (
     ReservationCreateRequest, ReservationResponse, ReservationCreateResponse,
     ReservationUpdateRequest, ReservationListResponse,
@@ -36,6 +38,10 @@ def _to_response(reservation: Reservation) -> ReservationResponse:
         customer_id=reservation.customer_id,
         table_id=reservation.table_id,
         table_name=(reservation.table.name if reservation.table else None),
+        service_id=reservation.service_id,
+        service_name=(reservation.service.name if reservation.service else None),
+        staff_id=reservation.staff_id,
+        staff_name=(reservation.staff.name if reservation.staff else None),
         guest_name=reservation.guest_name,
         guest_phone=reservation.guest_phone,
         guest_email=reservation.guest_email,
@@ -46,6 +52,8 @@ def _to_response(reservation: Reservation) -> ReservationResponse:
         cancelled_at=reservation.cancelled_at,
         cancellation_reason=reservation.cancellation_reason,
         arrived_at=reservation.arrived_at,
+        total_price=reservation.total_price,
+        payment_status=reservation.payment_status,
         reservation_source=reservation.reservation_source,
         created_at=reservation.created_at,
         updated_at=reservation.updated_at,
@@ -104,6 +112,56 @@ async def _find_available_table(
     return None, False
 
 
+async def _find_available_staff_for_service(
+    db: AsyncSession, shop_id: str, service_id: str, start: datetime, duration_minutes: int,
+    preferred_staff_id: Optional[str] = None
+) -> tuple[Optional[str], bool]:
+    """
+    指定したサービスを提供できる、かつその時間帯が空いているスタッフを探す。
+    戻り値: (staff_id または None, このサービスにスタッフが1人も割り当てられていないか)
+    スタッフが1人も割り当てられていない場合は指名なしの空き状況チェックを行わず、
+    常に (None, True) を返す（テーブル管理の _find_available_table と同じ考え方）。
+    """
+    staff_result = await db.execute(
+        select(Staff)
+        .join(StaffService, StaffService.staff_id == Staff.id)
+        .filter(
+            StaffService.service_id == service_id,
+            Staff.shop_id == shop_id,
+            Staff.is_active == "active",
+        )
+    )
+    eligible_staff = list(staff_result.scalars().all())
+    if not eligible_staff:
+        return None, True
+
+    if preferred_staff_id:
+        eligible_staff = [s for s in eligible_staff if s.id == preferred_staff_id]
+        if not eligible_staff:
+            return None, False
+
+    end = start + timedelta(minutes=duration_minutes)
+
+    for staff in eligible_staff:
+        overlap_result = await db.execute(
+            select(Reservation).filter(
+                Reservation.staff_id == staff.id,
+                Reservation.status.in_(["pending", "confirmed"]),
+            )
+        )
+        conflicting = False
+        for existing in overlap_result.scalars().all():
+            existing_start = existing.reservation_date
+            existing_end = existing_start + timedelta(minutes=duration_minutes)
+            if existing_start < end and existing_end > start:
+                conflicting = True
+                break
+        if not conflicting:
+            return staff.id, False
+
+    return None, False
+
+
 @router.get(
     "/shop/{shop_id}/availability",
     response_model=AvailabilityResponse,
@@ -114,25 +172,32 @@ async def get_availability(
     shop_id: str,
     date: str = Query(..., description="日付（YYYY-MM-DD）"),
     party_size: int = Query(1, ge=1, le=999, description="人数"),
+    service_id: Optional[str] = Query(None, description="サービスID（美容院・クリニック・スクール・フィットネスなど、サービス単位で予約する業種の場合に指定）"),
+    staff_id: Optional[str] = Query(None, description="スタッフ指名がある場合に指定（省略時は指名なし）"),
     db: AsyncSession = Depends(get_db)
 ) -> AvailabilityResponse:
     shop = await db.get(Shop, shop_id)
     if not shop or not shop.is_active:
         raise HTTPException(status_code=404, detail="店舗が見つかりません")
 
+    service: Optional[Service] = None
+    if service_id:
+        service = await db.get(Service, service_id)
+        if not service or service.shop_id != shop_id:
+            raise HTTPException(status_code=404, detail="指定されたサービスが見つかりません")
+
     try:
         target_date = date_type.fromisoformat(date)
     except ValueError:
         raise HTTPException(status_code=400, detail="日付の形式が正しくありません（YYYY-MM-DD）")
 
+    common = dict(shop_id=shop_id, date=date, party_size=party_size, service_id=service_id, staff_id=staff_id)
+
     closure = await _get_closure_for_date(db, shop_id, target_date)
     if closure:
         reason_text = (closure.reason or "").strip()
         message = f"臨時休業日です（{reason_text}）" if reason_text else "臨時休業日です"
-        return AvailabilityResponse(
-            shop_id=shop_id, date=date, party_size=party_size, is_open=False,
-            message=message, slots=[]
-        )
+        return AvailabilityResponse(**common, is_open=False, message=message, slots=[])
 
     weekday = target_date.weekday()  # 0=月, 6=日
     hours_result = await db.execute(
@@ -141,17 +206,11 @@ async def get_availability(
     hours = hours_result.scalar_one_or_none()
 
     if hours is None:
-        return AvailabilityResponse(
-            shop_id=shop_id, date=date, party_size=party_size, is_open=False,
-            message="この店舗の営業時間が設定されていません", slots=[]
-        )
+        return AvailabilityResponse(**common, is_open=False, message="この店舗の営業時間が設定されていません", slots=[])
     if hours.is_closed:
-        return AvailabilityResponse(
-            shop_id=shop_id, date=date, party_size=party_size, is_open=False,
-            message="定休日です", slots=[]
-        )
+        return AvailabilityResponse(**common, is_open=False, message="定休日です", slots=[])
 
-    duration = shop.reservation_duration_minutes or 90
+    duration = (service.duration_minutes if service and service.duration_minutes else None) or shop.reservation_duration_minutes or 90
     latest_start_time = hours.last_order_time or (
         (datetime.combine(target_date, hours.closing_time) - timedelta(minutes=duration)).time()
     )
@@ -160,24 +219,25 @@ async def get_availability(
     latest_start_dt = datetime.combine(target_date, latest_start_time)
 
     if latest_start_dt < opening_dt:
-        return AvailabilityResponse(
-            shop_id=shop_id, date=date, party_size=party_size, is_open=True,
-            message="本日は予約可能な時間枠がありません", slots=[]
-        )
+        return AvailabilityResponse(**common, is_open=True, message="本日は予約可能な時間枠がありません", slots=[])
 
     now = datetime.utcnow()
     slots: List[AvailabilitySlot] = []
     cursor = opening_dt
     while cursor <= latest_start_dt:
         if cursor > now:
-            table_id, unmanaged = await _find_available_table(db, shop_id, party_size, cursor, duration)
-            available = unmanaged or (table_id is not None)
+            if service:
+                found_staff_id, unmanaged = await _find_available_staff_for_service(
+                    db, shop_id, service.id, cursor, duration, staff_id
+                )
+                available = unmanaged or (found_staff_id is not None)
+            else:
+                table_id, unmanaged = await _find_available_table(db, shop_id, party_size, cursor, duration)
+                available = unmanaged or (table_id is not None)
             slots.append(AvailabilitySlot(time=cursor.strftime("%H:%M"), available=available))
         cursor += timedelta(minutes=SLOT_INTERVAL_MINUTES)
 
-    return AvailabilityResponse(
-        shop_id=shop_id, date=date, party_size=party_size, is_open=True, slots=slots
-    )
+    return AvailabilityResponse(**common, is_open=True, slots=slots)
 
 
 @router.post(
@@ -203,6 +263,14 @@ async def create_reservation(
         if closure:
             raise HTTPException(status_code=400, detail="ご指定の日は臨時休業のため予約できません")
 
+        service: Optional[Service] = None
+        if request.service_id:
+            service = await db.get(Service, request.service_id)
+            if not service or service.shop_id != request.shop_id:
+                raise HTTPException(status_code=404, detail="指定されたサービスが見つかりません")
+            if service.is_active != "active":
+                raise HTTPException(status_code=400, detail="このサービスは現在受付を停止しています")
+
         weekday = request.reservation_date.weekday()
         hours_result = await db.execute(
             select(ShopHours).filter(ShopHours.shop_id == request.shop_id, ShopHours.day_of_week == weekday)
@@ -216,12 +284,40 @@ async def create_reservation(
             if req_time < hours.opening_time or req_time > latest_start_time:
                 raise HTTPException(status_code=400, detail="ご指定の時間は営業時間外です")
 
-        duration = shop.reservation_duration_minutes or 90
-        table_id, unmanaged = await _find_available_table(
-            db, request.shop_id, request.number_of_people, request.reservation_date, duration
-        )
-        if not unmanaged and table_id is None:
-            raise HTTPException(status_code=400, detail="ご希望の時間は満席です。他の時間をお試しください")
+        duration = (service.duration_minutes if service and service.duration_minutes else None) or shop.reservation_duration_minutes or 90
+
+        table_id = None
+        final_staff_id = None
+        if service:
+            if request.staff_id:
+                staff_check = await db.execute(
+                    select(StaffService).join(Staff, Staff.id == StaffService.staff_id).filter(
+                        StaffService.staff_id == request.staff_id,
+                        StaffService.service_id == service.id,
+                        Staff.shop_id == request.shop_id,
+                        Staff.is_active == "active",
+                    )
+                )
+                if not staff_check.scalars().first():
+                    raise HTTPException(status_code=400, detail="指定されたスタッフはこのサービスを提供していません")
+
+            found_staff_id, unmanaged = await _find_available_staff_for_service(
+                db, request.shop_id, service.id, request.reservation_date, duration, request.staff_id
+            )
+            if not unmanaged and found_staff_id is None:
+                detail = (
+                    "ご指名のスタッフは満席です。他の時間かスタッフをお試しください"
+                    if request.staff_id else
+                    "ご希望の時間はスタッフの空きがありません。他の時間をお試しください"
+                )
+                raise HTTPException(status_code=400, detail=detail)
+            final_staff_id = found_staff_id if not unmanaged else request.staff_id
+        else:
+            table_id, unmanaged = await _find_available_table(
+                db, request.shop_id, request.number_of_people, request.reservation_date, duration
+            )
+            if not unmanaged and table_id is None:
+                raise HTTPException(status_code=400, detail="ご希望の時間は満席です。他の時間をお試しください")
 
         reservation_id = str(uuid.uuid4())
         reservation = Reservation(
@@ -229,7 +325,9 @@ async def create_reservation(
             shop_id=request.shop_id,
             customer_id=None,
             user_id=current_user.id if current_user else None,
+            staff_id=final_staff_id,
             table_id=table_id,
+            service_id=service.id if service else None,
             guest_name=request.guest_name,
             guest_phone=request.guest_phone,
             guest_email=request.guest_email,
@@ -237,6 +335,8 @@ async def create_reservation(
             number_of_people=request.number_of_people,
             status=ReservationStatus.PENDING.value,
             special_requests=request.special_requests,
+            total_price=int(round(service.base_price)) if service else None,
+            payment_status=("unpaid" if service else None),
             reservation_source="online",
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
@@ -251,7 +351,7 @@ async def create_reservation(
         await db.commit()
 
         result = await db.execute(
-            select(Reservation).options(selectinload(Reservation.table)).filter(Reservation.id == reservation_id)
+            select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service)).filter(Reservation.id == reservation_id)
         )
         reservation = result.scalar_one()
 
@@ -280,7 +380,7 @@ async def get_reservation(
     db: AsyncSession = Depends(get_db)
 ) -> ReservationResponse:
     result = await db.execute(
-        select(Reservation).options(selectinload(Reservation.table)).filter(Reservation.id == reservation_id)
+        select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service)).filter(Reservation.id == reservation_id)
     )
     reservation = result.scalar_one_or_none()
     if not reservation:
@@ -308,7 +408,7 @@ async def get_shop_reservations(
     if shop.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="この店舗の予約を閲覧する権限がありません")
 
-    stmt = select(Reservation).options(selectinload(Reservation.table)).filter(Reservation.shop_id == shop_id)
+    stmt = select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service)).filter(Reservation.shop_id == shop_id)
     if status:
         stmt = stmt.filter(Reservation.status == status.lower())
 
@@ -340,7 +440,7 @@ async def update_reservation(
 ) -> ReservationResponse:
     try:
         result = await db.execute(
-            select(Reservation).options(selectinload(Reservation.table)).filter(Reservation.id == reservation_id)
+            select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service)).filter(Reservation.id == reservation_id)
         )
         reservation = result.scalar_one_or_none()
         if not reservation:
@@ -369,7 +469,7 @@ async def update_reservation(
 
         reservation.updated_at = datetime.utcnow()
         await db.commit()
-        await db.refresh(reservation, attribute_names=["table"])
+        await db.refresh(reservation, attribute_names=["table", "staff", "service"])
 
         return _to_response(reservation)
 
