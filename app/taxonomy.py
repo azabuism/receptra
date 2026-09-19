@@ -119,7 +119,7 @@ TAXONOMY: List[TaxonomyGroup] = [
             {"name": "ヨガスタジオ", "icon": "🧘", "image": "fitness-yoga"},
             {"name": "格闘技", "icon": "🥊", "image": "fitness-martial-arts"},
             {"name": "スイミングスクール", "icon": "🏊", "image": "fitness-swimming"},
-            {"name": "ダンススクール", "icon": "💃"},
+            {"name": "ダンススクール", "icon": "💃", "image": "fitness-dance"},
             {"name": "ピラティス", "icon": "🧘‍♀️"},
             {"name": "球技", "icon": "⚽", "image": "fitness-ball-sports"},
             {"name": "その他（フィットネス）", "icon": "🏅"},
