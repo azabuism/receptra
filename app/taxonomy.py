@@ -147,9 +147,9 @@ TAXONOMY: List[TaxonomyGroup] = [
         "key": "other",
         "title": "その他",
         "description": "上記に当てはまらないサービスを探す",
-        "icon": "🏳️",
+        "icon": "🧩",
         "items": [
-            {"name": "その他", "icon": "🏳️"},
+            {"name": "その他", "icon": "🧩"},
         ],
     },
 ]
