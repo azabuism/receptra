@@ -176,6 +176,27 @@ async def update_shop(
     return ShopResponse.from_orm(shop)
 
 
+@router.delete(
+    "/{shop_id}",
+    summary="店舗を削除",
+    description="店舗と、その写真・メニュー・営業時間などの関連データをまとめて削除"
+)
+async def delete_shop(
+    shop_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    shop = await db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店舗が見つかりません")
+    if shop.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="この店舗を削除する権限がありません")
+
+    await db.delete(shop)
+    await db.commit()
+    return {"success": True}
+
+
 @router.get(
     "/search",
     response_model=ShopListResponse,

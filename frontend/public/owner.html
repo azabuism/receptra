@@ -93,6 +93,11 @@
         .shop-info .meta { font-size: 12px; color: #888; margin-top: 2px; }
         .shop-links { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; flex-shrink: 0; }
         .shop-links a.manage-link { color: #888; font-weight: 400; }
+        .shop-links .delete-link {
+            background: none; border: none; padding: 0; cursor: pointer;
+            font-size: 12px; color: #ccc; font-family: inherit;
+        }
+        .shop-links .delete-link:hover { color: var(--error); }
         .shop-links a {
             font-size: 13px;
             color: var(--primary);
@@ -300,12 +305,36 @@
                         '</div>' +
                         '<div class="shop-links">' +
                             '<a href="shop.html?id=' + encodeURIComponent(shop.id) + '">紹介ページを見る →</a>' +
-                            '<a href="shop-manage.html?id=' + encodeURIComponent(shop.id) + '" class="manage-link">写真・メニューを管理 →</a>' +
+                            '<a href="shop-manage.html?id=' + encodeURIComponent(shop.id) + '" class="manage-link">編集する →</a>' +
+                            '<button type="button" class="delete-link" data-id="' + shop.id + '" data-name="' + escapeHtml(shop.name) + '">削除する</button>' +
                         '</div>' +
                     '</div>';
                 }).join('');
+
+                listEl.querySelectorAll('.delete-link').forEach(function (btn) {
+                    btn.addEventListener('click', function () { deleteShop(btn.dataset.id, btn.dataset.name); });
+                });
             } catch (err) {
                 listEl.innerHTML = '<div class="empty-state">読み込みに失敗しました。</div>';
+            }
+        }
+
+        async function deleteShop(shopId, shopName) {
+            if (!confirm('「' + shopName + '」を削除します。写真やメニューもすべて削除され、元に戻せません。よろしいですか？')) {
+                return;
+            }
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId), {
+                    method: 'DELETE',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    const data = await res.json().catch(function () { return {}; });
+                    throw new Error((data.detail && (data.detail.msg || data.detail)) || '削除に失敗しました');
+                }
+                loadShops();
+            } catch (err) {
+                alert(typeof err.message === 'string' ? err.message : '削除に失敗しました');
             }
         }
 

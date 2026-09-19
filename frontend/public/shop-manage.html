@@ -121,7 +121,68 @@
     </nav>
     <main id="app" style="display: none;">
         <h1 id="shop-name-title">店舗の管理</h1>
-        <p class="subtitle">写真・メニュー・お店の特徴を編集できます。</p>
+        <p class="subtitle">お店の基本情報・写真・メニュー・特徴を編集できます。</p>
+
+        <div class="card">
+            <h2>基本情報</h2>
+            <form id="basic-form">
+                <div class="field">
+                    <label for="edit-name">店舗名 *</label>
+                    <input type="text" id="edit-name" required>
+                </div>
+                <div class="row-2">
+                    <div class="field">
+                        <label for="edit-category">カテゴリ *</label>
+                        <select id="edit-category" required>
+                            <option value="RESTAURANT">飲食店</option>
+                            <option value="CAFE">カフェ</option>
+                            <option value="RAMEN">ラーメン</option>
+                            <option value="SUSHI">寿司</option>
+                            <option value="IZAKAYA">居酒屋</option>
+                            <option value="BAR">バー</option>
+                            <option value="BEAUTY">美容</option>
+                            <option value="SALON">サロン</option>
+                            <option value="CLINIC">クリニック</option>
+                            <option value="OTHER">その他</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="edit-phone">電話番号</label>
+                        <input type="tel" id="edit-phone">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="edit-address">住所 *</label>
+                    <input type="text" id="edit-address" required>
+                </div>
+                <div class="row-2">
+                    <div class="field">
+                        <label for="edit-email">連絡先メールアドレス</label>
+                        <input type="email" id="edit-email">
+                    </div>
+                    <div class="field">
+                        <label for="edit-website">ウェブサイトURL</label>
+                        <input type="url" id="edit-website" placeholder="https://">
+                    </div>
+                </div>
+                <div class="row-2">
+                    <div class="field">
+                        <label for="edit-thumbnail">サムネイル画像URL</label>
+                        <input type="url" id="edit-thumbnail" placeholder="https://">
+                    </div>
+                    <div class="field">
+                        <label for="edit-cover">カバー画像URL</label>
+                        <input type="url" id="edit-cover" placeholder="https://">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="edit-description">お店の紹介文</label>
+                    <textarea id="edit-description"></textarea>
+                </div>
+                <button type="submit" class="btn" id="basic-save-btn">保存する</button>
+                <div class="msg" id="basic-msg"></div>
+            </form>
+        </div>
 
         <div class="card">
             <h2>お店の特徴</h2>
@@ -190,6 +251,13 @@
             </form>
             <div id="menu-list" style="margin-top: 18px;"></div>
         </div>
+
+        <div class="card">
+            <h2>店舗の削除</h2>
+            <p class="hint">この店舗と、登録されている写真・メニュー・営業時間などをすべて削除します。この操作は取り消せません。</p>
+            <button type="button" class="btn-outline btn-danger" id="delete-shop-btn">この店舗を削除する</button>
+            <div class="msg" id="delete-msg"></div>
+        </div>
     </main>
     <div id="gate">
         <p>ログインが必要です。移動します…</p>
@@ -241,11 +309,58 @@
                     const shop = await res.json();
                     document.getElementById('shop-name-title').textContent = shop.name + ' の管理';
                     document.getElementById('features-input').value = (shop.features || []).join(', ');
+
+                    document.getElementById('edit-name').value = shop.name || '';
+                    document.getElementById('edit-category').value = shop.category || 'OTHER';
+                    document.getElementById('edit-phone').value = shop.phone || '';
+                    document.getElementById('edit-address').value = shop.address || '';
+                    document.getElementById('edit-email').value = shop.email || '';
+                    document.getElementById('edit-website').value = shop.website || '';
+                    document.getElementById('edit-thumbnail').value = shop.thumbnail_url || '';
+                    document.getElementById('edit-cover').value = shop.cover_image_url || '';
+                    document.getElementById('edit-description').value = shop.description || '';
                 }
             } catch (e) {}
             loadPhotos();
             loadMenu();
         }
+
+        // ---------- 基本情報 ----------
+        document.getElementById('basic-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('basic-msg');
+            const btn = document.getElementById('basic-save-btn');
+            const payload = {
+                name: document.getElementById('edit-name').value.trim(),
+                category: document.getElementById('edit-category').value,
+                phone: document.getElementById('edit-phone').value.trim() || null,
+                address: document.getElementById('edit-address').value.trim(),
+                email: document.getElementById('edit-email').value.trim() || null,
+                website: document.getElementById('edit-website').value.trim() || null,
+                thumbnail_url: document.getElementById('edit-thumbnail').value.trim() || null,
+                cover_image_url: document.getElementById('edit-cover').value.trim() || null,
+                description: document.getElementById('edit-description').value.trim() || null
+            };
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId), {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '保存に失敗しました');
+                }
+                const shop = await res.json();
+                document.getElementById('shop-name-title').textContent = shop.name + ' の管理';
+                showMsg(msg, '保存しました', 'success');
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
 
         // ---------- 特徴 ----------
         document.getElementById('features-save').addEventListener('click', async function () {
@@ -473,6 +588,29 @@
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '追加に失敗しました', 'error');
             } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // ---------- 店舗削除 ----------
+        document.getElementById('delete-shop-btn').addEventListener('click', async function () {
+            const msg = document.getElementById('delete-msg');
+            const nameEl = document.getElementById('shop-name-title');
+            const shopName = (nameEl.textContent || '').replace(/ の管理$/, '');
+            if (!confirm('「' + shopName + '」を削除します。写真・メニューなどもすべて削除され、元に戻せません。よろしいですか？')) {
+                return;
+            }
+            const btn = document.getElementById('delete-shop-btn');
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId), { method: 'DELETE' });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '削除に失敗しました');
+                }
+                window.location.href = 'owner.html';
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
                 btn.disabled = false;
             }
         });
