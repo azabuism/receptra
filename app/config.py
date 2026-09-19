@@ -53,8 +53,18 @@ class Settings(BaseSettings):
 
     # ===== OpenAI設定 =====
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o"
+    # 注意: 旧デフォルトの "gpt-4o" は2026年にAPI提供が終了したモデル系列のため、
+    # 現行の提供モデルに変更。電話AI応答は低遅延・低コストを優先し軽量モデルを既定値とする。
+    # 精度が不足する場合は環境変数 OPENAI_MODEL / VOICE_AI_MODEL で上位モデルに切り替え可能。
+    OPENAI_MODEL: str = "gpt-5.6-luna"
     OPENAI_MAX_TOKENS: int = 2048
+
+    # ===== 電話AI（受付会話）設定 =====
+    # 通話1ターンあたりの応答生成に使うモデル・トークン上限。未設定時はOPENAI_MODELを使用。
+    VOICE_AI_MODEL: Optional[str] = None
+    VOICE_AI_MAX_TOKENS: int = 300
+    # 1通話あたりの最大ターン数（暴走・異常な長時間通話によるコスト増を防ぐ安全装置）
+    VOICE_AI_MAX_TURNS: int = 8
 
     # ===== PAY.JP設定 =====
     PAYJP_API_KEY: str = ""
