@@ -137,7 +137,7 @@ TAXONOMY: List[TaxonomyGroup] = [
             {"name": "シネマ", "icon": "🎬", "image": "entertainment-cinema"},
             {"name": "美術館", "icon": "🎨", "image": "entertainment-artmuseum"},
             {"name": "アミューズメントパーク", "icon": "🎡", "image": "entertainment-amusementpark"},
-            {"name": "その他（エンタメ）", "icon": "🎪"},
+            {"name": "その他（エンタメ）", "icon": "🎪", "image": "entertainment-other"},
         ],
     },
     {
