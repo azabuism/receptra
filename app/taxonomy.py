@@ -106,7 +106,7 @@ TAXONOMY: List[TaxonomyGroup] = [
             {"name": "整形外科", "icon": "🦴", "image": "medical-orthopedic"},
             {"name": "心療内科", "icon": "🧠", "image": "medical-psychosomatic"},
             {"name": "リハビリ", "icon": "🏃", "image": "medical-rehabilitation"},
-            {"name": "その他（医療）", "icon": "➕"},
+            {"name": "その他（医療）", "icon": "➕", "image": "medical-other"},
         ],
     },
     {
