@@ -15,7 +15,7 @@
             --white: #ffffff;
             --border: 1px solid #eee;
         }
-        html, body { height: 100%; }
+        html, body { height: 100%; overflow-x: hidden; max-width: 100%; }
         body {
             font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             background: var(--light);
@@ -23,6 +23,9 @@
             line-height: 1.6;
         }
         nav {
+            position: sticky;
+            top: 0;
+            z-index: 10;
             background: var(--white);
             border-bottom: var(--border);
             padding: 12px 20px;
@@ -31,7 +34,8 @@
             justify-content: space-between;
             height: 60px;
         }
-        .nav-brand { text-decoration: none; color: var(--primary); font-size: 20px; font-weight: 700; }
+        .nav-brand { text-decoration: none; color: var(--primary); font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+        .nav-logo-img { width: 36px; height: 36px; object-fit: contain; flex-shrink: 0; }
         .nav-right a { color: var(--dark); text-decoration: none; font-size: 13px; margin-left: 14px; }
         main { max-width: 860px; margin: 0 auto; padding: 28px 20px 100px; }
         .greeting { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
@@ -86,8 +90,9 @@
 </head>
 <body>
     <nav>
-        <a href="/" class="nav-brand">∞ レセプトラ</a>
+        <a href="/" class="nav-brand"><img src="/images/receptra-logo.png" alt="RECEPTRA Logo" class="nav-logo-img">レセプトラ</a>
         <div class="nav-right">
+            <a href="/">← ホームに戻る</a>
             <a href="#" id="logout-link">ログアウト</a>
         </div>
     </nav>

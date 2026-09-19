@@ -17,7 +17,7 @@
             --success: #10b981;
             --border: 1px solid #ddd;
         }
-        html, body { height: 100%; }
+        html, body { height: 100%; overflow-x: hidden; max-width: 100%; }
         body {
             font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             background: var(--light);
@@ -25,6 +25,9 @@
             line-height: 1.6;
         }
         nav {
+            position: sticky;
+            top: 0;
+            z-index: 10;
             background: var(--white);
             border-bottom: var(--border);
             padding: 12px 20px;
@@ -38,13 +41,18 @@
             color: var(--primary);
             font-size: 20px;
             font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
+        .nav-logo-img { width: 36px; height: 36px; object-fit: contain; flex-shrink: 0; }
         .nav-right {
             display: flex;
             align-items: center;
             gap: 14px;
             font-size: 14px;
         }
+        .nav-right a.back-link { color: var(--dark); text-decoration: none; font-size: 13px; }
         .nav-right button {
             background: none;
             border: 1px solid #ddd;
@@ -135,6 +143,18 @@
         @media (max-width: 560px) {
             .row-2 { grid-template-columns: 1fr; }
         }
+        @media (max-width: 480px) {
+            .shop-list-item { flex-wrap: wrap; }
+            .shop-links {
+                flex-basis: 100%;
+                flex-direction: row;
+                justify-content: flex-start;
+                align-items: center;
+                flex-wrap: wrap;
+                margin-top: 8px;
+                gap: 12px;
+            }
+        }
         .btn-submit {
             padding: 13px 32px;
             border: none;
@@ -162,8 +182,9 @@
 </head>
 <body>
     <nav>
-        <a href="/" class="nav-brand">∞ レセプトラ</a>
+        <a href="/" class="nav-brand"><img src="/images/receptra-logo.png" alt="RECEPTRA Logo" class="nav-logo-img">レセプトラ</a>
         <div class="nav-right">
+            <a href="/" class="back-link">← ホームに戻る</a>
             <span id="user-label"></span>
             <button id="logout-btn">ログアウト</button>
         </div>

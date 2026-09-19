@@ -37,7 +37,11 @@
             color: var(--primary);
             font-size: 20px;
             font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
+        .nav-logo-img { width: 36px; height: 36px; object-fit: contain; flex-shrink: 0; }
         .cover {
             width: 100%;
             aspect-ratio: 16 / 6;
@@ -218,7 +222,7 @@
 </head>
 <body>
     <nav>
-        <a href="/" class="nav-brand">∞ レセプトラ</a>
+        <a href="/" class="nav-brand"><img src="/images/receptra-logo.png" alt="RECEPTRA Logo" class="nav-logo-img">レセプトラ</a>
     </nav>
 
     <div id="loading">読み込み中…</div>
