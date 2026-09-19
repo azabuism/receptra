@@ -122,7 +122,7 @@ class Coupon(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     # リレーション
-    shop = relationship("Shop", foreign_keys=[shop_id])
+    shop = relationship("Shop", foreign_keys=[shop_id], back_populates="coupons")
     promotion = relationship("Promotion", foreign_keys=[promotion_id])
 
     # インデックス

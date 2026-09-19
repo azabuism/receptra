@@ -30,7 +30,7 @@ class UserShopRelation(Base):
 
     # リレーション
     user = relationship("User", foreign_keys=[user_id])
-    shop = relationship("Shop", foreign_keys=[shop_id])
+    shop = relationship("Shop", foreign_keys=[shop_id], back_populates="user_shop_relations")
 
     __table_args__ = (
         UniqueConstraint("user_id", "shop_id", "relation_type", name="uq_user_shop_relation"),

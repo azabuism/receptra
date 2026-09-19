@@ -119,6 +119,9 @@ class Shop(Base):
     menu_items = relationship("MenuItem", back_populates="shop", cascade="all, delete-orphan")
     tables = relationship("ShopTable", back_populates="shop", cascade="all, delete-orphan")
     closures = relationship("ShopClosure", back_populates="shop", cascade="all, delete-orphan")
+    # ★★★ マイページ機能: 店舗削除時にいいね・行きたい店・クーポンも一緒に削除する
+    user_shop_relations = relationship("UserShopRelation", back_populates="shop", cascade="all, delete-orphan")
+    coupons = relationship("Coupon", back_populates="shop", cascade="all, delete-orphan", foreign_keys="Coupon.shop_id")
 
     # インデックス
     __table_args__ = (
