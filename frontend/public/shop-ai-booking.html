@@ -372,13 +372,41 @@
                 }
                 scheduleSilenceStop();
             };
+            // iOS Safari等では、AIの読み上げ(TTS)直後にマイクを再開しようとすると
+            // オーディオセッションの切り替えが間に合わず "aborted" エラーで
+            // 認識が即座に終了してしまうことがある。これはユーザー操作ではなく
+            // 一時的な競合によるものなので、自動再開の際は数回だけ静かに
+            // 再試行してから、それでもダメな場合だけ手動タップを促す。
+            let lastRecognitionError = null;
+            let autoRetryBudget = 0;
+
             recognizer.onerror = (ev) => {
-                voiceStatus.textContent = ev.error === 'no-speech' ? '' : ('音声認識エラー: ' + ev.error);
+                lastRecognitionError = ev.error;
+                if (ev.error === 'no-speech' || ev.error === 'aborted') {
+                    // 'aborted' の案内はonend側でリトライ判定した上で出す
+                    return;
+                }
+                voiceStatus.textContent = '音声認識エラー: ' + ev.error;
             };
             recognizer.onend = () => {
                 clearAutoStopTimers();
                 setListeningUI(false);
-                if (messageInput.value.trim()) {
+                const hadText = messageInput.value.trim();
+
+                if (lastRecognitionError === 'aborted' && !ended) {
+                    if (autoRetryBudget > 0) {
+                        autoRetryBudget -= 1;
+                        lastRecognitionError = null;
+                        setTimeout(() => { try { recognizer.start(); } catch (e) {} }, 350);
+                        return;
+                    }
+                    if (!hadText) {
+                        voiceStatus.textContent = '🎤 マイクのボタンを押して話しかけてください';
+                    }
+                }
+                lastRecognitionError = null;
+
+                if (hadText) {
                     inputForm.requestSubmit();
                 }
             };
@@ -386,6 +414,7 @@
             const startListening = () => {
                 if (ended || listening) return;
                 messageInput.value = '';
+                autoRetryBudget = 2;
                 try { recognizer.start(); } catch (e) { /* 連打対策 */ }
             };
 
