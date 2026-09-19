@@ -16,7 +16,7 @@ from app.models.shop import Shop, ShopHours
 from app.schemas.shop import (
     ShopRegisterRequest, ShopResponse, ShopRegisterResponse,
     ShopSearchQuery, ShopListResponse, ErrorResponse, ShopHoursResponse,
-    ShopUpdateRequest
+    ShopUpdateRequest, ShopHoursBulkUpdateRequest
 )
 from app.deps import get_current_user
 from app.schemas.user import CurrentUser
@@ -65,6 +65,7 @@ async def register_shop(
             thumbnail_url=request.thumbnail_url,
             cover_image_url=request.cover_image_url,
             features=request.features or [],
+            reservation_duration_minutes=request.reservation_duration_minutes or 90,
             is_active=True,
             is_featured=False,
             created_at=datetime.utcnow(),
@@ -167,6 +168,53 @@ async def update_shop(
         setattr(shop, field, value)
     shop.updated_at = datetime.utcnow()
 
+    await db.commit()
+
+    result = await db.execute(
+        select(Shop).options(selectinload(Shop.shop_hours)).filter(Shop.id == shop_id)
+    )
+    shop = result.scalar_one()
+    return ShopResponse.from_orm(shop)
+
+
+@router.put(
+    "/{shop_id}/hours",
+    response_model=ShopResponse,
+    summary="営業時間・定休日を更新",
+    description="送信された曜日分の営業時間で丸ごと置き換える"
+)
+async def update_shop_hours(
+    shop_id: str,
+    request: ShopHoursBulkUpdateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> ShopResponse:
+    shop = await db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店舗が見つかりません")
+    if shop.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="この店舗を編集する権限がありません")
+
+    # 既存の営業時間をすべて削除してから、送信された内容で作り直す
+    existing = await db.execute(select(ShopHours).filter(ShopHours.shop_id == shop_id))
+    for hour in existing.scalars().all():
+        await db.delete(hour)
+    await db.flush()
+
+    for hour in request.hours:
+        db.add(ShopHours(
+            id=str(uuid.uuid4()),
+            shop_id=shop_id,
+            day_of_week=hour.day_of_week,
+            opening_time=hour.opening_time,
+            closing_time=hour.closing_time,
+            is_closed=hour.is_closed,
+            last_order_time=hour.last_order_time,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        ))
+
+    shop.updated_at = datetime.utcnow()
     await db.commit()
 
     result = await db.execute(

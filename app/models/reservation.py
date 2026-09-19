@@ -29,14 +29,20 @@ class Reservation(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     shop_id = Column(String(36), ForeignKey("shops.id"), nullable=False, index=True)
-    customer_id = Column(String(36), ForeignKey("customers.id"), nullable=False, index=True)
+    customer_id = Column(String(36), ForeignKey("customers.id"), nullable=True, index=True)
     staff_id = Column(String(36), ForeignKey("staff.id"), nullable=True)  # スタッフ指名（オプション）
+    table_id = Column(String(36), ForeignKey("shop_tables.id"), nullable=True)  # 割り当てられたテーブル
+
+    # ゲスト予約情報（会員登録なしで予約する場合に使用）
+    guest_name = Column(String(255), nullable=True)
+    guest_phone = Column(String(20), nullable=True)
+    guest_email = Column(String(255), nullable=True)
 
     # 予約情報
     reservation_date = Column(DateTime, nullable=False)  # 予約日時
     number_of_people = Column(Integer, nullable=False)  # 人数（飲食店向け）
     status = Column(String(50), default=ReservationStatus.PENDING, nullable=False)  # ステータス
-    
+
     # 特別リクエスト
     special_requests = Column(Text, nullable=True)  # 備考
     
@@ -73,6 +79,7 @@ class Reservation(Base):
     shop = relationship("Shop", back_populates="reservations")
     customer = relationship("Customer", back_populates="reservations")
     staff = relationship("Staff", back_populates="reservations", foreign_keys=[staff_id])
+    table = relationship("ShopTable")
 
     # インデックス
     __table_args__ = (

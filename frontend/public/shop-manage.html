@@ -77,6 +77,34 @@
         }
         .msg.error { background: #fee2e2; color: var(--error); display: block; }
         .msg.success { background: #d1fae5; color: #047857; display: block; }
+        .hours-edit-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }
+        .hours-edit-table th { text-align: left; padding: 6px 8px; color: #888; font-weight: 700; border-bottom: 1px solid #eee; }
+        .hours-edit-table td { padding: 6px 8px; border-bottom: 1px solid #f5f5f5; }
+        .hours-edit-table input[type="time"] { padding: 6px; border: var(--border); border-radius: 6px; font-family: inherit; font-size: 13px; width: 110px; }
+        .hours-edit-table input[type="checkbox"] { width: 18px; height: 18px; }
+        @media (max-width: 560px) {
+            .hours-edit-table { display: block; overflow-x: auto; white-space: nowrap; }
+        }
+        .table-item, .reservation-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 12px 14px; border: var(--border); border-radius: 10px; margin-bottom: 8px; gap: 12px; flex-wrap: wrap;
+        }
+        .table-item .name { font-weight: 700; }
+        .table-item .capacity { color: #888; font-size: 13px; }
+        .reservation-item { align-items: flex-start; }
+        .reservation-item .res-main { flex: 1; min-width: 200px; }
+        .reservation-item .res-date { font-weight: 700; }
+        .reservation-item .res-guest { font-size: 13px; color: #555; margin-top: 2px; }
+        .reservation-item .res-note { font-size: 12px; color: #888; margin-top: 4px; }
+        .reservation-item .res-actions { display: flex; gap: 8px; align-items: center; }
+        .reservation-item select { padding: 6px 10px; border: var(--border); border-radius: 8px; font-family: inherit; font-size: 13px; }
+        .status-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+        .status-badge.pending { background: #fef3c7; color: #b45309; }
+        .status-badge.confirmed { background: #d1fae5; color: #047857; }
+        .status-badge.cancelled { background: #f3f4f6; color: #888; }
+        .status-badge.no_show { background: #fee2e2; color: var(--error); }
+        .status-badge.completed { background: #dbeafe; color: #1d4ed8; }
+        .empty-hint { color: #aaa; font-size: 13px; padding: 10px 0; }
         .kind-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
         .kind-tab {
             padding: 6px 14px; border-radius: 16px; font-size: 12px; font-weight: 700;
@@ -185,6 +213,23 @@
         </div>
 
         <div class="card">
+            <h2>営業時間・定休日</h2>
+            <p class="hint">曜日ごとに営業時間を設定できます。「定休日」にチェックした曜日はお休みとして表示されます。</p>
+            <table class="hours-edit-table">
+                <thead>
+                    <tr><th>曜日</th><th>定休日</th><th>開店</th><th>閉店</th><th>ラストオーダー</th></tr>
+                </thead>
+                <tbody id="hours-edit-body"></tbody>
+            </table>
+            <div class="field" style="margin-top: 14px; max-width: 320px;">
+                <label for="reservation-duration">1組あたりの標準滞在時間（分）</label>
+                <input type="number" id="reservation-duration" min="15" max="600" step="15" value="90">
+            </div>
+            <button class="btn" id="hours-save-btn" style="margin-top: 12px;">保存する</button>
+            <div class="msg" id="hours-msg"></div>
+        </div>
+
+        <div class="card">
             <h2>お店の特徴</h2>
             <p class="hint">来店の決め手になるポイントをタグとして表示します（カンマ区切り）</p>
             <div class="field">
@@ -253,6 +298,43 @@
         </div>
 
         <div class="card">
+            <h2>テーブル・席の管理</h2>
+            <p class="hint">テーブル・席ごとに登録すると、人数に応じた空き状況が自動で計算されます。何も登録しない場合は、人数の上限チェックなしで予約を受け付けます。</p>
+            <form id="table-form">
+                <div class="row-2">
+                    <div class="field">
+                        <label for="table-name">テーブル名 *</label>
+                        <input type="text" id="table-name" placeholder="例：テーブルA、カウンター1" required>
+                    </div>
+                    <div class="field">
+                        <label for="table-capacity">席数 *</label>
+                        <input type="number" id="table-capacity" min="1" required>
+                    </div>
+                </div>
+                <button type="submit" class="btn" id="table-add-btn">テーブルを追加</button>
+                <div class="msg" id="table-msg"></div>
+            </form>
+            <div id="table-list" style="margin-top: 18px;"></div>
+        </div>
+
+        <div class="card">
+            <h2>予約管理</h2>
+            <p class="hint">お客様からのオンライン予約を確認・確定できます。</p>
+            <div class="field" style="max-width: 240px;">
+                <label for="reservation-filter">ステータスで絞り込み</label>
+                <select id="reservation-filter">
+                    <option value="">すべて</option>
+                    <option value="pending">確認待ち</option>
+                    <option value="confirmed">確定</option>
+                    <option value="completed">来店済み</option>
+                    <option value="cancelled">キャンセル</option>
+                    <option value="no_show">無断キャンセル</option>
+                </select>
+            </div>
+            <div id="reservation-list" style="margin-top: 14px;"></div>
+        </div>
+
+        <div class="card">
             <h2>店舗の削除</h2>
             <p class="hint">この店舗と、登録されている写真・メニュー・営業時間などをすべて削除します。この操作は取り消せません。</p>
             <button type="button" class="btn-outline btn-danger" id="delete-shop-btn">この店舗を削除する</button>
@@ -268,6 +350,8 @@
         const params = new URLSearchParams(window.location.search);
         const shopId = params.get('id');
         const KIND_LABELS = { exterior: '外観', interior: '内装', other: 'その他' };
+        const DAY_NAMES = ['月', '火', '水', '木', '金', '土', '日'];
+        const STATUS_LABELS = { pending: '確認待ち', confirmed: '確定', cancelled: 'キャンセル', no_show: '無断キャンセル', completed: '来店済み' };
 
         if (!token || !shopId) {
             document.getElementById('gate').style.display = 'block';
@@ -319,10 +403,229 @@
                     document.getElementById('edit-thumbnail').value = shop.thumbnail_url || '';
                     document.getElementById('edit-cover').value = shop.cover_image_url || '';
                     document.getElementById('edit-description').value = shop.description || '';
+
+                    document.getElementById('reservation-duration').value = shop.reservation_duration_minutes || 90;
+                    renderHoursForm(shop.shop_hours || []);
                 }
             } catch (e) {}
             loadPhotos();
             loadMenu();
+            loadTables();
+            loadReservations();
+        }
+
+        // ---------- 営業時間・定休日 ----------
+        function renderHoursForm(shopHours) {
+            const byDay = {};
+            (shopHours || []).forEach(function (h) { byDay[h.day_of_week] = h; });
+            const tbody = document.getElementById('hours-edit-body');
+            tbody.innerHTML = DAY_NAMES.map(function (label, day) {
+                const h = byDay[day];
+                const open = h ? h.opening_time.slice(0, 5) : '11:00';
+                const close = h ? h.closing_time.slice(0, 5) : '22:00';
+                const lastOrder = (h && h.last_order_time) ? h.last_order_time.slice(0, 5) : '';
+                const closed = h ? h.is_closed : false;
+                return '<tr data-day="' + day + '">' +
+                    '<td>' + label + '曜</td>' +
+                    '<td><input type="checkbox" class="hours-closed" data-day="' + day + '"' + (closed ? ' checked' : '') + '></td>' +
+                    '<td><input type="time" class="hours-open" data-day="' + day + '" value="' + open + '"></td>' +
+                    '<td><input type="time" class="hours-close" data-day="' + day + '" value="' + close + '"></td>' +
+                    '<td><input type="time" class="hours-lastorder" data-day="' + day + '" value="' + lastOrder + '"></td>' +
+                    '</tr>';
+            }).join('');
+        }
+
+        document.getElementById('hours-save-btn').addEventListener('click', async function () {
+            const msg = document.getElementById('hours-msg');
+            const btn = document.getElementById('hours-save-btn');
+            const hours = [];
+            document.querySelectorAll('#hours-edit-body tr').forEach(function (row) {
+                const day = parseInt(row.dataset.day, 10);
+                const closed = row.querySelector('.hours-closed').checked;
+                const open = row.querySelector('.hours-open').value || '11:00';
+                const close = row.querySelector('.hours-close').value || '22:00';
+                const lastOrder = row.querySelector('.hours-lastorder').value;
+                hours.push({
+                    day_of_week: day,
+                    opening_time: open,
+                    closing_time: close,
+                    is_closed: closed,
+                    last_order_time: lastOrder || null
+                });
+            });
+            const duration = parseInt(document.getElementById('reservation-duration').value, 10) || 90;
+
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/hours', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ hours: hours })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '保存に失敗しました');
+                }
+                const durationRes = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId), {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reservation_duration_minutes: duration })
+                });
+                if (!durationRes.ok) {
+                    const errData = await durationRes.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '保存に失敗しました');
+                }
+                showMsg(msg, '保存しました', 'success');
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // ---------- テーブル・席の管理 ----------
+        async function loadTables() {
+            const container = document.getElementById('table-list');
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/tables');
+                const tables = await res.json();
+                if (!tables.length) {
+                    container.innerHTML = '<p class="empty-hint">まだテーブルが登録されていません</p>';
+                    return;
+                }
+                container.innerHTML = tables.map(function (t) {
+                    return '<div class="table-item">' +
+                        '<div><span class="name">' + escapeHtml(t.name) + '</span> ' +
+                        '<span class="capacity">（' + t.capacity + '席）</span></div>' +
+                        '<button type="button" class="btn-outline btn-danger table-delete-btn" data-id="' + t.id + '">削除</button>' +
+                        '</div>';
+                }).join('');
+                container.querySelectorAll('.table-delete-btn').forEach(function (btn) {
+                    btn.addEventListener('click', function () { deleteTable(btn.dataset.id); });
+                });
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        document.getElementById('table-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('table-msg');
+            const btn = document.getElementById('table-add-btn');
+            const name = document.getElementById('table-name').value.trim();
+            const capacity = parseInt(document.getElementById('table-capacity').value, 10);
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/tables', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, capacity: capacity })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '追加に失敗しました');
+                }
+                showMsg(msg, '追加しました', 'success');
+                document.getElementById('table-form').reset();
+                loadTables();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '追加に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        async function deleteTable(tableId) {
+            if (!confirm('このテーブルを削除しますか？')) return;
+            const msg = document.getElementById('table-msg');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/tables/' + encodeURIComponent(tableId), {
+                    method: 'DELETE'
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '削除に失敗しました');
+                }
+                loadTables();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
+            }
+        }
+
+        // ---------- 予約管理 ----------
+        function formatReservationDate(iso) {
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return iso;
+            return d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate() + ' ' +
+                ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+        }
+
+        async function loadReservations() {
+            const container = document.getElementById('reservation-list');
+            const statusFilter = document.getElementById('reservation-filter').value;
+            container.innerHTML = '<p class="empty-hint">読み込み中...</p>';
+            try {
+                let url = '/api/v1/reservations/shop/' + encodeURIComponent(shopId);
+                if (statusFilter) url += '?status=' + encodeURIComponent(statusFilter);
+                const res = await authFetch(url);
+                if (!res.ok) throw new Error('読み込みに失敗しました');
+                const data = await res.json();
+                if (!data.items.length) {
+                    container.innerHTML = '<p class="empty-hint">予約はまだありません</p>';
+                    return;
+                }
+                container.innerHTML = data.items.map(function (r) {
+                    const statusOptions = Object.keys(STATUS_LABELS).map(function (s) {
+                        return '<option value="' + s + '"' + (s === r.status ? ' selected' : '') + '>' + STATUS_LABELS[s] + '</option>';
+                    }).join('');
+                    const tableInfo = r.table_name ? '（' + escapeHtml(r.table_name) + '）' : '';
+                    const noteBits = [];
+                    if (r.special_requests) noteBits.push('備考：' + escapeHtml(r.special_requests));
+                    if (r.status === 'cancelled' && r.cancellation_reason) noteBits.push('理由：' + escapeHtml(r.cancellation_reason));
+                    return '<div class="reservation-item" data-id="' + r.id + '">' +
+                        '<div class="res-main">' +
+                        '<span class="status-badge ' + r.status + '">' + STATUS_LABELS[r.status] + '</span><br>' +
+                        '<span class="res-date">' + formatReservationDate(r.reservation_date) + '</span>　' +
+                        r.number_of_people + '名' + tableInfo +
+                        '<div class="res-guest">' + escapeHtml(r.guest_name || '') + '　' + escapeHtml(r.guest_phone || '') +
+                        (r.guest_email ? '　' + escapeHtml(r.guest_email) : '') + '</div>' +
+                        (noteBits.length ? '<div class="res-note">' + noteBits.join('　') + '</div>' : '') +
+                        '</div>' +
+                        '<div class="res-actions">' +
+                        '<select class="res-status-select">' + statusOptions + '</select>' +
+                        '<button type="button" class="btn-outline res-update-btn">更新</button>' +
+                        '</div>' +
+                        '</div>';
+                }).join('');
+                container.querySelectorAll('.reservation-item').forEach(function (item) {
+                    const btn = item.querySelector('.res-update-btn');
+                    btn.addEventListener('click', function () {
+                        const select = item.querySelector('.res-status-select');
+                        updateReservationStatus(item.dataset.id, select.value);
+                    });
+                });
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        document.getElementById('reservation-filter').addEventListener('change', loadReservations);
+
+        async function updateReservationStatus(reservationId, newStatus) {
+            try {
+                const res = await authFetch('/api/v1/reservations/' + encodeURIComponent(reservationId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: newStatus })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '更新に失敗しました');
+                }
+                loadReservations();
+            } catch (err) {
+                alert(typeof err.message === 'string' ? err.message : '更新に失敗しました');
+            }
         }
 
         // ---------- 基本情報 ----------

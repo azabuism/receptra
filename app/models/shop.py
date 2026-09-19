@@ -81,6 +81,9 @@ class Shop(Base):
     # お店の特徴（タグのリスト。例: ["個室あり", "禁煙", "駐車場あり"]）
     features = Column(JSON, nullable=True, default=list)
 
+    # 予約設定：1組あたりの標準滞在時間（分）。空き状況の計算に使用
+    reservation_duration_minutes = Column(Integer, nullable=True, default=90)
+
     # 営業情報
     is_active = Column(Boolean, default=True, nullable=False)
     is_featured = Column(Boolean, default=False, nullable=False)  # 特集フラグ
@@ -106,6 +109,7 @@ class Shop(Base):
     staff = relationship("Staff", back_populates="shop", cascade="all, delete-orphan")
     photos = relationship("ShopPhoto", back_populates="shop", cascade="all, delete-orphan")
     menu_items = relationship("MenuItem", back_populates="shop", cascade="all, delete-orphan")
+    tables = relationship("ShopTable", back_populates="shop", cascade="all, delete-orphan")
 
     # インデックス
     __table_args__ = (
@@ -218,3 +222,29 @@ class MenuItem(Base):
 
     def __repr__(self):
         return f"<MenuItem(id={self.id}, shop_id={self.shop_id}, name={self.name})>"
+
+
+class ShopTable(Base):
+    """テーブル・席（予約の空き状況計算に使用）"""
+
+    __tablename__ = "shop_tables"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    shop_id = Column(String(36), ForeignKey("shops.id"), nullable=False, index=True)
+
+    name = Column(String(100), nullable=False)  # 例: テーブルA、カウンター1
+    capacity = Column(Integer, nullable=False)  # 席数
+    is_active = Column(Boolean, default=True, nullable=False)  # False = 一時的に使用不可
+    display_order = Column(Integer, default=0, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    shop = relationship("Shop", back_populates="tables")
+
+    __table_args__ = (
+        Index("ix_shop_tables_shop", "shop_id"),
+    )
+
+    def __repr__(self):
+        return f"<ShopTable(id={self.id}, shop_id={self.shop_id}, name={self.name})>"

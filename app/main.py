@@ -26,6 +26,7 @@ from app.routers.shops import router as shops_router
 from app.routers.shop_media import router as shop_media_router, media_router as shop_media_files_router
 from app.routers.reservations import router as reservations_router
 from app.routers.customers import router as customers_router
+from app.routers.shop_tables import router as shop_tables_router
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -66,6 +67,24 @@ async def lifespan(app: FastAPI):
                 await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS features JSON"))
             except Exception as alter_err:
                 logger.warning(f"⚠️ features カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
+            try:
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS reservation_duration_minutes INTEGER DEFAULT 90"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ reservation_duration_minutes カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
+            # 予約テーブル: ゲスト予約対応・テーブル割り当て対応のためのカラム追加
+            try:
+                await conn.execute(text("ALTER TABLE reservations ALTER COLUMN customer_id DROP NOT NULL"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ customer_id の NOT NULL 解除に失敗（既に解除済みの場合は無視して問題ありません）: {alter_err}")
+            try:
+                await conn.execute(text("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS guest_name VARCHAR(255)"))
+                await conn.execute(text("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS guest_phone VARCHAR(20)"))
+                await conn.execute(text("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS guest_email VARCHAR(255)"))
+                await conn.execute(text("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS table_id VARCHAR(36)"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ reservations のゲスト予約用カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
         logger.info("✅ Database tables initialized")
         await engine.dispose()
@@ -111,6 +130,7 @@ def create_app() -> FastAPI:
     app.include_router(shop_media_files_router)
     app.include_router(reservations_router)
     app.include_router(customers_router)
+    app.include_router(shop_tables_router)
     app.include_router(vonage_voice_router)
 
     @app.get("/api/v1/debug/db-status", tags=["debug"])

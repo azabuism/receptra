@@ -48,6 +48,7 @@ class ShopRegisterRequest(BaseModel):
     cover_image_url: Optional[str] = Field(None, max_length=500, description="カバー画像URL")
     shop_hours: Optional[List[ShopHoursCreate]] = Field(None, description="営業時間リスト")
     features: Optional[List[str]] = Field(default_factory=list, description="お店の特徴タグ（例：個室あり、禁煙、駐車場あり）")
+    reservation_duration_minutes: Optional[int] = Field(90, ge=15, le=600, description="1組あたりの標準滞在時間（分）")
 
 
 class ShopUpdateRequest(BaseModel):
@@ -64,6 +65,12 @@ class ShopUpdateRequest(BaseModel):
     thumbnail_url: Optional[str] = Field(None, max_length=500)
     cover_image_url: Optional[str] = Field(None, max_length=500)
     features: Optional[List[str]] = None
+    reservation_duration_minutes: Optional[int] = Field(None, ge=15, le=600)
+
+
+class ShopHoursBulkUpdateRequest(BaseModel):
+    """営業時間の一括更新スキーマ（送信された曜日分だけ置き換え）"""
+    hours: List[ShopHoursCreate] = Field(..., description="曜日ごとの営業時間リスト")
 
 
 class ShopResponse(BaseModel):
@@ -90,6 +97,7 @@ class ShopResponse(BaseModel):
     updated_at: datetime
     shop_hours: Optional[List[ShopHoursResponse]] = []
     features: Optional[List[str]] = []
+    reservation_duration_minutes: Optional[int] = 90
 
     class Config:
         from_attributes = True
