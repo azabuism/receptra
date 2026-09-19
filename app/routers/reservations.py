@@ -466,6 +466,10 @@ async def update_reservation(
             reservation.number_of_people = request.number_of_people
         if request.special_requests is not None:
             reservation.special_requests = request.special_requests
+        if request.reservation_date is not None:
+            if request.reservation_date <= datetime.utcnow():
+                raise HTTPException(status_code=400, detail="過去の日時には変更できません")
+            reservation.reservation_date = request.reservation_date
 
         reservation.updated_at = datetime.utcnow()
         await db.commit()

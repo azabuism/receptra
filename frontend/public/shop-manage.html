@@ -98,6 +98,11 @@
         .reservation-item .res-note { font-size: 12px; color: #888; margin-top: 4px; }
         .reservation-item .res-actions { display: flex; gap: 8px; align-items: center; }
         .reservation-item select { padding: 6px 10px; border: var(--border); border-radius: 8px; font-family: inherit; font-size: 13px; }
+        .reservation-item .res-service { font-size: 13px; color: #555; margin-top: 2px; }
+        .reservation-item .res-guest a { color: inherit; }
+        .res-reschedule-row { display: none; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; width: 100%; }
+        .res-reschedule-row.open { display: flex; }
+        .res-reschedule-row input[type="datetime-local"] { padding: 6px 10px; border: var(--border); border-radius: 8px; font-family: inherit; font-size: 13px; }
         .status-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; margin-bottom: 4px; }
         .status-badge.pending { background: #fef3c7; color: #b45309; }
         .status-badge.confirmed { background: #d1fae5; color: #047857; }
@@ -1194,6 +1199,14 @@
                 ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
         }
 
+        function toDatetimeLocalValue(iso) {
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return '';
+            const pad = function (n) { return ('0' + n).slice(-2); };
+            return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' +
+                pad(d.getHours()) + ':' + pad(d.getMinutes());
+        }
+
         async function loadReservations() {
             const container = document.getElementById('reservation-list');
             const statusFilter = document.getElementById('reservation-filter').value;
@@ -1213,29 +1226,73 @@
                         return '<option value="' + s + '"' + (s === r.status ? ' selected' : '') + '>' + STATUS_LABELS[s] + '</option>';
                     }).join('');
                     const tableInfo = r.table_name ? '（' + escapeHtml(r.table_name) + '）' : '';
+                    const serviceBits = [];
+                    if (r.service_name) serviceBits.push('サービス：' + escapeHtml(r.service_name));
+                    if (r.staff_name) serviceBits.push('担当：' + escapeHtml(r.staff_name));
+                    if (r.total_price != null) serviceBits.push('¥' + Number(r.total_price).toLocaleString());
                     const noteBits = [];
                     if (r.special_requests) noteBits.push('備考：' + escapeHtml(r.special_requests));
                     if (r.status === 'cancelled' && r.cancellation_reason) noteBits.push('理由：' + escapeHtml(r.cancellation_reason));
+                    const canQuickNoShow = (r.status === 'pending' || r.status === 'confirmed');
                     return '<div class="reservation-item" data-id="' + r.id + '">' +
                         '<div class="res-main">' +
                         '<span class="status-badge ' + r.status + '">' + STATUS_LABELS[r.status] + '</span><br>' +
                         '<span class="res-date">' + formatReservationDate(r.reservation_date) + '</span>　' +
                         r.number_of_people + '名' + tableInfo +
-                        '<div class="res-guest">' + escapeHtml(r.guest_name || '') + '　' + escapeHtml(r.guest_phone || '') +
-                        (r.guest_email ? '　' + escapeHtml(r.guest_email) : '') + '</div>' +
+                        (serviceBits.length ? '<div class="res-service">' + serviceBits.join('　') + '</div>' : '') +
+                        '<div class="res-guest">' + escapeHtml(r.guest_name || '') + '　' +
+                        (r.guest_phone ? '<a href="tel:' + escapeHtml(r.guest_phone) + '">' + escapeHtml(r.guest_phone) + '</a>' : '') +
+                        (r.guest_email ? '　<a href="mailto:' + escapeHtml(r.guest_email) + '">' + escapeHtml(r.guest_email) + '</a>' : '') + '</div>' +
                         (noteBits.length ? '<div class="res-note">' + noteBits.join('　') + '</div>' : '') +
                         '</div>' +
                         '<div class="res-actions">' +
                         '<select class="res-status-select">' + statusOptions + '</select>' +
                         '<button type="button" class="btn-outline res-update-btn">更新</button>' +
+                        (canQuickNoShow ? '<button type="button" class="btn-outline btn-danger res-noshow-btn">無断キャンセル</button>' : '') +
+                        '<button type="button" class="btn-outline res-reschedule-toggle-btn">日時を変更</button>' +
+                        '</div>' +
+                        '<div class="res-reschedule-row">' +
+                        '<input type="datetime-local" class="res-reschedule-input" value="' + toDatetimeLocalValue(r.reservation_date) + '">' +
+                        '<button type="button" class="btn-outline res-reschedule-save-btn">保存</button>' +
+                        '<button type="button" class="btn-outline res-reschedule-cancel-btn">やめる</button>' +
                         '</div>' +
                         '</div>';
                 }).join('');
                 container.querySelectorAll('.reservation-item').forEach(function (item) {
-                    const btn = item.querySelector('.res-update-btn');
-                    btn.addEventListener('click', function () {
+                    const id = item.dataset.id;
+
+                    item.querySelector('.res-update-btn').addEventListener('click', function () {
                         const select = item.querySelector('.res-status-select');
-                        updateReservationStatus(item.dataset.id, select.value);
+                        const newStatus = select.value;
+                        let reason = null;
+                        if (newStatus === 'cancelled') {
+                            reason = prompt('キャンセル理由を入力してください（お客様への確認用。空欄でも構いません）', '') || null;
+                        }
+                        updateReservationStatus(id, newStatus, reason);
+                    });
+
+                    const noShowBtn = item.querySelector('.res-noshow-btn');
+                    if (noShowBtn) {
+                        noShowBtn.addEventListener('click', function () {
+                            if (!confirm('この予約を「無断キャンセル」にしますか？')) return;
+                            updateReservationStatus(id, 'no_show', null);
+                        });
+                    }
+
+                    const rescheduleRow = item.querySelector('.res-reschedule-row');
+                    item.querySelector('.res-reschedule-toggle-btn').addEventListener('click', function () {
+                        rescheduleRow.classList.toggle('open');
+                    });
+                    item.querySelector('.res-reschedule-cancel-btn').addEventListener('click', function () {
+                        rescheduleRow.classList.remove('open');
+                    });
+                    item.querySelector('.res-reschedule-save-btn').addEventListener('click', function () {
+                        const input = item.querySelector('.res-reschedule-input');
+                        if (!input.value) {
+                            alert('変更後の日時を入力してください');
+                            return;
+                        }
+                        updateReservationDate(id, input.value);
                     });
                 });
             } catch (e) {
@@ -1245,12 +1302,14 @@
 
         document.getElementById('reservation-filter').addEventListener('change', loadReservations);
 
-        async function updateReservationStatus(reservationId, newStatus) {
+        async function updateReservationStatus(reservationId, newStatus, cancellationReason) {
             try {
+                const payload = { status: newStatus };
+                if (newStatus === 'cancelled') payload.cancellation_reason = cancellationReason;
                 const res = await authFetch('/api/v1/reservations/' + encodeURIComponent(reservationId), {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ status: newStatus })
+                    body: JSON.stringify(payload)
                 });
                 if (!res.ok) {
                     const errData = await res.json().catch(function () { return {}; });
@@ -1259,6 +1318,23 @@
                 loadReservations();
             } catch (err) {
                 alert(typeof err.message === 'string' ? err.message : '更新に失敗しました');
+            }
+        }
+
+        async function updateReservationDate(reservationId, datetimeLocalValue) {
+            try {
+                const res = await authFetch('/api/v1/reservations/' + encodeURIComponent(reservationId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reservation_date: datetimeLocalValue + ':00' })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '日時の変更に失敗しました');
+                }
+                loadReservations();
+            } catch (err) {
+                alert(typeof err.message === 'string' ? err.message : '日時の変更に失敗しました');
             }
         }
 

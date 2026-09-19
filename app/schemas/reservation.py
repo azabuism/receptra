@@ -27,6 +27,7 @@ class ReservationUpdateRequest(BaseModel):
     cancellation_reason: Optional[str] = Field(None, max_length=500, description="キャンセル理由")
     number_of_people: Optional[int] = Field(None, ge=1, le=999, description="人数")
     special_requests: Optional[str] = Field(None, max_length=500, description="特別リクエスト")
+    reservation_date: Optional[datetime] = Field(None, description="予約日時の変更（お客様との調整後にオーナーが日時を変更する場合）")
 
 
 class ReservationResponse(BaseModel):
