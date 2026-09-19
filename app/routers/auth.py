@@ -6,6 +6,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -125,7 +126,7 @@ async def login(
         # 注：簡略化のため、最初のテナントを使用
         # 実装では複数テナント対応が必要
         result = await db.execute(
-            "SELECT DISTINCT tenant_id FROM users WHERE email = :email LIMIT 1",
+            text("SELECT DISTINCT tenant_id FROM users WHERE email = :email LIMIT 1"),
             {"email": login_data.email},
         )
         tenant_id = result.scalar()
