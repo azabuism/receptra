@@ -469,9 +469,11 @@
             <div class="nav-logo"><img src="receptra-logo.png" alt="RECEPTRA Logo" style="max-width: 100%; height: auto;"></div>
             <span>レセプトラ</span>
         </a>
-        <div class="nav-right">
-            <button class="nav-button" onclick="location.href='owner-login.html'">オーナーログイン</button>
-            <button class="nav-button primary" onclick="location.href='user-login.html'">ユーザーログイン</button>
+        <div class="nav-right" id="nav-right">
+            <span id="nav-status-label" style="display: none; font-size: 13px; color: var(--dark); white-space: nowrap;"></span>
+            <button class="nav-button" id="nav-owner-btn" onclick="location.href='owner-login.html'">オーナーログイン</button>
+            <button class="nav-button primary" id="nav-user-btn" onclick="location.href='user-login.html'">ユーザーログイン</button>
+            <button class="nav-button" id="nav-logout-btn" style="display: none;">ログアウト</button>
         </div>
     </nav>
 
@@ -636,6 +638,72 @@
 
             window.location.href = `receptra-results.html?${params.toString()}`;
         }
+
+        // ---------- ログイン状態の表示 ----------
+        // オーナーとユーザーは別々のログイン状態を持つため、それぞれ独立して判定する。
+        // 片方でログイン中でも、もう片方のログインボタンは残す。
+        function initAuthNav() {
+            const ownerToken = localStorage.getItem('receptra_token');
+            const ownerUserRaw = localStorage.getItem('receptra_user');
+            const customerToken = localStorage.getItem('receptra_customer_token');
+            const customerUserRaw = localStorage.getItem('receptra_customer_user');
+
+            const statusLabel = document.getElementById('nav-status-label');
+            const ownerBtn = document.getElementById('nav-owner-btn');
+            const userBtn = document.getElementById('nav-user-btn');
+            const logoutBtn = document.getElementById('nav-logout-btn');
+
+            function parseName(raw) {
+                try {
+                    const user = JSON.parse(raw || '{}');
+                    return user.display_name || user.email || '';
+                } catch (e) {
+                    return '';
+                }
+            }
+
+            let name = '';
+
+            if (ownerToken) {
+                name = parseName(ownerUserRaw);
+                ownerBtn.textContent = 'オーナーページへ';
+                ownerBtn.onclick = function () { location.href = 'owner.html'; };
+            } else {
+                ownerBtn.textContent = 'オーナーログイン';
+                ownerBtn.onclick = function () { location.href = 'owner-login.html'; };
+            }
+
+            if (customerToken) {
+                if (!name) name = parseName(customerUserRaw);
+                userBtn.style.display = 'none';
+            } else {
+                userBtn.style.display = '';
+                userBtn.textContent = 'ユーザーログイン';
+                userBtn.onclick = function () { location.href = 'user-login.html'; };
+            }
+
+            if (ownerToken || customerToken) {
+                statusLabel.textContent = (name ? name + 'さん' : 'ログイン中') + 'でログイン中';
+                statusLabel.style.display = '';
+                logoutBtn.style.display = '';
+                logoutBtn.onclick = function () {
+                    if (ownerToken) {
+                        localStorage.removeItem('receptra_token');
+                        localStorage.removeItem('receptra_user');
+                    }
+                    if (customerToken) {
+                        localStorage.removeItem('receptra_customer_token');
+                        localStorage.removeItem('receptra_customer_user');
+                    }
+                    window.location.reload();
+                };
+            } else {
+                statusLabel.style.display = 'none';
+                logoutBtn.style.display = 'none';
+            }
+        }
+
+        initAuthNav();
     </script>
 </body>
 </html>
