@@ -33,6 +33,8 @@ from app.routers.taxonomy import router as taxonomy_router
 from app.routers.reviews import router as reviews_router
 from app.routers.mypage import router as mypage_router
 from app.routers.coupons import router as coupons_router
+from app.routers.services import router as services_router
+from app.routers.staff import router as staff_router
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -194,6 +196,8 @@ def create_app() -> FastAPI:
     app.include_router(reviews_router)
     app.include_router(mypage_router)
     app.include_router(coupons_router)
+    app.include_router(services_router)
+    app.include_router(staff_router)
     app.include_router(vonage_voice_router)
 
     @app.get("/api/v1/debug/db-status", tags=["debug"])
