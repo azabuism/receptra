@@ -15,12 +15,46 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'メイリオ', Meiryo, sans-serif;
             background: linear-gradient(135deg, #FF6B35 0%, #ff9500 100%);
             min-height: 100vh;
-            padding: 20px;
+        }
+
+        nav {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: #ffffff;
+            border-bottom: 1px solid #eee;
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            row-gap: 6px;
+            min-height: 60px;
+        }
+
+        .nav-brand {
+            text-decoration: none;
+            color: #FF6B35;
+            font-size: 20px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .nav-logo-img { width: 32px; height: 32px; object-fit: contain; flex-shrink: 0; }
+
+        .nav-right a { color: #333333; text-decoration: none; font-size: 13px; white-space: nowrap; }
+
+        @media (max-width: 480px) {
+            .nav-brand { font-size: 17px; }
+            .nav-right a { font-size: 12px; }
         }
 
         .container {
             max-width: 1200px;
             margin: 0 auto;
+            padding: 20px;
         }
 
         .header {
@@ -216,16 +250,14 @@
     </style>
 </head>
 <body>
-    <!-- ロゴナビゲーション -->
-    <div style="position: fixed; top: 20px; left: 20px; z-index: 1000;">
-        <a href="/" style="display: flex; align-items: center; gap: 8px; text-decoration: none;">
-            <img src="/images/receptra-logo.png" alt="RECEPTRA Logo" style="width: 48px; height: 48px;">
-        </a>
-    </div>
+    <nav>
+        <a href="/" class="nav-brand"><img src="/images/receptra-logo.png" alt="RECEPTRA Logo" class="nav-logo-img">レセプトラ</a>
+        <div class="nav-right"><a href="/">← ホームに戻る</a></div>
+    </nav>
 
     <div class="container">
         <div class="breadcrumb">
-            <a href="/">← ホーム</a>
+            <a href="/">ホーム</a>
             <span>/</span>
             <span class="current">エリアから検索</span>
         </div>
