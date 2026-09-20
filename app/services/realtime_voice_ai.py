@@ -498,22 +498,18 @@ def _build_personality_section(s: "AIStaffSettings") -> str:
     return "# AIスタッフの人物設定\n" + "\n".join(lines)
 
 
-def _build_greeting_section(s: Optional["AIStaffSettings"], shop_name: str) -> str:
+def _resolve_greeting_text(s: Optional["AIStaffSettings"], shop_name: str) -> str:
     """
-    電話に出たときの第一声。店舗オーナーが設定していない場合や空文字の
-    場合は、スタッフ名の有無に応じた自然なフォールバック文を使う
-    （設定が存在しても greeting が空欄なら「名乗らない」フォールバックに
-    なるよう配慮している）。
+    実際に話す（または読み上げる）べき第一声の文字列そのものを解決する。
+    店舗オーナーが設定していない場合や空文字の場合は、スタッフ名の有無に
+    応じた自然なフォールバック文を使う（設定が存在しても greeting が
+    空欄なら「名乗らない」フォールバックになるよう配慮している）。
 
-    Phase3C追記: この関数はAIスタッフ設定(staff_settings)の有無に関わらず、
-    全店舗のinstructionsに常時含める（build_realtime_instructions側の
-    呼び出し箇所を参照）。理由: フロントエンドの第一声用response.createは
-    response-level instructionsを付与しない設計（session側のinstructionsを
-    そのまま使わせるため）にしたため、AIスタッフ設定が無い店舗であっても
-    「通話開始時にまず自分から話し始める」という指示自体はsession
-    instructions側に常に存在している必要がある。s=Noneの場合は
-    「名乗らない」フォールバック文のみを使う（Phase1のみの店舗の人格・
-    名乗りに関する既存の沈黙を破らないため）。
+    Phase3C.1追記: この関数は_build_greeting_section（Realtime instructions
+    への埋め込み用）と、generate_greeting_tts_audio（Zero-Wait Greeting用の
+    事前生成TTS音声）の両方から共通で呼ばれる。両者が違う文言を使うと
+    「事前生成音声とAIの認識している第一声が食い違う」事態になるため、
+    第一声の実際の文言はこの関数の一箇所だけで決定する。
     """
     greeting = ""
     staff_name = None
@@ -525,6 +521,24 @@ def _build_greeting_section(s: Optional["AIStaffSettings"], shop_name: str) -> s
             greeting = f"お電話ありがとうございます。{shop_name}、AI受付の{staff_name}です。"
         else:
             greeting = f"お電話ありがとうございます。{shop_name}でございます。"
+    return greeting
+
+
+def _build_greeting_section(s: Optional["AIStaffSettings"], shop_name: str) -> str:
+    """
+    電話に出たときの第一声をRealtime instructionsへ埋め込む形に整形する。
+
+    Phase3C追記: この関数はAIスタッフ設定(staff_settings)の有無に関わらず、
+    全店舗のinstructionsに常時含める（build_realtime_instructions側の
+    呼び出し箇所を参照）。理由: フロントエンドの第一声用response.createは
+    response-level instructionsを付与しない設計（session側のinstructionsを
+    そのまま使わせるため）にしたため、AIスタッフ設定が無い店舗であっても
+    「通話開始時にまず自分から話し始める」という指示自体はsession
+    instructions側に常に存在している必要がある。s=Noneの場合は
+    「名乗らない」フォールバック文のみを使う（Phase1のみの店舗の人格・
+    名乗りに関する既存の沈黙を破らないため）。
+    """
+    greeting = _resolve_greeting_text(s, shop_name)
     return (
         "# 電話に出たときの第一声\n"
         "通話が始まったら、まず最初に次のような内容を自然に話してください"
@@ -798,4 +812,56 @@ async def create_voice_preview_session(voice: str) -> dict:
         "expires_at": secret.expires_at,
         "model": settings.OPENAI_REALTIME_MODEL,
         "voice": voice,
+    }
+
+
+async def generate_greeting_tts_audio(shop: Shop, staff_settings: Optional["AIStaffSettings"]) -> dict:
+    """
+    Phase3C.1 PoC: Zero-Wait Greeting用に、店舗の第一声をテキスト読み上げ
+    (POST /v1/audio/speech 相当)で事前生成する。
+
+    重要な設計上の制約:
+    - これは通話中の会話生成(Realtime API)とは完全に別物。第一声の文字列
+      そのものは_resolve_greeting_text()で解決し、Realtime instructions側
+      （_build_greeting_section）と完全に同じ文言を使う（食い違い防止）。
+    - この関数はバイト列を返すだけで、DBにもファイルシステムにも一切
+      保存しない（PoC段階では呼び出し側＝開発者が結果を受け取り、
+      frontend/public/配下の静的ファイルとして手動配置する運用。
+      Railwayのコンテナファイルシステムへ実行時に書き込むと、デプロイ
+      毎に消える可能性があるため、そのような永続化は行わない）。
+    - voiceはRealtime API用のvoice設定(AIStaffSettings.voice)をそのまま
+      流用する。2026年9月時点のopenai SDK(1.109.1)の型定義を確認したところ、
+      /v1/audio/speech の voice パラメータは alloy/ash/ballad/coral/echo/
+      sage/shimmer/verse/marin/cedar という、REALTIME_VOICESと完全に同一の
+      10種類になっている（以前は別々のvoice一覧だったが、現時点では
+      両APIが同じvoice名を受け付ける）。ただし「同じ名前を受け付ける」ことは
+      「音質が完全に同一」であることを保証しない点に注意
+      （基盤モデルが異なるため）。
+    """
+    settings = get_settings()
+    if not settings.OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY が設定されていません")
+
+    greeting_text = _resolve_greeting_text(staff_settings, shop.name)
+    voice = (staff_settings.voice if staff_settings and staff_settings.voice else settings.OPENAI_REALTIME_VOICE)
+
+    client = _get_client()
+    resp = await client.audio.speech.create(
+        model=settings.OPENAI_TTS_MODEL,
+        voice=voice,
+        input=greeting_text,
+        response_format="mp3",
+    )
+    audio_bytes = await resp.aread()
+
+    logger.info(
+        "Zero-Wait Greeting音声を生成 shop_id=%s voice=%s model=%s bytes=%d greeting_len=%d",
+        shop.id, voice, settings.OPENAI_TTS_MODEL, len(audio_bytes), len(greeting_text),
+    )
+
+    return {
+        "audio_bytes": audio_bytes,
+        "voice": voice,
+        "model": settings.OPENAI_TTS_MODEL,
+        "greeting_text": greeting_text,
     }

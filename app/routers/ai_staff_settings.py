@@ -19,7 +19,7 @@ AIスタッフ設定 API（Realtime Voice AI Phase2）
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -158,3 +158,48 @@ async def create_voice_preview(
         ) from e
 
     return preview
+
+
+@router.post(
+    "/greeting-audio",
+    summary="Zero-Wait Greeting用の第一声音声を生成して返す（Phase3C.1 PoC・保存はしない）",
+)
+async def generate_greeting_audio(
+    shop_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Phase3C.1 PoC専用エンドポイント。現在保存されているAIスタッフ設定
+    (greeting/voice)から、Zero-Wait Greeting用の音声(mp3)をテキスト読み上げで
+    その場で生成し、バイト列をそのまま返す。
+
+    重要: このエンドポイントはDBにもRailwayのファイルシステムにも一切
+    保存しない。PoC段階では、このレスポンスを受け取った開発者が
+    frontend/public/配下の静的ファイルとして手動で配置・コミットする運用
+    とする（本実装（全店舗展開）時には、greeting/voiceの変更を検知して
+    自動的に再生成・キャッシュする仕組みへ移行する設計を別途提案する）。
+    OPENAI_API_KEY はこの関数の呼び出し先(realtime_voice_ai)でのみ使用され、
+    ブラウザには一切渡らない。
+    """
+    shop = await _get_owned_shop(shop_id, current_user, db)
+    staff_settings = await _get_settings_row(shop_id, db)
+
+    try:
+        result = await realtime_voice_ai.generate_greeting_tts_audio(shop, staff_settings)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail="Greeting音声の生成に失敗しました。しばらくしてから再度お試しください。",
+        ) from e
+
+    return Response(
+        content=result["audio_bytes"],
+        media_type="audio/mpeg",
+        headers={
+            "X-Greeting-Voice": result["voice"],
+            "X-Greeting-Model": result["model"],
+        },
+    )

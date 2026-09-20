@@ -96,6 +96,14 @@ class Settings(BaseSettings):
     # 公式ドキュメントに明記されているため、単純な受付対話向けに低めに設定。
     OPENAI_REALTIME_REASONING_EFFORT: str = "low"
 
+    # ===== OpenAI TTS（Phase3C.1: Zero-Wait Greeting PoC用の事前生成音声）=====
+    # 通常の会話音声(Realtime API)とは別物。第一声だけを通話開始前に
+    # 静的音声として事前生成するために、古典的なテキスト読み上げ
+    # (POST /v1/audio/speech)を使う。gpt-4o-mini-ttsはinstructions
+    # パラメータに対応し、tts-1/tts-1-hdより自然な音声品質が期待できる
+    # （2026年9月時点の判断。将来のモデル更新時は要見直し）。
+    OPENAI_TTS_MODEL: str = "gpt-4o-mini-tts"
+
     # ===== PAY.JP設定 =====
     PAYJP_API_KEY: str = ""
     PAYJP_SECRET_KEY: str = ""
