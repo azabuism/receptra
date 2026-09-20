@@ -431,7 +431,10 @@
             document.title = shop.name + ' - レセプトラ';
             currentShopId = shop.id;
             document.getElementById('ai-chat-btn').href = '/shop-ai-booking.html?id=' + encodeURIComponent(shop.id) + '&mode=chat';
-            document.getElementById('ai-voice-btn').href = '/shop-ai-booking.html?id=' + encodeURIComponent(shop.id) + '&mode=voice';
+            // 2026年9月〜: 「通話で予約」はRealtime Voice(WebRTC/OpenAI Realtime API)版へ切り替え。
+            // 従来のWeb Speech API版(shop-ai-booking.html?mode=voice)は
+            // ファイル自体は残しており、URLを直接指定すれば引き続き動作する。
+            document.getElementById('ai-voice-btn').href = '/shop-ai-realtime-voice.html?id=' + encodeURIComponent(shop.id);
             currentBusinessType = shop.business_type || null;
             setServiceBookingMode(SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1);
             if (SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1) {

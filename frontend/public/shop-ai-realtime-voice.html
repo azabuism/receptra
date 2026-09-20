@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Realtime音声AI（テスト） - レセプトラ</title>
+    <title>AIでご予約（通話） - レセプトラ</title>
     <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -182,10 +182,10 @@
     <header>
         <a class="back" href="#" id="backLink">← 店舗ページに戻る</a>
         <div class="titles">
-            <h1 id="pageShopName">Realtime音声AI</h1>
-            <div class="sub">レセプトラ AI受付（開発中・テスト版）</div>
+            <h1 id="pageShopName">AIでご予約（通話）</h1>
+            <div class="sub">レセプトラ AI音声受付</div>
         </div>
-        <span class="mode-badge">Phase1 検証</span>
+        <span class="mode-badge" id="debugBadge" style="display:none;">開発者モード</span>
     </header>
 
     <div id="loading" class="container">読み込み中…</div>
@@ -193,10 +193,11 @@
 
     <div class="container" id="content" style="display:none;">
         <div class="notice">
-            これは開発中のテストページです。ここではまだ予約の確定・空き状況の
-            確認・メニューや料金のご案内はできません（Phase1: 自然な音声会話
-            そのものの検証が目的です）。実際のご予約は店舗ページの「チャットで
-            予約」「通話で予約」をご利用ください。
+            AIがお電話のように音声でご要望をお伺いします。まだこの場での
+            空き状況確認・ご予約の確定・メニューや料金のご案内はできないため、
+            お伺いした内容をもとに、後ほど担当よりご連絡いたします。今すぐ
+            確実にご予約を確定したい場合は、店舗ページの「チャットで予約」も
+            ご利用いただけます。
         </div>
 
         <div id="errorBanner" class="error-banner" style="display:none;"></div>
@@ -217,45 +218,56 @@
             <button class="btn-secondary" id="endBtn" type="button" style="display:none;">通話を終了</button>
         </div>
 
-        <div class="latency-panel">
-            <h2>通話状態（実機確認用）</h2>
-            <div class="status-grid">
-                <span class="label">マイク許可</span><span class="val" id="stMicPerm">未確認</span>
-                <span class="label">マイクTrack</span><span class="val" id="stMicTrack">なし</span>
-                <span class="label">WebRTC接続</span><span class="val" id="stWebrtc">new</span>
-                <span class="label">OpenAI Session</span><span class="val" id="stSession">未接続</span>
-                <span class="label">ユーザー発話</span><span class="val" id="stUserSpeak">待機</span>
-                <span class="label">AI発話</span><span class="val" id="stAiSpeak">待機</span>
+        <!-- 以下は開発・検証用のデバッグ表示。一般のお客様には表示せず、
+             URLに ?debug=1 を付けて開いた場合のみ表示する（JS側で切り替え）。 -->
+        <div id="debugPanels" style="display:none;">
+            <div class="latency-panel">
+                <h2>通話状態（実機確認用）</h2>
+                <div class="status-grid">
+                    <span class="label">マイク許可</span><span class="val" id="stMicPerm">未確認</span>
+                    <span class="label">マイクTrack</span><span class="val" id="stMicTrack">なし</span>
+                    <span class="label">WebRTC接続</span><span class="val" id="stWebrtc">new</span>
+                    <span class="label">OpenAI Session</span><span class="val" id="stSession">未接続</span>
+                    <span class="label">ユーザー発話</span><span class="val" id="stUserSpeak">待機</span>
+                    <span class="label">AI発話</span><span class="val" id="stAiSpeak">待機</span>
+                </div>
             </div>
-        </div>
 
-        <div class="latency-panel">
-            <h2>レイテンシ計測（発話終了 → AIの発話開始までの体感時間）</h2>
-            <div class="latency-row">
-                <span>直近のターン</span>
-                <span class="val" id="latestLatency">—</span>
+            <div class="latency-panel">
+                <h2>レイテンシ計測（発話終了 → AIの発話開始までの体感時間）</h2>
+                <div class="latency-row">
+                    <span>直近のターン</span>
+                    <span class="val" id="latestLatency">—</span>
+                </div>
+                <div class="latency-row">
+                    <span>平均（このセッション）</span>
+                    <span class="val" id="avgLatency">—</span>
+                </div>
+                <div class="latency-row">
+                    <span>計測回数</span>
+                    <span class="val" id="latencyCount">0</span>
+                </div>
             </div>
-            <div class="latency-row">
-                <span>平均（このセッション）</span>
-                <span class="val" id="avgLatency">—</span>
-            </div>
-            <div class="latency-row">
-                <span>計測回数</span>
-                <span class="val" id="latencyCount">0</span>
-            </div>
-        </div>
 
-        <div class="latency-panel">
-            <h2>イベントログ（開発確認用）</h2>
-            <div id="eventLog"></div>
+            <div class="latency-panel">
+                <h2>イベントログ（開発確認用）</h2>
+                <div id="eventLog"></div>
+            </div>
         </div>
     </div>
 
-    <footer>RECEPTRA Realtime Voice（Phase1・ブラウザ⇔OpenAI WebRTC直結）</footer>
+    <footer>RECEPTRA AI音声受付（ブラウザ⇔OpenAI Realtime API）</footer>
 
     <script>
         const params = new URLSearchParams(window.location.search);
         const shopId = params.get('id');
+        // ?debug=1 を付けて開いた場合のみ、技術者向けの通話状態・レイテンシ・
+        // イベントログを表示する。一般のお客様向けの画面はシンプルに保つ。
+        const debugMode = params.get('debug') === '1';
+        if (debugMode) {
+            document.getElementById('debugPanels').style.display = 'block';
+            document.getElementById('debugBadge').style.display = 'inline-block';
+        }
 
         document.getElementById('backLink').href = shopId ? ('/shop.html?id=' + encodeURIComponent(shopId)) : '/';
 
