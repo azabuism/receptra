@@ -416,6 +416,13 @@
                     aiSpeakingNow = true;
                     bigMic.classList.add('ai-speaking');
                     setStatus(stAiSpeakEl, '発話中', 'ok');
+                    if (greetingTiming.firstAiAudioPlaybackStarted === null) {
+                        // Phase3C計測用: 通話中で最初にAI音声が実際に聞こえ始めた瞬間
+                        // （第一声の体感開始時刻。既存のlastSpeechStoppedAtベースの
+                        // ターンレイテンシー計測とは独立して記録する）。
+                        greetingTiming.firstAiAudioPlaybackStarted = performance.now();
+                        logGreetingLatenciesIfReady();
+                    }
                     if (lastSpeechStoppedAt !== null) {
                         recordLatencySample(performance.now() - lastSpeechStoppedAt);
                         lastSpeechStoppedAt = null;
@@ -437,6 +444,134 @@
         let ended = false;
         let maxDurationTimer = null;
         const MAX_CALL_DURATION_MS = 30 * 60 * 1000; // 30分（テスト中の暴走・コスト安全装置。恒久的な上限ではない）
+
+        // ===== Phase3C: AI第一声の自動開始 =====
+        //
+        // 設計方針（重要）:
+        // - 第一声用のresponse.createは1通話につき最大1回だけ送る
+        //   （initialGreetingSentフラグで保証。session.created/session.updatedが
+        //   複数回発生しても、あるいは将来イベントの発生順序が変わっても
+        //   二重送信しない）。
+        // - タイミングはsession.created（およびsession.updated。ただし現行実装は
+        //   client側からsession.updateを一切送らないため通常は発生しない）を採用。
+        //   理由: instructions/voice/tools/turn_detectionはこのページが
+        //   fetchSession()で受け取るephemeralトークンの発行時点
+        //   （realtime_voice_ai.create_realtime_session）で既にOpenAI側
+        //   セッションへ設定済みであり、DataChannel経由でsession.created
+        //   イベントが届いた時点で既に有効になっている。したがって
+        //   dc.onopen（セッション内容が反映されているか不明な最も早い時点）
+        //   より安全で、かつ「session.updated完了後」を待つ設計は
+        //   （client側がsession.updateを送らない現行実装では）そのイベント自体が
+        //   発生せず永久に第一声が始まらない不具合になるため採用しない。
+        // - お客様が接続直後に先に話し始めた場合（第一声より先にspeech_startedを
+        //   検知した場合）は、こちらから第一声用response.createを送らず、
+        //   既存のturn_detection（semantic_vad, create_response既定動作）による
+        //   自動応答にそのまま委ねる。第一声とお客様発話が同時に競合する状況を
+        //   そもそも作らない、という考え方（独自の状態機械や割り込み制御を
+        //   新設せず、既存のRealtime API標準動作を最大限利用する）。
+        // - 第一声のresponse.create送信後にお客様が話し始めた場合（第一声再生中の
+        //   割り込み）は、OpenAI Realtime API標準の割り込み処理
+        //   （speech_started検知時のoutput_audio_buffer.cleared /
+        //   conversation.item.truncated）と、既存instructions（Core Rulesの
+        //   「お客様が話し始めたら、あなたの発話は途中でも止めてください」）に
+        //   委ねる。Phase3B.2までの通常会話でも同じ仕組みで割り込みが正しく
+        //   動作していることを確認済みのため、第一声だけを特別扱いする独自の
+        //   response.cancel処理等は追加しない。
+        // - 第一声の具体的な文言はハードコードしない。既存のsession instructions
+        //   （AIスタッフ設定のgreetingを反映する_build_greeting_section等、
+        //   Phase2で完成済み）にそのまま従わせる。response.create送信時に付与する
+        //   response-level instructionsは「まだ何も話していないので、あなたから
+        //   先に話してください」というタイミングの補足のみとし、Phase1の言語
+        //   ルールやAIスタッフ人格設定を上書きする内容は一切含めない。
+        let initialGreetingSent = false;
+        let userSpokeBeforeGreeting = false;
+
+        // Phase3C: 第一声レイテンシー計測用（DB保存なし、この通話中のみメモリ保持）
+        const greetingTiming = {
+            callStart: null,
+            tokenFetched: null,
+            sdpAnswerSet: null,
+            dcOpen: null,
+            sessionCreated: null,
+            greetingResponseCreateSent: null,
+            firstResponseCreated: null,
+            firstOutputAudioStarted: null,
+            firstAiAudioPlaybackStarted: null,
+            loggedA: false,
+            loggedB: false,
+            loggedC: false,
+        };
+
+        function resetGreetingState() {
+            initialGreetingSent = false;
+            userSpokeBeforeGreeting = false;
+            greetingTiming.callStart = null;
+            greetingTiming.tokenFetched = null;
+            greetingTiming.sdpAnswerSet = null;
+            greetingTiming.dcOpen = null;
+            greetingTiming.sessionCreated = null;
+            greetingTiming.greetingResponseCreateSent = null;
+            greetingTiming.firstResponseCreated = null;
+            greetingTiming.firstOutputAudioStarted = null;
+            greetingTiming.firstAiAudioPlaybackStarted = null;
+            greetingTiming.loggedA = false;
+            greetingTiming.loggedB = false;
+            greetingTiming.loggedC = false;
+        }
+
+        function logGreetingLatenciesIfReady() {
+            const t = greetingTiming;
+            if (!t.loggedB && t.greetingResponseCreateSent !== null && t.sessionCreated !== null) {
+                t.loggedB = true;
+                logEvent('第一声計測B: Realtime準備完了(session.created)→第一声response.create送信 = '
+                    + Math.round(t.greetingResponseCreateSent - t.sessionCreated) + 'ms');
+            }
+            if (!t.loggedC && t.firstOutputAudioStarted !== null && t.greetingResponseCreateSent !== null) {
+                t.loggedC = true;
+                logEvent('第一声計測C: 第一声response.create送信→最初のaudio受信(output_audio_buffer.started) = '
+                    + Math.round(t.firstOutputAudioStarted - t.greetingResponseCreateSent) + 'ms');
+            }
+            if (!t.loggedA && t.firstAiAudioPlaybackStarted !== null && t.callStart !== null) {
+                t.loggedA = true;
+                logEvent('第一声計測A: 通話開始操作→第一声の実際の音声再生開始 = '
+                    + Math.round(t.firstAiAudioPlaybackStarted - t.callStart) + 'ms');
+            }
+        }
+
+        function maybeSendInitialGreeting() {
+            if (initialGreetingSent) return;
+            if (userSpokeBeforeGreeting) {
+                // お客様が第一声より先に話し始めたため、こちらからは送らない。
+                // 既存のturn_detectionによる自動応答にそのまま任せる。
+                initialGreetingSent = true;
+                logEvent('第一声: お客様が先に発話したため、自動送信をスキップします');
+                return;
+            }
+            if (!dc || dc.readyState !== 'open') return;
+            initialGreetingSent = true;
+            greetingTiming.greetingResponseCreateSent = performance.now();
+            logEvent('第一声用response.createを送信します（1通話につき1回のみ）');
+            try {
+                dc.send(JSON.stringify({
+                    type: 'response.create',
+                    response: {
+                        // 第一声だけの局所的な補足指示。挨拶の具体的な文言・声色・
+                        // 人格はセッションinstructions（AIスタッフ設定）にすでに
+                        // 含まれているため、ここでは「まだ何も話していないので
+                        // 先に話しかけてください」というタイミングの補足のみ行う。
+                        instructions:
+                            '通話が接続されました。お客様はまだ何も話していません。'
+                            + 'あなたから先に、自然な受付の第一声を短く話しかけてください。'
+                            + '日本語で話してください。',
+                    },
+                }));
+            } catch (e) {
+                // 第一声の送信に失敗しても通話全体は継続する。お客様が話しかければ
+                // 通常のturn_detectionによる応答フローに問題なく移行できる。
+                logEvent('第一声用response.create送信に失敗しました（通話は継続します）: ' + e.message);
+            }
+            logGreetingLatenciesIfReady();
+        }
 
         async function fetchSession() {
             const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/session', {
@@ -732,9 +867,21 @@
             const type = msg.type || '(不明)';
             logEvent(type);
 
+            if (type === 'output_audio_buffer.started' && greetingTiming.firstOutputAudioStarted === null) {
+                // Phase3C計測用: session/response種別を問わず、通話中最初に音声出力
+                // バッファが開始した時刻（第一声のケースのみB/C計測に使用する）。
+                greetingTiming.firstOutputAudioStarted = performance.now();
+                logGreetingLatenciesIfReady();
+            }
+
             if (type === 'session.created' || type === 'session.updated') {
                 setStatus(stSessionEl, type, 'ok');
+                if (greetingTiming.sessionCreated === null) {
+                    greetingTiming.sessionCreated = performance.now();
+                }
+                maybeSendInitialGreeting();
             } else if (type === 'input_audio_buffer.speech_started') {
+                if (!initialGreetingSent) userSpokeBeforeGreeting = true;
                 subStatusText.textContent = 'こちらの発話を認識中…';
                 setStatus(stUserSpeakEl, '発話中（認識中）', 'ok');
             } else if (type === 'input_audio_buffer.speech_stopped') {
@@ -742,6 +889,9 @@
                 subStatusText.textContent = 'AIが応答を準備しています…';
                 setStatus(stUserSpeakEl, '待機', null);
             } else if (type === 'response.created') {
+                if (greetingTiming.firstResponseCreated === null) {
+                    greetingTiming.firstResponseCreated = performance.now();
+                }
                 subStatusText.textContent = 'AIが応答を生成中…';
             } else if (type === 'response.done') {
                 subStatusText.textContent = '待機中（お話しください）';
@@ -818,6 +968,8 @@
         }
 
         async function startCall() {
+            resetGreetingState();
+            greetingTiming.callStart = performance.now();
             startBtn.disabled = true;
             hideErrorBanner();
             statusText.textContent = '接続しています…';
@@ -882,6 +1034,7 @@
             try {
                 logEvent('ephemeralトークンを取得中…');
                 const session = await fetchSession();
+                greetingTiming.tokenFetched = performance.now();
                 pageShopName.textContent = session.shop_name + ' - Realtime音声AI';
                 logEvent('トークン取得OK（model=' + session.model + '）');
 
@@ -900,7 +1053,10 @@
 
                 dc = pc.createDataChannel('oai-events');
                 dc.addEventListener('message', (ev) => handleDataChannelEvent(ev.data));
-                dc.addEventListener('open', () => logEvent('データチャネル接続'));
+                dc.addEventListener('open', () => {
+                    greetingTiming.dcOpen = performance.now();
+                    logEvent('データチャネル接続');
+                });
 
                 pc.onconnectionstatechange = () => {
                     logEvent('接続状態(connectionState): ' + pc.connectionState);
@@ -949,6 +1105,7 @@
                 }
                 const answerSdp = await sdpResponse.text();
                 await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+                greetingTiming.sdpAnswerSet = performance.now();
 
                 maxDurationTimer = setTimeout(() => {
                     endCall('テスト用の最大通話時間（30分）に達したため終了しました');
