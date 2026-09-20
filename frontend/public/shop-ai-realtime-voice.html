@@ -138,6 +138,44 @@
             word-break: break-all;
         }
         footer { text-align: center; font-size: 11px; color: #aaa; padding: 12px; }
+        .status-grid {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            row-gap: 6px;
+            column-gap: 10px;
+            font-size: 13px;
+        }
+        .status-grid .label { color: #888; }
+        .status-grid .val { font-weight: 700; text-align: right; }
+        .status-grid .val.ok { color: var(--success); }
+        .status-grid .val.warn { color: var(--primary-dark); }
+        .status-grid .val.bad { color: var(--error); }
+        .level-meter-wrap {
+            max-width: 220px;
+            margin: 0 auto 4px;
+        }
+        .level-meter-label { font-size: 11px; color: #888; text-align: center; margin-bottom: 3px; }
+        .level-meter {
+            height: 10px;
+            border-radius: 6px;
+            background: #eee;
+            overflow: hidden;
+        }
+        .level-meter .fill {
+            height: 100%;
+            width: 0%;
+            background: var(--success);
+            transition: width 60ms linear;
+        }
+        .error-banner {
+            background: #fee2e2;
+            border: 1px solid #fecaca;
+            color: #991b1b;
+            padding: 10px 14px;
+            border-radius: 10px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
     </style>
 </head>
 <body>
@@ -161,15 +199,34 @@
             予約」「通話で予約」をご利用ください。
         </div>
 
+        <div id="errorBanner" class="error-banner" style="display:none;"></div>
+
         <div class="voice-hero">
             <div class="big-mic" id="bigMic">🎤</div>
             <div id="statusText">タップして通話を開始</div>
             <div id="subStatusText"></div>
         </div>
 
+        <div class="level-meter-wrap">
+            <div class="level-meter-label">マイク入力レベル（あなたの声）</div>
+            <div class="level-meter"><div class="fill" id="micLevelFill"></div></div>
+        </div>
+
         <div class="btn-row">
             <button class="btn-primary" id="startBtn" type="button">通話を開始</button>
             <button class="btn-secondary" id="endBtn" type="button" style="display:none;">通話を終了</button>
+        </div>
+
+        <div class="latency-panel">
+            <h2>通話状態（実機確認用）</h2>
+            <div class="status-grid">
+                <span class="label">マイク許可</span><span class="val" id="stMicPerm">未確認</span>
+                <span class="label">マイクTrack</span><span class="val" id="stMicTrack">なし</span>
+                <span class="label">WebRTC接続</span><span class="val" id="stWebrtc">new</span>
+                <span class="label">OpenAI Session</span><span class="val" id="stSession">未接続</span>
+                <span class="label">ユーザー発話</span><span class="val" id="stUserSpeak">待機</span>
+                <span class="label">AI発話</span><span class="val" id="stAiSpeak">待機</span>
+            </div>
         </div>
 
         <div class="latency-panel">
@@ -215,6 +272,14 @@
         const latestLatencyEl = document.getElementById('latestLatency');
         const avgLatencyEl = document.getElementById('avgLatency');
         const latencyCountEl = document.getElementById('latencyCount');
+        const errorBannerEl = document.getElementById('errorBanner');
+        const micLevelFillEl = document.getElementById('micLevelFill');
+        const stMicPermEl = document.getElementById('stMicPerm');
+        const stMicTrackEl = document.getElementById('stMicTrack');
+        const stWebrtcEl = document.getElementById('stWebrtc');
+        const stSessionEl = document.getElementById('stSession');
+        const stUserSpeakEl = document.getElementById('stUserSpeak');
+        const stAiSpeakEl = document.getElementById('stAiSpeak');
 
         if (!shopId) {
             loadingEl.style.display = 'none';
@@ -230,6 +295,40 @@
             eventLogEl.textContent += `[${t}] ${text}\n`;
             eventLogEl.scrollTop = eventLogEl.scrollHeight;
         }
+
+        // ===== 通話状態グリッド =====
+        function setStatus(el, text, cls) {
+            el.textContent = text;
+            el.classList.remove('ok', 'warn', 'bad');
+            if (cls) el.classList.add(cls);
+        }
+        function showErrorBanner(text) {
+            errorBannerEl.textContent = text;
+            errorBannerEl.style.display = 'block';
+        }
+        function hideErrorBanner() {
+            errorBannerEl.style.display = 'none';
+        }
+
+        // ===== secure context / API可用性チェック =====
+        // getUserMediaはHTTPS(またはlocalhost)のsecure contextでしか使えない。
+        // 本番はRailway上でHTTPS配信されているためここは通常問題ないが、
+        // 「マイク許可ダイアログが出ない」という報告があった際に、まずこの
+        // 前提条件そのものが崩れていないかを実機の画面上で確認できるようにする。
+        (function checkSecureContext() {
+            const isSecure = window.isSecureContext;
+            const hasMediaDevices = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+            logEvent('isSecureContext=' + isSecure + ' / navigator.mediaDevices=' + !!navigator.mediaDevices
+                + ' / getUserMedia=' + hasMediaDevices + ' / URL=' + location.href);
+            if (!isSecure || !hasMediaDevices) {
+                showErrorBanner(
+                    '⚠️ このページはマイクを使用できる環境（HTTPS）で開かれていないか、'
+                    + 'このブラウザがマイク機能に対応していません。URLがhttps://で始まっているか確認してください。'
+                );
+                setStatus(stMicPermEl, '利用不可（非secure context）', 'bad');
+                startBtn.disabled = true;
+            }
+        })();
 
         // ===== レイテンシ計測 =====
         // OpenAI Realtime APIのイベント名・仕様は変更が速い領域のため、特定の
@@ -275,6 +374,7 @@
                 if (nowSpeaking && !aiSpeakingNow) {
                     aiSpeakingNow = true;
                     bigMic.classList.add('ai-speaking');
+                    setStatus(stAiSpeakEl, '発話中', 'ok');
                     if (lastSpeechStoppedAt !== null) {
                         recordLatencySample(performance.now() - lastSpeechStoppedAt);
                         lastSpeechStoppedAt = null;
@@ -282,6 +382,7 @@
                 } else if (!nowSpeaking && aiSpeakingNow) {
                     aiSpeakingNow = false;
                     bigMic.classList.remove('ai-speaking');
+                    setStatus(stAiSpeakEl, '待機', null);
                 }
                 if (pc) requestAnimationFrame(tick);
             }
@@ -317,37 +418,140 @@
             const type = msg.type || '(不明)';
             logEvent(type);
 
-            if (type === 'input_audio_buffer.speech_started') {
+            if (type === 'session.created' || type === 'session.updated') {
+                setStatus(stSessionEl, type, 'ok');
+            } else if (type === 'input_audio_buffer.speech_started') {
                 subStatusText.textContent = 'こちらの発話を認識中…';
+                setStatus(stUserSpeakEl, '発話中（認識中）', 'ok');
             } else if (type === 'input_audio_buffer.speech_stopped') {
                 lastSpeechStoppedAt = performance.now();
                 subStatusText.textContent = 'AIが応答を準備しています…';
+                setStatus(stUserSpeakEl, '待機', null);
             } else if (type === 'response.created') {
                 subStatusText.textContent = 'AIが応答を生成中…';
             } else if (type === 'response.done') {
                 subStatusText.textContent = '待機中（お話しください）';
             } else if (type === 'error') {
                 logEvent('サーバーエラー: ' + JSON.stringify(msg.error || msg));
+                showErrorBanner('OpenAI側からエラーが返されました: ' + JSON.stringify(msg.error || msg));
+            }
+        }
+
+        // ===== マイク入力レベルメーター（あなたの声がブラウザに届いているかの確認用） =====
+        // これはOpenAIへ送る音声とは別に、ローカルのマイクストリームだけを
+        // Web Audio APIで解析して表示する。「マイク→ブラウザ」の区間と
+        // 「マイク→WebRTC/OpenAI」の区間のどちらに問題があるかを切り分けるため、
+        // OpenAI側の応答を待たずにマイクを掴んだ直後から動かす。
+        let micLevelRafId = null;
+        function setupMicLevelMeter(stream) {
+            let audioCtx;
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            } catch (e) {
+                logEvent('マイクレベルメーター初期化失敗: ' + e.message);
+                return;
+            }
+            const source = audioCtx.createMediaStreamSource(stream);
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 512;
+            source.connect(analyser);
+            const data = new Uint8Array(analyser.frequencyBinCount);
+
+            function tick() {
+                analyser.getByteFrequencyData(data);
+                const avg = data.reduce((a, b) => a + b, 0) / data.length;
+                const pct = Math.min(100, Math.round((avg / 80) * 100));
+                micLevelFillEl.style.width = pct + '%';
+                if (localStream) micLevelRafId = requestAnimationFrame(tick);
+            }
+            tick();
+        }
+        function stopMicLevelMeter() {
+            if (micLevelRafId) { cancelAnimationFrame(micLevelRafId); micLevelRafId = null; }
+            micLevelFillEl.style.width = '0%';
+        }
+
+        // getUserMediaのエラーは名前(DOMException.name)ごとに原因が異なるため、
+        // 「動いているように見えるが実はマイクが使えていない」状態を防ぐべく、
+        // 画面上にも原因ごとに具体的な文言を出す。
+        function describeGetUserMediaError(e) {
+            switch (e.name) {
+                case 'NotAllowedError':
+                    return 'マイクの使用が許可されていません。ブラウザの設定でこのサイトのマイクを許可してから、もう一度お試しください。';
+                case 'NotFoundError':
+                case 'OverconstrainedError':
+                    return '使用できるマイクが見つかりません。マイクが接続されているか確認してください。';
+                case 'NotReadableError':
+                    return 'マイクを他のアプリが使用中の可能性があります。他のアプリ・タブを閉じてから、もう一度お試しください。';
+                case 'SecurityError':
+                    return 'セキュリティ上の理由でマイクを使用できませんでした（HTTPS接続か確認してください）。';
+                case 'AbortError':
+                    return 'マイクの起動が中断されました。もう一度お試しください。';
+                default:
+                    return 'マイクの起動に失敗しました: ' + (e.message || e.name || e);
             }
         }
 
         async function startCall() {
             startBtn.disabled = true;
+            hideErrorBanner();
             statusText.textContent = '接続しています…';
+            bigMic.classList.remove('error');
             bigMic.classList.add('connecting');
             eventLogEl.textContent = '';
             latencySamples.length = 0;
             latestLatencyEl.textContent = '—';
             avgLatencyEl.textContent = '—';
             latencyCountEl.textContent = '0';
+            setStatus(stMicTrackEl, 'なし', null);
+            setStatus(stWebrtcEl, 'new', null);
+            setStatus(stSessionEl, '未接続', null);
+            setStatus(stUserSpeakEl, '待機', null);
+            setStatus(stAiSpeakEl, '待機', null);
+
+            // 重要: クリック直後の「ユーザー操作」が有効なうちに、他の非同期処理
+            // (トークン取得のfetch等)より先にgetUserMediaを呼び出す。
+            // 先にawaitを挟んでからgetUserMediaを呼ぶと、ブラウザによっては
+            // （特にiOS Safari）ユーザー操作から時間が空きすぎたと判断され、
+            // マイク許可ダイアログ自体が出ないまま静かに失敗することがある。
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            } catch (e) {
+                const friendly = describeGetUserMediaError(e);
+                logEvent('getUserMediaエラー: ' + e.name + ' - ' + e.message);
+                setStatus(stMicPermEl, '拒否/失敗: ' + e.name, 'bad');
+                showErrorBanner(friendly);
+                statusText.textContent = 'マイクを取得できませんでした';
+                subStatusText.textContent = friendly;
+                bigMic.classList.remove('connecting');
+                bigMic.classList.add('error');
+                startBtn.disabled = false;
+                return;
+            }
+
+            setStatus(stMicPermEl, '許可済み', 'ok');
+            const audioTracks = localStream.getAudioTracks();
+            if (audioTracks.length === 0) {
+                logEvent('警告: getUserMediaは成功しましたが音声トラックが0件です');
+                setStatus(stMicTrackEl, 'トラック0件', 'bad');
+            } else {
+                audioTracks.forEach((track, i) => {
+                    logEvent(`マイクTrack[${i}]: label="${track.label}" enabled=${track.enabled} `
+                        + `readyState=${track.readyState} muted=${track.muted}`);
+                    track.addEventListener('ended', () => {
+                        logEvent(`マイクTrack[${i}]がended状態になりました`);
+                        setStatus(stMicTrackEl, 'ended', 'bad');
+                    });
+                });
+                setStatus(stMicTrackEl, 'live', 'ok');
+            }
+            setupMicLevelMeter(localStream);
 
             try {
                 logEvent('ephemeralトークンを取得中…');
                 const session = await fetchSession();
                 pageShopName.textContent = session.shop_name + ' - Realtime音声AI';
                 logEvent('トークン取得OK（model=' + session.model + '）');
-
-                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
                 pc = new RTCPeerConnection();
 
@@ -367,7 +571,8 @@
                 dc.addEventListener('open', () => logEvent('データチャネル接続'));
 
                 pc.onconnectionstatechange = () => {
-                    logEvent('接続状態: ' + pc.connectionState);
+                    logEvent('接続状態(connectionState): ' + pc.connectionState);
+                    setStatus(stWebrtcEl, pc.connectionState, pc.connectionState === 'connected' ? 'ok' : null);
                     if (pc.connectionState === 'connected') {
                         bigMic.classList.remove('connecting');
                         bigMic.classList.add('connected');
@@ -377,9 +582,13 @@
                         endBtn.style.display = 'inline-block';
                         endBtn.disabled = false;
                     } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
-                        if (!ended) endCall('接続が切断されました');
+                        setStatus(stWebrtcEl, pc.connectionState, 'bad');
+                        if (!ended) endCall('接続が切断されました（' + pc.connectionState + '）');
                     }
                 };
+                pc.oniceconnectionstatechange = () => logEvent('iceConnectionState: ' + pc.iceConnectionState);
+                pc.onicegatheringstatechange = () => logEvent('iceGatheringState: ' + pc.iceGatheringState);
+                pc.onsignalingstatechange = () => logEvent('signalingState: ' + pc.signalingState);
 
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
@@ -403,6 +612,7 @@
                 }, MAX_CALL_DURATION_MS);
             } catch (e) {
                 logEvent('エラー: ' + e.message);
+                showErrorBanner('接続に失敗しました: ' + e.message);
                 statusText.textContent = '接続に失敗しました';
                 subStatusText.textContent = e.message;
                 bigMic.classList.remove('connecting');
@@ -414,9 +624,15 @@
 
         function cleanupConnection() {
             if (maxDurationTimer) { clearTimeout(maxDurationTimer); maxDurationTimer = null; }
+            stopMicLevelMeter();
             if (localStream) { localStream.getTracks().forEach((t) => t.stop()); localStream = null; }
             if (pc) { try { pc.close(); } catch (e) {} pc = null; }
             document.querySelectorAll('audio').forEach((el) => el.remove());
+            setStatus(stMicTrackEl, 'なし', null);
+            setStatus(stWebrtcEl, 'closed', null);
+            setStatus(stSessionEl, '未接続', null);
+            setStatus(stUserSpeakEl, '待機', null);
+            setStatus(stAiSpeakEl, '待機', null);
         }
 
         function endCall(reason) {
