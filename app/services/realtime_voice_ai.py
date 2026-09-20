@@ -313,6 +313,25 @@ _CORE_RULES_TEMPLATE = """\
   自然に日本語へ戻ってください。\
 """
 
+# Phase3B追加要件: 通話コスト削減・AI受付としての役割逸脱防止のための会話範囲ルール。
+# 既存のPhase1話し方ルール・Phase2人格・Phase3安全ルールを上書きするものではなく、
+# 「受付業務としてどこまでの話題に応じるか」を定義する追加ルールとして、Core Rulesの
+# 直後・常に固定で挿入する（staff_settings/custom_instructionsの影響を受けない）。
+# ユーザー指摘の通り、既存テンプレートを長文化させないよう独立した短いブロックにする。
+_SCOPE_TEMPLATE = """\
+# 会話範囲のルール（通話コスト管理・役割逸脱防止のため必ず守ってください）
+あなたの役割は店舗受付業務（予約・予約に必要な確認、店舗情報・営業時間、料金や
+メニュー等の案内可能な範囲、アクセス、来店に関する質問、店舗への問い合わせ、
+折り返しが必要な内容の整理）です。来店・予約・店舗サービス・営業時間・駐車場・
+アクセス・子供連れ・支払い方法・店舗設備・施術可否など、店舗利用に少しでも関係し
+得る質問は通常どおり受付業務として対応してください。判断に迷う場合も業務内として
+扱ってください。
+一方、ニュース・政治・芸能・ゲーム・しりとり・長い世間話・AI自身について・人生相談
+など店舗と無関係な話題には長く付き合わないでください。一度だけ短く自然に受け流し
+（毎回同じ言い回しでなくて構いません）、すぐに受付業務の話に戻してください。その際、
+不必要にToolを呼び出したり、店舗と無関係な情報を詳しく説明したりしないでください。\
+"""
+
 # 店舗情報。AIスタッフ設定の有無にかかわらず常に挿入する（Phase1から存在）。
 _SHOP_INFO_TEMPLATE = """\
 # 店舗の営業時間（曜日ごと）
@@ -489,19 +508,20 @@ async def build_realtime_instructions(
 
     連結順序（Phase1の元テンプレートにおける並び順 Core→Examples→ShopInfo→
     Constraints をそのまま維持し、Phase2の新セクションはShopInfoと
-    Constraintsの間にのみ挿入する）:
+    Constraintsの間にのみ挿入する。Phase3B追加要件のScopeはCoreの直後に挿入）:
       1. Core Rules（話し方の絶対ルール・言語ルール）        … 常に固定・最上位
-      2. Examples（話し方の見本）                            … 常に固定
-      3. Shop Information（営業時間・本日の日付）            … 常に固定
-      4. AI Staff Personality / Greeting                     … staff_settingsがある場合のみ
-      5. Shop Custom Instructions（店舗独自の補助指示）      … 明示的に下位と位置づけ
-      6. Constraints（現時点での制約）                       … 常に固定
-      7. Booking Safety（Phase3B: 予約成立宣言の絶対ルール） … 常に固定・最後
+      2. Scope（Phase3B: 受付業務の会話範囲ルール）          … 常に固定
+      3. Examples（話し方の見本）                            … 常に固定
+      4. Shop Information（営業時間・本日の日付）            … 常に固定
+      5. AI Staff Personality / Greeting                     … staff_settingsがある場合のみ
+      6. Shop Custom Instructions（店舗独自の補助指示）      … 明示的に下位と位置づけ
+      7. Constraints（現時点での制約）                       … 常に固定
+      8. Booking Safety（Phase3B: 予約成立宣言の絶対ルール） … 常に固定・最後
 
     staff_settingsがNone、またはPhase2で追加されたフィールドが全て未設定の
-    場合は、4・5が完全に省略される。なお、Phase3A/3Bの導入以降は6の内容自体が
+    場合は、5・6が完全に省略される。なお、Phase3A/3Bの導入以降は7の内容自体が
     Phase1と異なり（check_availability/create_reservationの存在を前提とした
-    内容に更新済み）、7も常に付与されるため、「staff_settingsがNoneならPhase1と
+    内容に更新済み）、2・8も常に付与されるため、「staff_settingsがNoneならPhase1と
     完全にバイト同一」という以前の不変条件はPhase3A時点で既に崩れている
     （toolsを常時有効化した時点でPhase1とは別物であるため、この崩れ自体は
     Phase3Bで新たに生じたものではない）。
@@ -510,6 +530,7 @@ async def build_realtime_instructions(
 
     sections = [
         _CORE_RULES_TEMPLATE.format(shop_name=shop.name),
+        _SCOPE_TEMPLATE,
         _EXAMPLES_TEMPLATE,
         _SHOP_INFO_TEMPLATE.format(hours_block=hours_block, today_str=_today_str_jst()),
     ]
