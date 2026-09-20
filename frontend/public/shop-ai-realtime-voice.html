@@ -545,6 +545,116 @@
                 + ', responses=' + sums.count + ', total_tokens=' + sums.total);
         }
 
+        // ===== Phase3A: Realtime Tool Calling（check_availabilityのみ） =====
+        //
+        // 設計方針（重要）:
+        // - RECEPTRAのサーバーはRealtimeのDataChannelを一切見ていない
+        //   （ブラウザ⇔OpenAI直結のため）。したがってfunction_callの往復
+        //   （OpenAIからの呼び出し受信→FastAPIへの照会→結果を送り返す）は、
+        //   このページ（ブラウザ側JavaScript）が仲介するしかない。
+        // - shop_idはToolの引数に含めない。常にこのページのshopId
+        //   （通話中の店舗）を使う。AIが引数として別のshop_idを送ってきても
+        //   無視する（そもそもTool定義にshop_idという引数自体が存在しない）。
+        // - Tool結果はFastAPI（Reservation DB / ShopHours / ShopClosure）を
+        //   唯一の正とする。fetch失敗・タイムアウト・不正レスポンス等、
+        //   どんな失敗であってもavailable:trueを合成してはならない。必ず
+        //   available:false, reason_code:"invalid_request" を返し、AIに
+        //   「確認できなかった」と案内させる（満席とは言わせない）。
+        // - 同一call_idの二重処理を防止する（Phase3Aは読み取りのみなので
+        //   実害は無いが、Phase3Bのcreate_reservationに備えて今のうちに
+        //   仕組みを入れておく）。
+        //
+        // イベント構造は実際のgpt-realtime-2.1との通信で実測確認済み
+        // （response.output_item.done の item.type==="function_call" が
+        // id/call_id/name/arguments/statusを持つ。SDKの型定義には無い
+        // "phase"フィールドが実際には存在する等、細部は実測を優先している）。
+        const processedToolCallIds = new Set();
+
+        function resetToolCallState() {
+            processedToolCallIds.clear();
+        }
+
+        async function callCheckAvailabilityTool(args) {
+            const body = {
+                date: args && args.date,
+                time: args && args.time,
+                party_size: args && args.party_size,
+            };
+            if (args && args.service_id) body.service_id = args.service_id;
+            if (args && args.staff_id) body.staff_id = args.staff_id;
+
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/check-availability', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || typeof data.available !== 'boolean') {
+                    // FastAPI側は原則常に200+安全なavailable:falseを返す設計だが、
+                    // レート制限(429)やネットワーク断等、JSONを取得できない場合の
+                    // 最終フォールバックとしてここでも安全側に倒す。
+                    return {
+                        available: false,
+                        date: body.date || null,
+                        time: body.time || null,
+                        party_size: body.party_size || null,
+                        reason_code: 'invalid_request',
+                    };
+                }
+                return data;
+            } catch (e) {
+                logEvent('check_availability Tool呼び出しに失敗: ' + e.message);
+                return {
+                    available: false,
+                    date: body.date || null,
+                    time: body.time || null,
+                    party_size: body.party_size || null,
+                    reason_code: 'invalid_request',
+                };
+            }
+        }
+
+        async function handleFunctionCallItem(item) {
+            const callId = item.call_id;
+            if (!callId) return;
+            if (processedToolCallIds.has(callId)) {
+                logEvent('call_id ' + callId + ' は処理済みのためスキップ（二重実行防止）');
+                return;
+            }
+            processedToolCallIds.add(callId);
+
+            let args = null;
+            try {
+                args = JSON.parse(item.arguments || '{}');
+            } catch (e) {
+                args = null;
+            }
+
+            let output;
+            if (item.name === 'check_availability') {
+                logEvent('Tool呼び出し受信: check_availability ' + JSON.stringify(args));
+                output = await callCheckAvailabilityTool(args || {});
+            } else {
+                // Phase3Aで宣言しているToolはcheck_availabilityのみ。
+                // 未知の関数名が来た場合も、応答せずに放置するとAIが
+                // 待ち続けてしまうため、安全側の失敗として返す。
+                logEvent('未知のTool呼び出し: ' + item.name);
+                output = { available: false, reason_code: 'invalid_request' };
+            }
+
+            logEvent('Tool結果送信: ' + JSON.stringify(output));
+            dc.send(JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                    type: 'function_call_output',
+                    call_id: callId,
+                    output: JSON.stringify(output),
+                },
+            }));
+            dc.send(JSON.stringify({ type: 'response.create' }));
+        }
+
         function handleDataChannelEvent(raw) {
             let msg;
             try {
@@ -569,6 +679,16 @@
             } else if (type === 'response.done') {
                 subStatusText.textContent = '待機中（お話しください）';
                 recordUsageEvent(msg.response);
+            } else if (type === 'response.output_item.done' && msg.item && msg.item.type === 'function_call') {
+                // Phase3A: Tool Calling。応答完了(response.done)を待たず、
+                // このitemが確定した時点で処理を開始してよい
+                // （実測で response.function_call_arguments.done とほぼ同時か
+                // 直後に発火し、この時点でarguments/nameが確定していることを
+                // 確認済み）。非同期で処理するが、handleDataChannelEvent自体は
+                // 待たない（他のイベント処理をブロックしないため）。
+                handleFunctionCallItem(msg.item).catch((e) => {
+                    logEvent('Tool処理中にエラー: ' + e.message);
+                });
             } else if (type === 'error') {
                 logEvent('サーバーエラー: ' + JSON.stringify(msg.error || msg));
                 showErrorBanner('OpenAI側からエラーが返されました: ' + JSON.stringify(msg.error || msg));
@@ -652,6 +772,7 @@
             callEndedAt = null;
             if (elapsedTimerId) { clearInterval(elapsedTimerId); elapsedTimerId = null; }
             resetUsageObservation();
+            resetToolCallState();
 
             // 重要: クリック直後の「ユーザー操作」が有効なうちに、他の非同期処理
             // (トークン取得のfetch等)より先にgetUserMediaを呼び出す。
