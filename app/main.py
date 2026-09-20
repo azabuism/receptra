@@ -23,6 +23,7 @@ from app.routers.auth import router as auth_router
 from app.routers.vonage_voice import router as vonage_voice_router, test_router as voice_ai_test_router
 from app.routers.shop_booking_ai import router as shop_booking_ai_router
 from app.routers.realtime_voice import router as realtime_voice_router
+from app.routers.ai_staff_settings import router as ai_staff_settings_router
 from app.routers.visitors import router as visitors_router
 from app.routers.shops import router as shops_router
 from app.routers.shop_media import router as shop_media_router, media_router as shop_media_files_router
@@ -237,6 +238,7 @@ def create_app() -> FastAPI:
     app.include_router(voice_ai_test_router)
     app.include_router(shop_booking_ai_router)
     app.include_router(realtime_voice_router)
+    app.include_router(ai_staff_settings_router)
     app.include_router(billing_router)
     app.include_router(payjp_webhook_router)
 

@@ -484,6 +484,83 @@
         </div>
 
         <div class="card">
+            <h2>AIスタッフ設定（音声AI受付）</h2>
+            <p class="hint">
+                「通話で予約」から利用できる音声AI受付（Realtime Voice AI）の声・名前・話し方をカスタマイズできます。
+                何も設定しない場合は、標準設定のまま自然な日本語で応対します。
+            </p>
+            <form id="ai-staff-form">
+                <div class="row-2">
+                    <div class="field">
+                        <label for="ai-staff-name">AIスタッフの名前</label>
+                        <input type="text" id="ai-staff-name" placeholder="例：さくら（未入力の場合は名乗りません）" maxlength="100">
+                    </div>
+                    <div class="field">
+                        <label for="ai-staff-voice">声（voice）</label>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <select id="ai-staff-voice" style="flex:1;"></select>
+                            <button type="button" class="btn-outline" id="ai-staff-voice-preview-btn" style="white-space:nowrap;">試聴</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="ai-staff-preset">接客スタイル（かんたん設定）</label>
+                    <select id="ai-staff-preset">
+                        <option value="">選択しない（下の詳細設定を個別に使う）</option>
+                        <option value="polite">丁寧</option>
+                        <option value="friendly">親しみやすい</option>
+                        <option value="luxury">高級店</option>
+                        <option value="energetic">明るく元気</option>
+                        <option value="calm">落ち着いた受付</option>
+                    </select>
+                    <p class="hint" style="margin-top:6px;">選択すると下の詳細設定に自動反映されます。反映後も個別に調整できます。</p>
+                </div>
+                <div class="row-3">
+                    <div class="field">
+                        <label for="ai-staff-politeness">敬語レベル</label>
+                        <select id="ai-staff-politeness">
+                            <option value="">未設定（標準）</option>
+                            <option value="formal">丁寧</option>
+                            <option value="standard">標準</option>
+                            <option value="casual">カジュアル</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="ai-staff-brightness">明るさ</label>
+                        <select id="ai-staff-brightness">
+                            <option value="">未設定（標準）</option>
+                            <option value="bright">明るい</option>
+                            <option value="neutral">普通</option>
+                            <option value="calm">落ち着いた</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="ai-staff-energy">テンション</label>
+                        <select id="ai-staff-energy">
+                            <option value="">未設定（標準）</option>
+                            <option value="high">高め</option>
+                            <option value="medium">普通</option>
+                            <option value="low">控えめ</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="ai-staff-greeting">電話に出たときの第一声</label>
+                    <textarea id="ai-staff-greeting" placeholder="未入力の場合は「お電話ありがとうございます。〇〇店でございます。」のような案内を自動で使用します" maxlength="2000"></textarea>
+                </div>
+                <div class="field">
+                    <label for="ai-staff-custom-instructions">店舗独自の接客指示（補助的な指示）</label>
+                    <textarea id="ai-staff-custom-instructions" placeholder="例：ランチタイムは混雑するため13時台の予約受付は難しい旨を伝えてください" maxlength="4000"></textarea>
+                    <p class="hint" style="margin-top:6px;">
+                        ※日本語での応対や電話番号・日時の読み上げ方など、システムの基本ルールより優先されることはありません。
+                    </p>
+                </div>
+                <button type="submit" class="btn" id="ai-staff-save-btn">保存する</button>
+                <div class="msg" id="ai-staff-msg"></div>
+            </form>
+        </div>
+
+        <div class="card">
             <h2>予約管理</h2>
             <p class="hint">お客様からのオンライン予約を確認・確定できます。</p>
             <div class="field" style="max-width: 240px;">
@@ -675,6 +752,7 @@
             loadClosures();
             loadReviewsManage();
             loadCoupons();
+            loadAiStaffSettings();
         }
 
         // ---------- 画像設定（ロゴ・サムネイル・カバー） ----------
@@ -1790,6 +1868,205 @@
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
                 btn.disabled = false;
+            }
+        });
+
+        // ---------- AIスタッフ設定（Realtime Voice AI Phase2） ----------
+        // 「かんたん設定」プリセット→敬語レベル/明るさ/テンションへの変換表。
+        // 重要: これはあくまでUI側の入力補助であり、Realtime API自体に
+        // これらのAPIパラメータが存在するわけではない。実際の反映は
+        // サーバー側(app.services.realtime_voice_ai)でinstructionsの
+        // 自然文へ変換して行われる。
+        const AI_STAFF_PRESET_MAP = {
+            polite: { politeness_level: 'formal', brightness: 'neutral', energy_level: 'medium' },
+            friendly: { politeness_level: 'standard', brightness: 'bright', energy_level: 'medium' },
+            luxury: { politeness_level: 'formal', brightness: 'calm', energy_level: 'low' },
+            energetic: { politeness_level: 'standard', brightness: 'bright', energy_level: 'high' },
+            calm: { politeness_level: 'standard', brightness: 'calm', energy_level: 'low' }
+        };
+
+        document.getElementById('ai-staff-preset').addEventListener('change', function () {
+            const combo = AI_STAFF_PRESET_MAP[this.value];
+            if (!combo) return;
+            document.getElementById('ai-staff-politeness').value = combo.politeness_level;
+            document.getElementById('ai-staff-brightness').value = combo.brightness;
+            document.getElementById('ai-staff-energy').value = combo.energy_level;
+        });
+
+        async function loadAiStaffVoiceOptions(selectedVoice) {
+            const select = document.getElementById('ai-staff-voice');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/ai-staff-settings/voice-options');
+                if (!res.ok) throw new Error('voice一覧の取得に失敗しました');
+                const data = await res.json();
+                const voices = data.voices || [];
+                select.innerHTML = '<option value="">未設定（標準の声を使用）</option>' +
+                    voices.map(function (v) {
+                        return '<option value="' + v + '">' + v + '</option>';
+                    }).join('');
+                if (selectedVoice) select.value = selectedVoice;
+            } catch (e) {
+                // voice一覧が取得できなくても、フォーム自体は使えるようにしておく
+                select.innerHTML = '<option value="">未設定（標準の声を使用）</option>';
+            }
+        }
+
+        async function loadAiStaffSettings() {
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/ai-staff-settings');
+                if (!res.ok) throw new Error('AIスタッフ設定の取得に失敗しました');
+                const data = await res.json();
+                await loadAiStaffVoiceOptions(data.voice);
+                document.getElementById('ai-staff-name').value = data.staff_name || '';
+                document.getElementById('ai-staff-preset').value = data.personality_preset || '';
+                document.getElementById('ai-staff-politeness').value = data.politeness_level || '';
+                document.getElementById('ai-staff-brightness').value = data.brightness || '';
+                document.getElementById('ai-staff-energy').value = data.energy_level || '';
+                document.getElementById('ai-staff-greeting').value = data.greeting || '';
+                document.getElementById('ai-staff-custom-instructions').value = data.custom_instructions || '';
+            } catch (e) {
+                await loadAiStaffVoiceOptions(null);
+            }
+        }
+
+        document.getElementById('ai-staff-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('ai-staff-msg');
+            const btn = document.getElementById('ai-staff-save-btn');
+            const payload = {
+                staff_name: document.getElementById('ai-staff-name').value.trim() || null,
+                voice: document.getElementById('ai-staff-voice').value || null,
+                personality_preset: document.getElementById('ai-staff-preset').value || null,
+                politeness_level: document.getElementById('ai-staff-politeness').value || null,
+                brightness: document.getElementById('ai-staff-brightness').value || null,
+                energy_level: document.getElementById('ai-staff-energy').value || null,
+                greeting: document.getElementById('ai-staff-greeting').value.trim() || null,
+                custom_instructions: document.getElementById('ai-staff-custom-instructions').value.trim() || null
+            };
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/ai-staff-settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '保存に失敗しました');
+                }
+                showMsg(msg, '保存しました。次回の通話から反映されます。', 'success');
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // ---------- voice試聴 ----------
+        // 試聴は、通常の通話画面(shop-ai-realtime-voice.html)と同じ
+        // ephemeralトークン方式でOpenAI Realtime APIへWebRTC接続するが、
+        // マイクの使用許可を求めないよう、getUserMediaの代わりに
+        // Web Audio APIで生成した「無音のローカルトラック」を送信する。
+        // これにより、管理画面で試聴ボタンを押しただけでマイク許可
+        // ダイアログが出るという不自然な体験を避けている。
+        let previewPc = null;
+        let previewAudioEl = null;
+        let previewSilentCtx = null;
+        let previewTimer = null;
+
+        function stopVoicePreview() {
+            if (previewTimer) { clearTimeout(previewTimer); previewTimer = null; }
+            if (previewPc) { try { previewPc.close(); } catch (e) {} previewPc = null; }
+            if (previewAudioEl) { try { previewAudioEl.remove(); } catch (e) {} previewAudioEl = null; }
+            if (previewSilentCtx) { try { previewSilentCtx.close(); } catch (e) {} previewSilentCtx = null; }
+        }
+
+        document.getElementById('ai-staff-voice-preview-btn').addEventListener('click', async function () {
+            const btn = this;
+            const voice = document.getElementById('ai-staff-voice').value;
+            const msg = document.getElementById('ai-staff-msg');
+            if (!voice) {
+                showMsg(msg, '試聴するvoiceを選択してください', 'error');
+                return;
+            }
+            stopVoicePreview();
+            btn.disabled = true;
+            const originalLabel = btn.textContent;
+            btn.textContent = '再生中…';
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/ai-staff-settings/voice-preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ voice: voice })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '試聴の準備に失敗しました');
+                }
+                const session = await res.json();
+
+                // マイク許可を求めないための無音ローカルトラック
+                previewSilentCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const destination = previewSilentCtx.createMediaStreamDestination();
+                const silentStream = destination.stream;
+
+                previewPc = new RTCPeerConnection();
+                previewPc.ontrack = function (ev) {
+                    previewAudioEl = document.createElement('audio');
+                    previewAudioEl.autoplay = true;
+                    previewAudioEl.srcObject = ev.streams[0];
+                    document.body.appendChild(previewAudioEl);
+                };
+                silentStream.getTracks().forEach(function (track) { previewPc.addTrack(track, silentStream); });
+
+                const dc = previewPc.createDataChannel('oai-events');
+                dc.addEventListener('open', function () {
+                    // 接続後すぐに発話をトリガーする
+                    // （無音トラックのためVADでは発話開始を検知できない）
+                    dc.send(JSON.stringify({ type: 'response.create' }));
+                });
+                dc.addEventListener('message', function (ev) {
+                    try {
+                        const evt = JSON.parse(ev.data);
+                        if (evt.type === 'response.done') {
+                            // 発話が終わったら少し待って切断（余韻を切らないため）
+                            previewTimer = setTimeout(function () {
+                                stopVoicePreview();
+                                btn.disabled = false;
+                                btn.textContent = originalLabel;
+                            }, 1500);
+                        }
+                    } catch (e) {}
+                });
+
+                const offer = await previewPc.createOffer();
+                await previewPc.setLocalDescription(offer);
+
+                const sdpResponse = await fetch('https://api.openai.com/v1/realtime/calls', {
+                    method: 'POST',
+                    body: offer.sdp,
+                    headers: {
+                        'Authorization': 'Bearer ' + session.client_secret,
+                        'Content-Type': 'application/sdp'
+                    }
+                });
+                if (!sdpResponse.ok) {
+                    throw new Error('OpenAIとの接続確立に失敗しました');
+                }
+                const answerSdp = await sdpResponse.text();
+                await previewPc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+
+                // 万一response.doneが取得できない場合の保険（最大10秒で強制終了）
+                previewTimer = setTimeout(function () {
+                    stopVoicePreview();
+                    btn.disabled = false;
+                    btn.textContent = originalLabel;
+                }, 10000);
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '試聴に失敗しました', 'error');
+                stopVoicePreview();
+                btn.disabled = false;
+                btn.textContent = originalLabel;
             }
         });
     </script>

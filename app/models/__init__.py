@@ -34,6 +34,10 @@ from app.models.analytics import ShopAnalytics, MonthlyAnalytics
 from app.models.receptionist import Receptionist
 from app.models.visitor import Visitor
 
+# Realtime Voice AI Phase2: AIスタッフ設定（新規テーブル。alembicは使わず、
+# app/main.py の lifespan() 内 Base.metadata.create_all() で自動作成される）
+from app.models.ai_staff_settings import AIStaffSettings
+
 __all__ = [
     # User/Tenant
     "Tenant",
@@ -75,4 +79,7 @@ __all__ = [
     # Existing
     "Receptionist",
     "Visitor",
+
+    # Realtime Voice AI Phase2
+    "AIStaffSettings",
 ]
