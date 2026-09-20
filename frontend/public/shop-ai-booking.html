@@ -308,13 +308,40 @@
         if (mode === 'voice') {
             loadingEl.style.display = 'none';
             startCallScreenEl.style.display = 'flex';
-            startCallBtn.addEventListener('click', () => {
+
+            const beginCall = () => {
+                if (startCallBtn.disabled) return;
                 startCallBtn.disabled = true;
                 document.getElementById('startCallHint').textContent = '接続しています…';
                 startCallScreenEl.style.display = 'none';
                 contentEl.style.display = 'flex';
                 startSession();
-            }, { once: true });
+            };
+            startCallBtn.addEventListener('click', beginCall, { once: true });
+
+            // 店舗ページで「通話で予約」をタップした操作(ユーザー操作)は、
+            // 別ページへの遷移をまたぐとブラウザによっては引き継がれない
+            // （特にiOS Safariは、音声合成やマイク起動のために、遷移後の
+            // ページ内で改めてユーザー操作を要求する）。そのため従来は
+            // 常にこの画面でもう一度タップを求めていた。
+            // ここでは無音のSpeechRecognitionを試しに起動してみて、
+            // ユーザー操作なしでも起動できる環境（Android Chrome等、
+            // 前の操作が引き継がれるブラウザ）であれば、そのまま自動で
+            // 通話を開始する。起動できない環境（iOS Safari等）では
+            // このお試し起動が静かに失敗するだけなので、その場合は
+            // 従来通り「📞 タップして通話を開始してください」のまま
+            // 手動タップを待つ（動作が壊れることはない）。
+            if (SpeechRecognitionCtor) {
+                try {
+                    const probe = new SpeechRecognitionCtor();
+                    probe.lang = 'ja-JP';
+                    let probeStarted = false;
+                    probe.onstart = () => { probeStarted = true; try { probe.stop(); } catch (e) {} };
+                    probe.onerror = () => {};
+                    probe.onend = () => { if (probeStarted) beginCall(); };
+                    probe.start();
+                } catch (e) { /* 起動できない場合は何もせず、手動タップを待つ */ }
+            }
         }
 
         // ===== 音声認識(マイク入力) =====
@@ -329,107 +356,125 @@
         }
 
         if (SpeechRecognitionCtor) {
-            recognizer = new SpeechRecognitionCtor();
-            recognizer.lang = 'ja-JP';
-            recognizer.interimResults = true;
-            // ブラウザ(特にiOS Safari)側の「発話終了」自動判定は精度がまちまちで、
-            // 話し終えてもボタンを押すまで認識が終わらないことがある。実際の電話回線
-            // (Vonage側)では無音1.5秒程度でこちらから聞き取りを打ち切っているのと同様に、
-            // ここでも認識結果イベントを基準に無音タイマーを独自に持たせ、自動で
-            // recognizer.stop() を呼ぶことで、ボタン操作なしでターンが進むようにする。
-            recognizer.continuous = true;
-
             const SILENCE_MS = 1600;   // 発話が始まった"後"に、この時間だけ間が空いたら聞き取り終了とみなす
             const MAX_LISTEN_MS = 20000; // お客様がまだ何も話していない場合に、話し始めるのを待つ上限（考える時間の猶予）
             let silenceTimer = null;
             let hardStopTimer = null;
+            let lastRecognitionError = null;
+            let autoRetryBudget = 0;
 
             function clearAutoStopTimers() {
                 clearTimeout(silenceTimer);
                 clearTimeout(hardStopTimer);
             }
-            function scheduleSilenceStop() {
+            function scheduleSilenceStop(rec) {
                 clearTimeout(silenceTimer);
                 silenceTimer = setTimeout(() => {
-                    try { recognizer.stop(); } catch (e) {}
+                    try { rec.stop(); } catch (e) {}
                 }, SILENCE_MS);
             }
 
-            recognizer.onstart = () => {
-                setListeningUI(true);
-                voiceStatus.textContent = '🎤 聞いています...';
-                // 重要: ここでSILENCE_MS(1.6秒)の無音タイマーを即座に仕掛けてはいけない。
-                // AIの読み上げ直後、お客様が話し始めるまでに1.6秒以上「考える間」が
-                // 空くのはごく普通のことだが、以前はここで発話後の無音判定と同じ
-                // タイマーを使っていたため、お客様がまだ一言も話していないのに
-                // 聞き取りが打ち切られ、マイクが無反応になって見えるバグがあった
-                // （「話しかけても返ってこない」の主因）。
-                // そのため、発話が始まるまではMAX_LISTEN_MSという長めの猶予だけを設け、
-                // 実際に音声(onresult)を受け取ってから初めてSILENCE_MSの
-                // トレーリング無音判定を開始する。
-                hardStopTimer = setTimeout(() => { try { recognizer.stop(); } catch (e) {} }, MAX_LISTEN_MS);
-            };
-            recognizer.onresult = (ev) => {
-                let transcript = '';
-                for (let i = 0; i < ev.results.length; i++) {
-                    transcript += ev.results[i][0].transcript;
-                }
-                messageInput.value = transcript;
-                if (ev.results[ev.results.length - 1].isFinal) {
-                    voiceStatus.textContent = '認識結果: 「' + transcript + '」';
-                }
-                // 実際に発話を受け取った後だけ、トレーリング無音タイマーを開始/更新する
-                scheduleSilenceStop();
-            };
-            // iOS Safari等では、AIの読み上げ(TTS)直後にマイクを再開しようとすると
-            // オーディオセッションの切り替えが間に合わず "aborted" エラーで
-            // 認識が即座に終了してしまうことがある。これはユーザー操作ではなく
-            // 一時的な競合によるものなので、自動再開の際は数回だけ静かに
-            // 再試行してから、それでもダメな場合だけ手動タップを促す。
-            let lastRecognitionError = null;
-            let autoRetryBudget = 0;
+            // 重要: 1ターンごとに必ず新しいSpeechRecognitionインスタンスを
+            // 作り直す。以前は1つのインスタンスをstart/stopで使い回して
+            // いたが、iOS Safari等では2回目以降のstart()で「onstartは
+            // 発火してonendも普通に終わるのに、実際の音声はまったく
+            // 認識されない（onresultが一切発生しない）」という不具合が
+            // 報告された（1回目の発話だけ認識され、2回目以降は
+            // 「🎤 聞いています...」のまま何も認識されなくなる）。
+            // これはWebKit系ブラウザで知られている挙動で、インスタンスを
+            // 毎回作り直すことで回避できる。
+            function createRecognizer() {
+                const rec = new SpeechRecognitionCtor();
+                rec.lang = 'ja-JP';
+                rec.interimResults = true;
+                // ブラウザ(特にiOS Safari)側の「発話終了」自動判定は精度がまちまちで、
+                // 話し終えてもボタンを押すまで認識が終わらないことがある。実際の電話回線
+                // (Vonage側)では無音1.5秒程度でこちらから聞き取りを打ち切っているのと同様に、
+                // ここでも認識結果イベントを基準に無音タイマーを独自に持たせ、自動で
+                // rec.stop() を呼ぶことで、ボタン操作なしでターンが進むようにする。
+                rec.continuous = true;
 
-            recognizer.onerror = (ev) => {
-                lastRecognitionError = ev.error;
-                if (ev.error === 'no-speech' || ev.error === 'aborted') {
-                    // 'aborted' の案内はonend側でリトライ判定した上で出す
-                    return;
-                }
-                voiceStatus.textContent = '音声認識エラー: ' + ev.error;
-            };
-            recognizer.onend = () => {
-                clearAutoStopTimers();
-                setListeningUI(false);
-                const hadText = messageInput.value.trim();
-
-                // 'aborted'(iOSでのTTS直後の競合)・'no-speech'(まだ何も話していない)は
-                // どちらも「お客様側の問題ではない一時的な状態」なので、同じ扱いで
-                // 静かに自動再試行する。
-                if ((lastRecognitionError === 'aborted' || lastRecognitionError === 'no-speech') && !ended) {
-                    if (autoRetryBudget > 0) {
-                        autoRetryBudget -= 1;
-                        lastRecognitionError = null;
-                        setTimeout(() => { try { recognizer.start(); } catch (e) {} }, 350);
+                rec.onstart = () => {
+                    setListeningUI(true);
+                    voiceStatus.textContent = '🎤 聞いています...';
+                    // 重要: ここでSILENCE_MS(1.6秒)の無音タイマーを即座に仕掛けてはいけない。
+                    // AIの読み上げ直後、お客様が話し始めるまでに1.6秒以上「考える間」が
+                    // 空くのはごく普通のことだが、以前はここで発話後の無音判定と同じ
+                    // タイマーを使っていたため、お客様がまだ一言も話していないのに
+                    // 聞き取りが打ち切られ、マイクが無反応になって見えるバグがあった
+                    // （「話しかけても返ってこない」の主因）。
+                    // そのため、発話が始まるまではMAX_LISTEN_MSという長めの猶予だけを設け、
+                    // 実際に音声(onresult)を受け取ってから初めてSILENCE_MSの
+                    // トレーリング無音判定を開始する。
+                    hardStopTimer = setTimeout(() => { try { rec.stop(); } catch (e) {} }, MAX_LISTEN_MS);
+                };
+                rec.onresult = (ev) => {
+                    let transcript = '';
+                    for (let i = 0; i < ev.results.length; i++) {
+                        transcript += ev.results[i][0].transcript;
+                    }
+                    messageInput.value = transcript;
+                    if (ev.results[ev.results.length - 1].isFinal) {
+                        voiceStatus.textContent = '認識結果: 「' + transcript + '」';
+                    }
+                    // 実際に発話を受け取った後だけ、トレーリング無音タイマーを開始/更新する
+                    scheduleSilenceStop(rec);
+                };
+                // iOS Safari等では、AIの読み上げ(TTS)直後にマイクを再開しようとすると
+                // オーディオセッションの切り替えが間に合わず "aborted" エラーで
+                // 認識が即座に終了してしまうことがある。これはユーザー操作ではなく
+                // 一時的な競合によるものなので、自動再開の際は数回だけ静かに
+                // 再試行してから、それでもダメな場合だけ手動タップを促す。
+                rec.onerror = (ev) => {
+                    lastRecognitionError = ev.error;
+                    if (ev.error === 'no-speech' || ev.error === 'aborted') {
+                        // 'aborted' の案内はonend側でリトライ判定した上で出す
                         return;
                     }
-                }
-                lastRecognitionError = null;
+                    voiceStatus.textContent = '音声認識エラー: ' + ev.error;
+                };
+                rec.onend = () => {
+                    clearAutoStopTimers();
+                    setListeningUI(false);
+                    const hadText = messageInput.value.trim();
 
-                if (hadText) {
-                    inputForm.requestSubmit();
-                } else if (!ended) {
-                    // 何らかの理由で聞き取りが終わったが発話内容が無い場合、
-                    // 「🎤 聞いています...」の表示を放置しない
-                    // (実際には聞き取りが止まっているのに、まだ聞いているように
-                    // 見えてしまい「話しかけても反応がない」状態になるのを防ぐ)。
-                    voiceStatus.textContent = '🎤 マイクのボタンを押して話しかけてください';
-                }
-            };
+                    // 'aborted'(iOSでのTTS直後の競合)・'no-speech'(まだ何も話していない)は
+                    // どちらも「お客様側の問題ではない一時的な状態」なので、同じ扱いで
+                    // 静かに自動再試行する。
+                    if ((lastRecognitionError === 'aborted' || lastRecognitionError === 'no-speech') && !ended) {
+                        if (autoRetryBudget > 0) {
+                            autoRetryBudget -= 1;
+                            lastRecognitionError = null;
+                            setTimeout(() => {
+                                recognizer = createRecognizer();
+                                try { recognizer.start(); } catch (e) {}
+                            }, 350);
+                            return;
+                        }
+                    }
+                    lastRecognitionError = null;
+
+                    if (hadText) {
+                        inputForm.requestSubmit();
+                    } else if (!ended) {
+                        // 何らかの理由で聞き取りが終わったが発話内容が無い場合、
+                        // 「🎤 聞いています...」の表示を放置しない
+                        // (実際には聞き取りが止まっているのに、まだ聞いているように
+                        // 見えてしまい「話しかけても反応がない」状態になるのを防ぐ)。
+                        voiceStatus.textContent = '🎤 マイクのボタンを押して話しかけてください';
+                    }
+                };
+                return rec;
+            }
+
+            recognizer = createRecognizer();
 
             const startListening = () => {
                 if (ended || listening) return;
                 messageInput.value = '';
                 autoRetryBudget = 3;
+                // 毎ターン新しいインスタンスで開始する（上記コメント参照）
+                recognizer = createRecognizer();
                 try { recognizer.start(); } catch (e) { /* 連打対策 */ }
             };
 
