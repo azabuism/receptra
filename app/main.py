@@ -197,6 +197,25 @@ async def lifespan(app: FastAPI):
             except Exception as migrate_err:
                 logger.warning(f"⚠️ 既存店舗のカテゴリー移行に失敗しました: {migrate_err}")
 
+            # Phase3E-1: スタッフ基盤拡張（表示名・指名予約受付設定・表示順）
+            # 既存staffテーブルへのカラム追加のみ。既存行は display_name=NULL（name にフォールバック）、
+            # nomination_allowed=true（既存の挙動を変えない）、sort_order=0（既存の並び順を変えない）
+            # のデフォルト値で埋まるため、既存データへの影響はない。
+            # これらのカラムはAvailability判定・Realtime AIロジックのどこからも参照しない。
+            try:
+                await conn.execute(text("ALTER TABLE staff ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)"))
+                await conn.execute(text("ALTER TABLE staff ADD COLUMN IF NOT EXISTS nomination_allowed BOOLEAN NOT NULL DEFAULT true"))
+                await conn.execute(text("ALTER TABLE staff ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ staff の display_name/nomination_allowed/sort_order カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
+            # Phase3E-1: 店舗のスタッフシフト管理機能フラグ（将来のPhase 3E-3以降で使用。
+            # 本フェーズではAvailability判定・管理画面UIのどこからも参照しない列追加のみ）。
+            try:
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS staff_schedule_enabled BOOLEAN NOT NULL DEFAULT false"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ shops.staff_schedule_enabled カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 

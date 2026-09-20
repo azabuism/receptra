@@ -466,23 +466,39 @@
                         <input type="text" id="staff-name" required>
                     </div>
                     <div class="field">
-                        <label for="staff-position">職位</label>
-                        <input type="text" id="staff-position" placeholder="例：スタイリスト、担当医、講師">
+                        <label for="staff-display-name">表示名</label>
+                        <input type="text" id="staff-display-name" placeholder="未入力の場合は氏名を表示します">
                     </div>
                 </div>
                 <div class="row-2">
                     <div class="field">
+                        <label for="staff-position">職位</label>
+                        <input type="text" id="staff-position" placeholder="例：スタイリスト、担当医、講師">
+                    </div>
+                    <div class="field">
                         <label for="staff-specialty">専門分野</label>
                         <input type="text" id="staff-specialty" placeholder="例：カット・カラー">
                     </div>
+                </div>
+                <div class="row-2">
                     <div class="field">
                         <label for="staff-phone">電話番号</label>
                         <input type="tel" id="staff-phone">
+                    </div>
+                    <div class="field">
+                        <label for="staff-sort-order">表示順</label>
+                        <input type="number" id="staff-sort-order" step="1" placeholder="小さいほど先頭に表示（既定値：0）">
                     </div>
                 </div>
                 <div class="field">
                     <label for="staff-bio">紹介文</label>
                     <textarea id="staff-bio" placeholder="経歴やひとことなど"></textarea>
+                </div>
+                <div class="field checkbox-field">
+                    <label>
+                        <input type="checkbox" id="staff-nomination-allowed" checked>
+                        指名予約を受け付ける
+                    </label>
                 </div>
                 <button type="submit" class="btn" id="staff-add-btn">スタッフを登録</button>
                 <div class="msg" id="staff-msg"></div>
@@ -1403,7 +1419,10 @@
                 return;
             }
             container.innerHTML = staffCache.map(function (st) {
+                const displayName = st.display_name || st.name;
                 const meta = [st.position, st.specialty].filter(Boolean).map(escapeHtml).join(' ・ ');
+                const nominationBadge = st.nomination_allowed === false
+                    ? ' <span class="inactive-badge">指名不可</span>' : '';
                 const assignedIds = (st._services || []).map(function (x) { return x.service_id; });
                 const chips = servicesCache.length
                     ? '<div class="staff-services-row">' + servicesCache.map(function (svc) {
@@ -1416,7 +1435,7 @@
                 return '<div class="staff-item">' +
                     '<div class="row-top">' +
                         '<div>' +
-                            '<div class="name">' + escapeHtml(st.name) + (st.is_active ? '' : ' <span class="inactive-badge">非公開</span>') + '</div>' +
+                            '<div class="name">' + escapeHtml(displayName) + (st.is_active ? '' : ' <span class="inactive-badge">非公開</span>') + nominationBadge + '</div>' +
                             '<div class="meta">' + meta + '</div>' +
                         '</div>' +
                         '<div class="actions">' +
@@ -1455,10 +1474,16 @@
                     body: JSON.stringify({
                         shop_id: shopId,
                         name: document.getElementById('staff-name').value.trim(),
+                        display_name: document.getElementById('staff-display-name').value.trim() || null,
                         position: document.getElementById('staff-position').value.trim() || null,
                         specialty: document.getElementById('staff-specialty').value.trim() || null,
                         phone: document.getElementById('staff-phone').value.trim() || null,
-                        bio: document.getElementById('staff-bio').value.trim() || null
+                        bio: document.getElementById('staff-bio').value.trim() || null,
+                        nomination_allowed: document.getElementById('staff-nomination-allowed').checked,
+                        sort_order: (function () {
+                            const v = document.getElementById('staff-sort-order').value.trim();
+                            return v === '' ? null : parseInt(v, 10);
+                        })()
                     })
                 });
                 if (!res.ok) {

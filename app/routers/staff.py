@@ -17,17 +17,20 @@ from app.schemas.user import CurrentUser
 from app.models import Staff, Shop, Service, StaffService
 from app.models.reservation import Reservation
 from app.schemas.staff import (
-    StaffCreateRequest, StaffUpdateRequest, StaffResponse, StaffServiceAssignmentResponse
+    StaffCreateRequest, StaffUpdateRequest, StaffResponse, StaffPublicResponse,
+    StaffServiceAssignmentResponse
 )
 
 router = APIRouter(prefix="/api/v1/staff", tags=["staff"])
 
 
 def _to_response(staff: Staff) -> StaffResponse:
+    """オーナー認証済み操作向け（email/phoneを含む）"""
     return StaffResponse(
         id=staff.id,
         shop_id=staff.shop_id,
         name=staff.name,
+        display_name=staff.display_name,
         email=staff.email,
         phone=staff.phone,
         bio=staff.bio,
@@ -36,6 +39,29 @@ def _to_response(staff: Staff) -> StaffResponse:
         qualifications=staff.qualifications,
         position=staff.position,
         is_active=(staff.is_active == "active"),
+        nomination_allowed=staff.nomination_allowed if staff.nomination_allowed is not None else True,
+        sort_order=staff.sort_order or 0,
+        total_reservations=staff.total_reservations or 0,
+        average_rating=staff.average_rating or 0,
+        created_at=staff.created_at,
+    )
+
+
+def _to_public_response(staff: Staff) -> StaffPublicResponse:
+    """未認証・公開向け（Phase3E-1: email/phoneを除外）"""
+    return StaffPublicResponse(
+        id=staff.id,
+        shop_id=staff.shop_id,
+        name=staff.name,
+        display_name=staff.display_name,
+        bio=staff.bio,
+        photo_url=staff.photo_url,
+        specialty=staff.specialty,
+        qualifications=staff.qualifications,
+        position=staff.position,
+        is_active=(staff.is_active == "active"),
+        nomination_allowed=staff.nomination_allowed if staff.nomination_allowed is not None else True,
+        sort_order=staff.sort_order or 0,
         total_reservations=staff.total_reservations or 0,
         average_rating=staff.average_rating or 0,
         created_at=staff.created_at,
@@ -59,7 +85,7 @@ async def _get_owned_staff(staff_id: str, current_user: CurrentUser, db: AsyncSe
     return staff
 
 
-@router.get("", response_model=List[StaffResponse], summary="スタッフ一覧を取得")
+@router.get("", response_model=List[StaffPublicResponse], summary="スタッフ一覧を取得")
 async def get_staff(
     shop_id: Optional[str] = Query(None, description="店舗IDで絞り込み"),
     specialty: Optional[str] = Query(None, description="専門分野で絞り込み"),
@@ -68,7 +94,10 @@ async def get_staff(
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    """スタッフ一覧を取得（店舗ページ・予約フォームからの公開参照用）"""
+    """スタッフ一覧を取得（店舗ページ・予約フォームからの公開参照用）
+
+    Phase3E-1: 未認証エンドポイントのためemail/phoneは含まない（StaffPublicResponse）。
+    """
     query = select(Staff)
 
     if shop_id:
@@ -78,17 +107,19 @@ async def get_staff(
     if is_active is not None:
         query = query.filter(Staff.is_active == ("active" if is_active else "inactive"))
 
-    query = query.order_by(Staff.created_at).offset(skip).limit(limit)
+    # sort_orderは既存行がすべて0（既定値）のため、created_at順という既存の並びを崩さない
+    query = query.order_by(Staff.sort_order, Staff.created_at).offset(skip).limit(limit)
     result = await db.execute(query)
-    return [_to_response(s) for s in result.scalars().all()]
+    return [_to_public_response(s) for s in result.scalars().all()]
 
 
-@router.get("/{staff_id}", response_model=StaffResponse, summary="スタッフ詳細を取得")
+@router.get("/{staff_id}", response_model=StaffPublicResponse, summary="スタッフ詳細を取得")
 async def get_staff_by_id(staff_id: str, db: AsyncSession = Depends(get_db)):
+    """Phase3E-1: 未認証エンドポイントのためemail/phoneは含まない（StaffPublicResponse）。"""
     staff = await db.get(Staff, staff_id)
     if not staff:
         raise HTTPException(status_code=404, detail="スタッフが見つかりません")
-    return _to_response(staff)
+    return _to_public_response(staff)
 
 
 @router.post("", response_model=StaffResponse, summary="スタッフを新規登録")
@@ -104,6 +135,7 @@ async def create_staff(
         id=str(uuid.uuid4()),
         shop_id=request.shop_id,
         name=request.name,
+        display_name=request.display_name,
         email=request.email,
         phone=request.phone,
         bio=request.bio,
@@ -112,6 +144,8 @@ async def create_staff(
         qualifications=request.qualifications,
         position=request.position,
         is_active="active",
+        nomination_allowed=request.nomination_allowed if request.nomination_allowed is not None else True,
+        sort_order=request.sort_order if request.sort_order is not None else 0,
         total_reservations=0,
         average_rating=0,
         created_at=now,

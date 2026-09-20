@@ -99,6 +99,10 @@ class Shop(Base):
     # 予約受付（PAY.jp課金アクティベーション後に有効化。既存店舗はマイグレーションでTrueのまま維持）
     reservations_enabled = Column(Boolean, default=False, nullable=False)
 
+    # Phase3E-1: スタッフシフト管理機能フラグ（将来のPhase 3E-3以降で使用）。
+    # 本フェーズではAvailability判定・管理画面UIのどこからも参照しない（列の追加のみ）。
+    staff_schedule_enabled = Column(Boolean, default=False, nullable=False)
+
     # 統計情報
     total_reservations = Column(Integer, default=0)
     total_reviews = Column(Integer, default=0)

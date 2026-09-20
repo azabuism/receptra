@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 import uuid
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Index, Text, Integer
+from sqlalchemy import Column, String, DateTime, ForeignKey, Index, Text, Integer, Boolean
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -19,9 +19,11 @@ class Staff(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     shop_id = Column(String(36), ForeignKey("shops.id"), nullable=False, index=True)
-    
+
     # 基本情報
     name = Column(String(255), nullable=False)
+    # Phase3E-1: 表示名（未設定時はnameにフォールバック。UI・将来の音声案内での表示用）
+    display_name = Column(String(255), nullable=True)
     email = Column(String(255), nullable=True)
     phone = Column(String(20), nullable=True)
     
@@ -40,7 +42,15 @@ class Staff(Base):
     
     # ステータス
     is_active = Column(String(50), default="active", nullable=False)
-    
+
+    # Phase3E-1: 指名予約設定・表示順
+    # nomination_allowed=False は「このスタッフを名指しでの指名予約対象にしない」意味のみ。
+    # StaffService割り当てやcreate_reservation(staff_id指定)での予約自体は妨げない
+    # （このフィールドはAvailability判定・Realtime AIロジックのどこからも参照されない）。
+    nomination_allowed = Column(Boolean, default=True, nullable=False)
+    # 一覧表示・将来の候補表示順のための並び順（小さいほど先頭）
+    sort_order = Column(Integer, default=0, nullable=False)
+
     # 統計
     total_reservations = Column(Integer, default=0)
     average_rating = Column(Integer, default=0)  # 平均評価（1-5）
