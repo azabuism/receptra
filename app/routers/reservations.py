@@ -191,10 +191,13 @@ async def check_single_slot_availability(
 
     重要: この関数はあくまで「現時点の空き状況の判定」のみを行い、DBへの
     書き込みは一切行わない（Phase3Aではcreate_reservationは実装しない）。
-    """
-    if not shop.reservations_enabled:
-        return False, "service_unavailable"
 
+    注意: shop.reservations_enabled（オンライン予約受付の課金アクティベーション
+    フラグ）はここではチェックしない。既存の GET /shop/{shop_id}/availability も
+    このフラグを見ておらず（空き状況の閲覧自体は無料機能で、実際に予約を
+    確定するcreate_reservationの側でのみこのフラグを見る設計になっている）、
+    その既存の一貫性に合わせるため。
+    """
     closure = await _get_closure_for_date(db, shop.id, target_date)
     if closure:
         return False, "temporary_closure"
