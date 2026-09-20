@@ -33,7 +33,9 @@ from app.schemas.reservation import (
     CreateReservationToolRequest, CreateReservationToolResponse,
     ReservationCreateRequest,
 )
+from app.schemas.shop_knowledge import GetShopInfoToolRequest
 from app.routers.reservations import check_single_slot_availability, create_reservation
+from app.routers.shop_knowledge import get_shop_info_for_ai
 
 logger = logging.getLogger("receptra.realtime_voice")
 
@@ -93,6 +95,27 @@ def _check_booking_tool_rate_limit(shop_id: str) -> None:
     bucket = _recent_booking_tool_requests.setdefault(shop_id, [])
     bucket[:] = [t for t in bucket if now - t < _BOOKING_TOOL_RATE_LIMIT_WINDOW_SECONDS]
     if len(bucket) >= _BOOKING_TOOL_RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
+
+
+# Phase3D: get_shop_info Tool Calling用の別バケット。DB書き込みを伴わない
+# 読み取り専用の問い合わせであり、1通話中に複数トピックを何度も尋ねられる
+# 可能性があるため、check_availability用と同程度の緩めの制限にする
+# （create_reservation用の厳しめのバケットとは完全に独立させる）。
+_SHOP_INFO_TOOL_RATE_LIMIT_WINDOW_SECONDS = 60
+_SHOP_INFO_TOOL_RATE_LIMIT_MAX_REQUESTS = 30
+_recent_shop_info_tool_requests: dict[str, list] = {}
+
+
+def _check_shop_info_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _recent_shop_info_tool_requests.setdefault(shop_id, [])
+    bucket[:] = [t for t in bucket if now - t < _SHOP_INFO_TOOL_RATE_LIMIT_WINDOW_SECONDS]
+    if len(bucket) >= _SHOP_INFO_TOOL_RATE_LIMIT_MAX_REQUESTS:
         raise HTTPException(
             status_code=429,
             detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
@@ -503,3 +526,45 @@ async def create_reservation_tool(
         # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(success=False)で返す。
         logger.error("create_reservation Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
         return _safe_failure("temporarily_unavailable")
+
+
+@router.post("/tools/get-shop-info")
+async def get_shop_info_tool(
+    shop_id: str,
+    request: GetShopInfoToolRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Realtime Voice AI Phase3D: get_shop_info Tool Calling専用エンドポイント（認証不要）。
+
+    設計方針（重要・必ず守ること）:
+    - shop_idはcheck_availability/create_reservationと同じくURLパスの値のみを使い、
+      リクエストボディ(GetShopInfoToolRequest)にはshop_id/tenant_idを一切含めない。
+      Realtime AI（LLM側）に他店舗のshop_idを自由に指定させる余地を作らない。
+    - 実際のデータ取得・「未設定」と「明確にNo」の区別・FAQのILIKE検索は一切ここで
+      再実装せず、必ずapp/routers/shop_knowledge.py の get_shop_info_for_ai()
+      （ShopKnowledge/ShopFAQテーブルのみを参照し、内部メモ・売上・顧客情報・
+      他店舗データを一切含まない設計の関数）をそのまま呼び出す。
+    - このエンドポイントが返す形は必ず {"success": bool, ...} で、成功時は必ず
+      "known"(bool)と"data"(dict|None)を含む。DBエラー等の技術的失敗
+      （reason_code="temporarily_unavailable"）と、「情報が未設定なだけ」
+      （success=True, known=False）を絶対に混同しない
+      （get_shop_info_for_ai()自体がこの区別を内部で保証している）。
+    - 店舗が存在しない・非公開の場合も、お客様やAIの入力ミスではなくこちら側の
+      事情であるため、reason_code="temporarily_unavailable"として安全側に倒す
+      （check_availability/create_reservationと同じ方針）。
+    """
+    _check_shop_info_rate_limit(shop_id)
+
+    try:
+        shop = await db.get(Shop, shop_id)
+        if not shop or not shop.is_active:
+            return {"success": False, "reason_code": "temporarily_unavailable"}
+
+        return await get_shop_info_for_ai(db, shop_id, request.topic, request.query)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(success=False)で返す。
+        logger.error("get_shop_info Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
+        return {"success": False, "reason_code": "temporarily_unavailable"}

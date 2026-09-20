@@ -221,6 +221,84 @@ _REALTIME_TOOLS = [
             "required": ["date", "time", "party_size", "guest_name", "guest_phone"],
         },
     },
+    # ===== Phase3D: get_shop_info =====
+    #
+    # 設計方針（重要・必ず守ること）:
+    # - 駐車場・支払い方法・設備・来店前案内・キャンセルポリシー・FAQ等、
+    #   店舗情報に関する質問を受けたら、必ずこの関数を呼び出してDBに登録された
+    #   情報のみで回答すること。これらの情報について、この関数を呼ばずに
+    #   自分の知識や推測で回答することは絶対に禁止する（ハルシネーション防止が
+    #   このToolの存在意義そのもの）。
+    # - shop_idはこの関数の引数に含めない。check_availability/create_reservationと
+    #   同じく、実際にどの店舗かはRECEPTRAサーバー側（セッションを発行した店舗）で
+    #   決まる。
+    # - 一度に全店舗情報をまとめて取得することはできない設計とし、topicで
+    #   1トピックずつ問い合わせる（Phase3D仕様書 section49「Tool結果は
+    #   必要最小限に留める」に基づく）。
+    # - 戻り値のknownがfalseの場合は「その情報がDBに登録されていない」ことを
+    #   意味し、successがfalseの場合とは明確に区別する（前者は正常に問い合わせた
+    #   結果、情報が無いだけ。後者は技術的な失敗）。この区別自体がPhase3Dの
+    #   アンチハルシネーション設計の中核（shop_knowledge.pyのモデル設計コメント
+    #   および仕様書section12参照）。
+    {
+        "type": "function",
+        "name": "get_shop_info",
+        "description": (
+            "駐車場・支払い方法・Wi-Fi・バリアフリー/車椅子対応・お子様連れ可否・"
+            "喫煙可否・ペット可否・設備全般・来店前の持ち物や注意事項・"
+            "キャンセルや遅刻のルール・その他店舗独自のよくある質問（FAQ）について"
+            "尋ねられたときは、必ずこの関数を呼び出し、その結果に含まれる情報だけを"
+            "使って回答してください。この関数を呼ばずに自分の知識や推測でこれらの"
+            "話題に回答することは絶対にしないでください。\n"
+            "topicには次のいずれか一つだけを指定してください（一度に一つのtopicしか"
+            "問い合わせられません。複数の話題を尋ねられた場合は、必要な回数だけ"
+            "繰り返し呼び出してください）:\n"
+            "parking=駐車場, payment=支払い方法（現金/クレジットカード/デビットカード/"
+            "QRコード決済/電子マネー）, wifi=Wi-Fi, accessibility=バリアフリー・"
+            "車椅子対応, children=お子様連れ可否, smoking=喫煙可否（喫煙可/禁煙/"
+            "分煙等の条件付き）, pets=ペット可否, facilities=上記wifi/accessibility/"
+            "children/smoking/petsに加え個室・エレベーターの有無をまとめて確認したい"
+            "場合, pre_visit=来店前にご案内すべき持ち物・注意事項・到着時間の目安, "
+            "cancellation=キャンセル・遅刻に関するポリシー, faq=店舗独自のよくある"
+            "質問と回答（上記のいずれにも当てはまらない質問はまずfaqで検索して"
+            "ください。queryに検索したい内容の短いキーワードを日本語で指定すると、"
+            "関連するFAQを検索して返します。queryを省略した場合は登録されている"
+            "FAQの一部が返ります）。\n"
+            "戻り値のsuccessがtrueの場合、knownを必ず確認してください。"
+            "known=trueの場合のみdataに実際の情報が入っています。dataに含まれない"
+            "項目・値については絶対に推測で補わないでください。"
+            "known=falseの場合、その情報はまだ店舗側で登録されていません。"
+            "この場合は絶対に「ある」「ない」を断定せず、"
+            "「大変申し訳ございませんが、その情報は登録がなく、店舗に直接"
+            "お問い合わせください」のように、情報が無いこと自体を正直にご案内し、"
+            "お手数をおかけする形になる旨をお詫びしてください。\n"
+            "戻り値のsuccessがfalseの場合、reason_codeを確認してください。"
+            "invalid_requestは実装上呼び出し方に誤りがある場合です"
+            "（topicの値を再確認してください）。temporarily_unavailableは、"
+            "情報が無いのではなく現在システム側で確認できない技術的な状態です。"
+            "この場合は情報がある・ないのどちらも断定せず、少し時間を置いて"
+            "再度お試しいただくか、店舗へ直接お問い合わせいただくようお伝え"
+            "してください（known=falseの場合と混同しないこと。原因が異なります）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "enum": [
+                        "parking", "payment", "wifi", "accessibility", "children",
+                        "smoking", "pets", "facilities", "pre_visit", "cancellation", "faq",
+                    ],
+                    "description": "問い合わせたい店舗情報の種類（一度に一つだけ指定）",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "FAQを検索するためのキーワード（topic=faqの場合のみ使用。それ以外のtopicでは不要・無視されます）",
+                },
+            },
+            "required": ["topic"],
+        },
+    },
 ]
 
 _client: Optional[AsyncOpenAI] = None
@@ -394,6 +472,36 @@ create_reservation ツールの結果を、それぞれ受け取った場合に�
 想像で答えることも絶対にしないでください。まだ提供していないメニュー詳細・
 料金等について聞かれた場合は「詳しくは店舗に直接お問い合わせください」と
 ご案内してください。\
+"""
+
+# Phase3D: Shop Knowledge & FAQ に関する回答ルール。常に固定
+# （店舗独自のcustom_instructionsによって上書き・無効化されない）。
+# _CONSTRAINTS_TEMPLATE（推測回答の全般的な禁止）の直前に配置し、
+# get_shop_infoツール固有の運用ルール（topicの使い分け・known判定・
+# 構造化データとFAQの優先順位）を補強する。
+_SHOP_KNOWLEDGE_RULES_TEMPLATE = """\
+# 店舗情報の質問への回答ルール（重要・必ず守ってください）
+駐車場・支払い方法・Wi-Fi・バリアフリー/車椅子対応・お子様連れ・喫煙可否・
+ペット可否・設備・来店前の持ち物や注意事項・キャンセルや遅刻のルール・
+その他店舗独自のよくある質問については、必ず get_shop_info ツールを呼び出し、
+その結果だけを根拠に回答してください。呼び出す前に自分の知識や一般論、
+他店舗の情報から推測して回答することは絶対にしないでください。
+- 駐車場・支払い方法・Wi-Fi・バリアフリー・お子様連れ・喫煙・ペット・設備・
+  来店前案内・キャンセルポリシーのように、あらかじめ決まった項目として
+  尋ねられた場合は、該当するtopic（parking/payment/wifi/accessibility/
+  children/smoking/pets/facilities/pre_visit/cancellation）を使ってください。
+- 上記のどれにも当てはまらない、店舗独自の質問（例:「子供用の椅子はある？」
+  「セットメニューはある？」等、構造化データに項目が無い質問）は、
+  topic=faqでqueryにキーワードを指定して検索してください。
+- 同じ会話の中で複数の話題（例: 駐車場と支払い方法の両方）を尋ねられた場合は、
+  一度のtoolで済ませようとせず、topicごとに必要な回数だけ呼び出してください。
+- known=falseが返ってきた場合は、その情報が「無い」のではなく「まだ店舗側で
+  登録されていない」ことを意味します。この場合に「駐車場はありません」
+  「カードは使えません」のように断定することは絶対にしないでください。
+  必ず「情報が登録されていない」旨を正直にお伝えし、店舗へ直接お問い合わせ
+  いただくようご案内してください。
+- dataに含まれていない項目・値は、それがどれだけもっともらしく思えても
+  絶対に推測で補わないでください。\
 """
 
 # Phase3B: 予約成立の宣言に関する安全ルール。常に最後に配置する固定文言
@@ -586,6 +694,7 @@ async def build_realtime_instructions(
       5b. 電話に出たときの第一声（Greeting）                 … Phase3Cより常に付与
       6. Shop Custom Instructions（店舗独自の補助指示）      … 明示的に下位と位置づけ
       7. Constraints（現時点での制約）                       … 常に固定
+      7b. Shop Knowledge Rules（Phase3D: get_shop_info運用ルール） … 常に固定
       8. Booking Safety（Phase3B: 予約成立宣言の絶対ルール） … 常に固定・最後
 
     staff_settingsがNone、またはPhase2で追加されたフィールドが全て未設定の
@@ -634,6 +743,7 @@ async def build_realtime_instructions(
             sections.append(_build_custom_instructions_section(staff_settings.custom_instructions.strip()))
 
     sections.append(_CONSTRAINTS_TEMPLATE)
+    sections.append(_SHOP_KNOWLEDGE_RULES_TEMPLATE)
     sections.append(_BOOKING_SAFETY_TEMPLATE)
 
     return "\n\n".join(sections)

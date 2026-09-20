@@ -1044,6 +1044,48 @@
             }
         }
 
+        // ===== Phase3D: get_shop_info =====
+        //
+        // 設計方針（重要）:
+        // - check_availability/create_reservationと同じく、shop_idはAIの引数に
+        //   含めない。常にこのページのshopId（通話中の店舗）を使う。
+        // - Tool結果はFastAPI（ShopKnowledge/ShopFAQ DB）を唯一の正とする。
+        //   fetch失敗・タイムアウト・不正レスポンス等、どんな失敗であっても
+        //   known:trueやdataを合成してはならない。必ずsuccess:falseで返し、
+        //   AIに「確認できなかった」と案内させる（情報の有無を勝手に断定させない）。
+        async function callGetShopInfoTool(args) {
+            const body = {
+                topic: args && args.topic,
+            };
+            if (args && args.query) body.query = args.query;
+
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/get-shop-info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || typeof data.success !== 'boolean') {
+                    // check_availability/create_reservationと同じ方針: HTTP 422
+                    // （FastAPI自身のリクエストバリデーションエラー、topic等の
+                    // 引数自体が不正）はinvalid_request、それ以外（429レート制限・
+                    // 5xx・ネットワーク断でJSON自体が取得できない等）は
+                    // temporarily_unavailableに分ける。
+                    return {
+                        success: false,
+                        reason_code: (res.status === 422) ? 'invalid_request' : 'temporarily_unavailable',
+                    };
+                }
+                return data;
+            } catch (e) {
+                // fetch自体が例外を投げるのはネットワーク断等のみのため、
+                // 入力の誤りではなくtemporarily_unavailable。
+                logEvent('get_shop_info Tool呼び出しに失敗: ' + e.message);
+                return { success: false, reason_code: 'temporarily_unavailable' };
+            }
+        }
+
         async function handleFunctionCallItem(item) {
             const callId = item.call_id;
             if (!callId) return;
@@ -1067,10 +1109,14 @@
             } else if (item.name === 'create_reservation') {
                 logEvent('Tool呼び出し受信: create_reservation ' + JSON.stringify(args));
                 output = await callCreateReservationTool(args || {}, callId);
+            } else if (item.name === 'get_shop_info') {
+                logEvent('Tool呼び出し受信: get_shop_info ' + JSON.stringify(args));
+                output = await callGetShopInfoTool(args || {});
             } else {
-                // Phase3Bで宣言しているToolはcheck_availability / create_reservationの
-                // 2つのみ。未知の関数名が来た場合も、応答せずに放置するとAIが
-                // 待ち続けてしまうため、安全側の失敗として返す。
+                // Phase3Dまでで宣言しているToolはcheck_availability /
+                // create_reservation / get_shop_infoの3つのみ。未知の関数名が
+                // 来た場合も、応答せずに放置するとAIが待ち続けてしまうため、
+                // 安全側の失敗として返す。
                 logEvent('未知のTool呼び出し: ' + item.name);
                 output = { available: false, success: false, reason_code: 'invalid_request' };
             }

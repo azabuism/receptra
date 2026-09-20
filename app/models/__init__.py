@@ -38,6 +38,10 @@ from app.models.visitor import Visitor
 # app/main.py の lifespan() 内 Base.metadata.create_all() で自動作成される）
 from app.models.ai_staff_settings import AIStaffSettings
 
+# Phase3D: Shop Knowledge & FAQ（新規テーブル。ai_staff_settingsと同様、
+# alembicは使わずBase.metadata.create_all()で自動作成される）
+from app.models.shop_knowledge import ShopKnowledge, ShopFAQ
+
 __all__ = [
     # User/Tenant
     "Tenant",
@@ -82,4 +86,8 @@ __all__ = [
 
     # Realtime Voice AI Phase2
     "AIStaffSettings",
+
+    # Phase3D: Shop Knowledge & FAQ
+    "ShopKnowledge",
+    "ShopFAQ",
 ]

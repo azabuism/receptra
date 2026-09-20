@@ -66,6 +66,13 @@
         .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
         .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         @media (max-width: 560px) { .row-3, .row-2 { grid-template-columns: 1fr; } }
+        .subheading { font-size: 14px; margin: 22px 0 10px; padding-top: 14px; border-top: 1px solid #eee; color: #555; }
+        .subheading:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+        .faq-item { padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
+        .faq-item:last-child { border-bottom: none; }
+        .faq-item .faq-question { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+        .faq-item .faq-answer { font-size: 13px; color: #555; white-space: pre-wrap; margin-bottom: 8px; }
+        .faq-item .actions { display: flex; gap: 8px; flex-wrap: wrap; }
         .btn {
             padding: 10px 22px; border: none; border-radius: 20px; font-size: 14px; font-weight: 700;
             font-family: inherit; cursor: pointer; background: var(--primary); color: var(--white);
@@ -561,6 +568,223 @@
         </div>
 
         <div class="card">
+            <h2>店舗情報・AI回答設定</h2>
+            <p class="hint">
+                ここで登録した内容だけを使って、音声AI受付が駐車場・お支払い方法・設備・来店前のご案内・
+                キャンセルポリシーについて正確にお答えします。未入力の項目は「情報が登録されていません」と
+                正直にお伝えし、AIが推測で回答することはありません。
+            </p>
+            <form id="shop-knowledge-form">
+                <h3 class="subheading">駐車場</h3>
+                <div class="row-3">
+                    <div class="field">
+                        <label for="sk-parking-available">駐車場</label>
+                        <select id="sk-parking-available">
+                            <option value="">未設定</option>
+                            <option value="yes">あり</option>
+                            <option value="no">なし</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="sk-parking-spaces">台数</label>
+                        <input type="number" id="sk-parking-spaces" min="0" placeholder="例：5">
+                    </div>
+                    <div class="field">
+                        <label for="sk-parking-fee">料金</label>
+                        <input type="text" id="sk-parking-fee" maxlength="100" placeholder="例：無料 / 1時間200円">
+                    </div>
+                </div>
+                <div class="row-3">
+                    <div class="field">
+                        <label for="sk-parking-type">種類</label>
+                        <input type="text" id="sk-parking-type" maxlength="100" placeholder="例：専用駐車場 / 提携駐車場">
+                    </div>
+                    <div class="field">
+                        <label for="sk-parking-location">場所</label>
+                        <input type="text" id="sk-parking-location" maxlength="255" placeholder="例：店舗裏">
+                    </div>
+                    <div class="field">
+                        <label for="sk-partner-parking">提携駐車場</label>
+                        <input type="text" id="sk-partner-parking" maxlength="255" placeholder="例：〇〇パーキング">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="sk-parking-full-guidance">満車時のご案内</label>
+                    <textarea id="sk-parking-full-guidance" maxlength="2000" placeholder="例：満車の場合は近隣の〇〇パーキングをご利用ください"></textarea>
+                </div>
+                <div class="field">
+                    <label for="sk-parking-notes">駐車場の補足</label>
+                    <textarea id="sk-parking-notes" maxlength="2000" placeholder="例：店舗正面の2台は他店舗専用です"></textarea>
+                </div>
+
+                <h3 class="subheading">お支払い方法</h3>
+                <div class="row-3">
+                    <div class="field">
+                        <label for="sk-payment-cash">現金</label>
+                        <select id="sk-payment-cash">
+                            <option value="">未設定</option>
+                            <option value="yes">利用可</option>
+                            <option value="no">利用不可</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="sk-payment-credit-card">クレジットカード</label>
+                        <select id="sk-payment-credit-card">
+                            <option value="">未設定</option>
+                            <option value="yes">利用可</option>
+                            <option value="no">利用不可</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="sk-payment-debit-card">デビットカード</label>
+                        <select id="sk-payment-debit-card">
+                            <option value="">未設定</option>
+                            <option value="yes">利用可</option>
+                            <option value="no">利用不可</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="row-3">
+                    <div class="field">
+                        <label for="sk-payment-qr-code">QRコード決済</label>
+                        <select id="sk-payment-qr-code">
+                            <option value="">未設定</option>
+                            <option value="yes">利用可</option>
+                            <option value="no">利用不可</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="sk-payment-emoney">電子マネー</label>
+                        <select id="sk-payment-emoney">
+                            <option value="">未設定</option>
+                            <option value="yes">利用可</option>
+                            <option value="no">利用不可</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="sk-payment-notes">お支払いの補足</label>
+                    <textarea id="sk-payment-notes" maxlength="1000" placeholder="例：VISA/Mastercard/JCB/PayPay対応"></textarea>
+                </div>
+
+                <h3 class="subheading">設備・利用条件</h3>
+                <div class="row-3">
+                    <div class="field">
+                        <label for="sk-wifi-available">Wi-Fi</label>
+                        <select id="sk-wifi-available">
+                            <option value="">未設定</option>
+                            <option value="yes">あり</option>
+                            <option value="no">なし</option>
+                            <option value="conditional">条件付き</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="sk-private-room-available">個室</label>
+                        <select id="sk-private-room-available">
+                            <option value="">未設定</option>
+                            <option value="yes">あり</option>
+                            <option value="no">なし</option>
+                            <option value="conditional">条件付き</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="sk-wheelchair-accessible">車椅子・バリアフリー</label>
+                        <select id="sk-wheelchair-accessible">
+                            <option value="">未設定</option>
+                            <option value="yes">対応可</option>
+                            <option value="no">対応不可</option>
+                            <option value="conditional">条件付き</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="row-3">
+                    <div class="field">
+                        <label for="sk-children-allowed">お子様連れ</label>
+                        <select id="sk-children-allowed">
+                            <option value="">未設定</option>
+                            <option value="yes">可</option>
+                            <option value="no">不可</option>
+                            <option value="conditional">条件付き</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="sk-smoking-policy">喫煙</label>
+                        <select id="sk-smoking-policy">
+                            <option value="">未設定</option>
+                            <option value="yes">喫煙可</option>
+                            <option value="no">禁煙</option>
+                            <option value="conditional">分煙等</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="sk-pets-allowed">ペット同伴</label>
+                        <select id="sk-pets-allowed">
+                            <option value="">未設定</option>
+                            <option value="yes">可</option>
+                            <option value="no">不可</option>
+                            <option value="conditional">条件付き</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field" style="max-width: 260px;">
+                    <label for="sk-elevator-available">エレベーター</label>
+                    <select id="sk-elevator-available">
+                        <option value="">未設定</option>
+                        <option value="yes">あり</option>
+                        <option value="no">なし</option>
+                        <option value="conditional">条件付き</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="sk-facilities-notes">設備に関する補足（条件付きの詳細など）</label>
+                    <textarea id="sk-facilities-notes" maxlength="2000" placeholder="例：入口に段差があります。車椅子でご来店の際は事前にご連絡ください"></textarea>
+                </div>
+
+                <h3 class="subheading">来店前のご案内</h3>
+                <div class="field">
+                    <label for="sk-required-items">持ち物</label>
+                    <textarea id="sk-required-items" maxlength="2000" placeholder="例：診察券をお持ちください"></textarea>
+                </div>
+                <div class="field">
+                    <label for="sk-pre-visit-instructions">来店前の注意事項</label>
+                    <textarea id="sk-pre-visit-instructions" maxlength="2000" placeholder="例：施術前日の飲酒はお控えください"></textarea>
+                </div>
+                <div class="field">
+                    <label for="sk-arrival-guidance">到着時間の目安</label>
+                    <textarea id="sk-arrival-guidance" maxlength="1000" placeholder="例：初めてご来店の方は予約時間の10分前にお越しください"></textarea>
+                </div>
+
+                <h3 class="subheading">キャンセル・遅刻ポリシー</h3>
+                <div class="field">
+                    <label for="sk-cancellation-policy">キャンセル・遅刻に関するご案内</label>
+                    <textarea id="sk-cancellation-policy" maxlength="2000" placeholder="例：キャンセルは前日までにご連絡ください"></textarea>
+                    <p class="hint" style="margin-top:6px;">※ここに書かれていない内容（キャンセル料など）をAIが独自に作って案内することはありません。</p>
+                </div>
+
+                <button type="submit" class="btn" id="shop-knowledge-save-btn">保存する</button>
+                <div class="msg" id="shop-knowledge-msg"></div>
+            </form>
+        </div>
+
+        <div class="card">
+            <h2>よくあるご質問（FAQ）</h2>
+            <p class="hint">上記の項目に当てはまらない、店舗独自のよくある質問と回答を登録できます。音声AI受付がキーワード検索して回答します。</p>
+            <form id="faq-form">
+                <div class="field">
+                    <label for="faq-question">質問</label>
+                    <input type="text" id="faq-question" maxlength="1000" placeholder="例：子供用の椅子はありますか？" required>
+                </div>
+                <div class="field">
+                    <label for="faq-answer">回答</label>
+                    <textarea id="faq-answer" maxlength="4000" placeholder="例：はい、お子様用の椅子をご用意しております。" required></textarea>
+                </div>
+                <button type="submit" class="btn" id="faq-add-btn">追加する</button>
+                <div class="msg" id="faq-msg"></div>
+            </form>
+            <div id="faq-list" style="margin-top: 14px;"></div>
+        </div>
+
+        <div class="card">
             <h2>予約管理</h2>
             <p class="hint">お客様からのオンライン予約を確認・確定できます。</p>
             <div class="field" style="max-width: 240px;">
@@ -753,6 +977,8 @@
             loadReviewsManage();
             loadCoupons();
             loadAiStaffSettings();
+            loadShopKnowledge();
+            loadFaqs();
         }
 
         // ---------- 画像設定（ロゴ・サムネイル・カバー） ----------
@@ -1961,6 +2187,214 @@
                 btn.disabled = false;
             }
         });
+
+        // ---------- Phase3D: 店舗情報（Shop Knowledge） ----------
+        // 「未設定」と「なし（明確にNo）」を区別する設計(app.models.shop_knowledge参照)
+        // に合わせ、フォーム側もselectの空値("")をそのまま「未設定」としてサーバーへ
+        // 送る（null化はサーバー側のバリデータ(_normalize_empty)が行う）。
+        const SHOP_KNOWLEDGE_FIELD_IDS = [
+            'parking-available', 'parking-spaces', 'parking-type', 'parking-fee',
+            'parking-location', 'partner-parking', 'parking-full-guidance', 'parking-notes',
+            'payment-cash', 'payment-credit-card', 'payment-debit-card', 'payment-qr-code',
+            'payment-emoney', 'payment-notes',
+            'wifi-available', 'private-room-available', 'wheelchair-accessible',
+            'children-allowed', 'smoking-policy', 'pets-allowed', 'elevator-available',
+            'facilities-notes',
+            'required-items', 'pre-visit-instructions', 'arrival-guidance',
+            'cancellation-policy'
+        ];
+
+        function skFieldKey(id) {
+            return id.replace(/-/g, '_');
+        }
+
+        async function loadShopKnowledge() {
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/knowledge');
+                if (!res.ok) throw new Error('店舗情報の取得に失敗しました');
+                const data = await res.json();
+                SHOP_KNOWLEDGE_FIELD_IDS.forEach(function (id) {
+                    const el = document.getElementById('sk-' + id);
+                    if (!el) return;
+                    const value = data[skFieldKey(id)];
+                    el.value = (value === null || value === undefined) ? '' : value;
+                });
+            } catch (e) {
+                // 未保存（レコード自体が無い）場合も404等にはならない設計だが、
+                // 万一取得に失敗してもフォーム自体は空の状態で使えるようにしておく。
+            }
+        }
+
+        document.getElementById('shop-knowledge-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('shop-knowledge-msg');
+            const btn = document.getElementById('shop-knowledge-save-btn');
+            const payload = {};
+            SHOP_KNOWLEDGE_FIELD_IDS.forEach(function (id) {
+                const el = document.getElementById('sk-' + id);
+                if (!el) return;
+                const key = skFieldKey(id);
+                if (id === 'parking-spaces') {
+                    payload[key] = el.value === '' ? null : parseInt(el.value, 10);
+                } else {
+                    const v = el.value.trim();
+                    payload[key] = v === '' ? null : v;
+                }
+            });
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/knowledge', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '保存に失敗しました');
+                }
+                showMsg(msg, '保存しました。次回の通話から反映されます。', 'success');
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // ---------- Phase3D: FAQ ----------
+        let faqCache = [];
+        let editingFaqId = null;
+
+        async function loadFaqs() {
+            const container = document.getElementById('faq-list');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/faqs');
+                if (!res.ok) throw new Error('FAQの取得に失敗しました');
+                faqCache = await res.json();
+                renderFaqList();
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        function renderFaqList() {
+            const container = document.getElementById('faq-list');
+            if (!faqCache.length) {
+                container.innerHTML = '<p class="empty-hint">まだFAQが登録されていません</p>';
+                return;
+            }
+            container.innerHTML = faqCache.map(function (f) {
+                if (editingFaqId === f.id) {
+                    return '<div class="faq-item" data-id="' + f.id + '">' +
+                        '<div class="field"><label>質問</label><input type="text" class="faq-edit-question" maxlength="1000" value="' + escapeHtml(f.question) + '"></div>' +
+                        '<div class="field"><label>回答</label><textarea class="faq-edit-answer" maxlength="4000">' + escapeHtml(f.answer) + '</textarea></div>' +
+                        '<div class="actions">' +
+                            '<button type="button" class="btn-outline faq-save-btn" data-id="' + f.id + '">保存</button>' +
+                            '<button type="button" class="btn-outline faq-cancel-btn" data-id="' + f.id + '">キャンセル</button>' +
+                        '</div>' +
+                    '</div>';
+                }
+                return '<div class="faq-item" data-id="' + f.id + '">' +
+                    '<div class="faq-question">' + escapeHtml(f.question) + (f.is_active ? '' : ' <span class="inactive-badge">非公開</span>') + '</div>' +
+                    '<div class="faq-answer">' + escapeHtml(f.answer) + '</div>' +
+                    '<div class="actions">' +
+                        '<button type="button" class="btn-outline faq-edit-btn" data-id="' + f.id + '">編集</button>' +
+                        '<button type="button" class="btn-outline faq-toggle-btn" data-id="' + f.id + '" data-active="' + f.is_active + '">' +
+                            (f.is_active ? '非公開にする' : '公開する') + '</button>' +
+                        '<button type="button" class="btn-outline btn-danger faq-delete-btn" data-id="' + f.id + '">削除</button>' +
+                    '</div>' +
+                '</div>';
+            }).join('');
+
+            container.querySelectorAll('.faq-edit-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    editingFaqId = btn.dataset.id;
+                    renderFaqList();
+                });
+            });
+            container.querySelectorAll('.faq-cancel-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    editingFaqId = null;
+                    renderFaqList();
+                });
+            });
+            container.querySelectorAll('.faq-save-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    const item = container.querySelector('.faq-item[data-id="' + btn.dataset.id + '"]');
+                    const question = item.querySelector('.faq-edit-question').value.trim();
+                    const answer = item.querySelector('.faq-edit-answer').value.trim();
+                    updateFaq(btn.dataset.id, { question: question, answer: answer });
+                });
+            });
+            container.querySelectorAll('.faq-toggle-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    updateFaq(btn.dataset.id, { is_active: btn.dataset.active !== 'true' });
+                });
+            });
+            container.querySelectorAll('.faq-delete-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () { deleteFaq(btn.dataset.id); });
+            });
+        }
+
+        document.getElementById('faq-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('faq-msg');
+            const btn = document.getElementById('faq-add-btn');
+            const question = document.getElementById('faq-question').value.trim();
+            const answer = document.getElementById('faq-answer').value.trim();
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/faqs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question: question, answer: answer })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '追加に失敗しました');
+                }
+                showMsg(msg, 'FAQを追加しました', 'success');
+                document.getElementById('faq-form').reset();
+                await loadFaqs();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '追加に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        async function updateFaq(faqId, payload) {
+            const msg = document.getElementById('faq-msg');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/faqs/' + encodeURIComponent(faqId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '更新に失敗しました');
+                }
+                editingFaqId = null;
+                await loadFaqs();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '更新に失敗しました', 'error');
+            }
+        }
+
+        async function deleteFaq(faqId) {
+            if (!confirm('このFAQを削除しますか？')) return;
+            const msg = document.getElementById('faq-msg');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/faqs/' + encodeURIComponent(faqId), { method: 'DELETE' });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '削除に失敗しました');
+                }
+                await loadFaqs();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
+            }
+        }
 
         // ---------- voice試聴 ----------
         // 試聴は、通常の通話画面(shop-ai-realtime-voice.html)と同じ
