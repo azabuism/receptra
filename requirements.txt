@@ -18,7 +18,13 @@ python-multipart==0.0.6
 pydantic[email]>=2.9.2
 
 # External APIs
-openai>=1.6.0
+# 以前は openai>=1.6.0 という下限のみの指定だったため、デプロイのたびに
+# 最新版（2026年9月時点でメジャーバージョン3.x）が無条件にインストールされる
+# 状態だった。今回OpenAI Realtime API(client.realtime.client_secrets)を
+# 追加するにあたり、既存のChat Completions呼び出し(voice_ai.py等)に影響が
+# 無いことをこの1.x系バージョンで確認した上で、意図しないメジャーバージョン
+# アップグレードを防ぐため明示的に固定する。
+openai==1.109.1
 requests==2.31.0
 vonage==4.8.1
 payjp==1.6.1

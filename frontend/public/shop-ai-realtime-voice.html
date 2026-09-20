@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Realtime音声AI（テスト） - レセプトラ</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #FF6B35;
+            --primary-light: #ff9500;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --error: #ef4444;
+            --success: #10b981;
+            --border: 1px solid #ddd;
+        }
+        html, body { height: 100%; overflow-x: hidden; max-width: 100%; }
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 14px 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        header a.back { color: #888; text-decoration: none; font-size: 14px; }
+        header .titles h1 { font-size: 16px; color: var(--primary); }
+        header .titles .sub { font-size: 12px; color: #888; }
+        .mode-badge {
+            margin-left: auto;
+            font-size: 12px;
+            padding: 4px 12px;
+            border-radius: 999px;
+            background: #fff1e6;
+            color: var(--primary-dark);
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .container {
+            max-width: 640px;
+            margin: 0 auto;
+            width: 100%;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            flex: 1;
+        }
+        #loading, #not-found { text-align: center; padding: 60px 20px; color: #888; }
+        .notice {
+            background: #fff8e1;
+            border: 1px solid #ffe0a3;
+            color: #8a5a00;
+            padding: 10px 14px;
+            border-radius: 10px;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .voice-hero { text-align: center; padding: 26px 10px 6px; }
+        .big-mic {
+            width: 110px;
+            height: 110px;
+            border-radius: 50%;
+            border: 3px solid var(--primary);
+            background: var(--white);
+            color: var(--primary);
+            font-size: 46px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 14px;
+            cursor: pointer;
+        }
+        .big-mic.connecting { animation: pulse 1s infinite; border-color: var(--primary-light); color: var(--primary-light); }
+        .big-mic.connected { background: var(--success); border-color: var(--success); color: #fff; }
+        .big-mic.ai-speaking { background: var(--primary-light); border-color: var(--primary-light); color: #fff; animation: pulse 0.6s infinite; }
+        .big-mic.error { background: var(--error); border-color: var(--error); color: #fff; }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.35); }
+            50% { box-shadow: 0 0 0 10px rgba(239,68,68,0); }
+        }
+        #statusText { font-size: 14px; font-weight: 700; color: var(--dark); min-height: 20px; }
+        #subStatusText { font-size: 12px; color: #888; margin-top: 4px; min-height: 16px; }
+        .btn-row { display: flex; justify-content: center; gap: 10px; margin-top: 8px; }
+        button {
+            font-family: inherit;
+            font-size: 14px;
+            cursor: pointer;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 20px;
+            font-weight: 700;
+        }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .btn-secondary { background: #eee; color: var(--dark); }
+        .btn-secondary:hover { background: #ddd; }
+        button:disabled { opacity: 0.5; cursor: default; }
+        .latency-panel {
+            background: var(--white);
+            border: var(--border);
+            border-radius: 12px;
+            padding: 12px 14px;
+        }
+        .latency-panel h2 { font-size: 13px; color: var(--dark); margin-bottom: 8px; }
+        .latency-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            padding: 4px 0;
+            border-bottom: 1px dashed #eee;
+        }
+        .latency-row:last-child { border-bottom: none; }
+        .latency-row .val { font-weight: 700; color: var(--primary-dark); }
+        #eventLog {
+            background: #111;
+            color: #9be89b;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 11px;
+            line-height: 1.6;
+            border-radius: 10px;
+            padding: 10px;
+            height: 160px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        footer { text-align: center; font-size: 11px; color: #aaa; padding: 12px; }
+    </style>
+</head>
+<body>
+    <header>
+        <a class="back" href="#" id="backLink">← 店舗ページに戻る</a>
+        <div class="titles">
+            <h1 id="pageShopName">Realtime音声AI</h1>
+            <div class="sub">レセプトラ AI受付（開発中・テスト版）</div>
+        </div>
+        <span class="mode-badge">Phase1 検証</span>
+    </header>
+
+    <div id="loading" class="container">読み込み中…</div>
+    <div id="not-found" class="container" style="display:none;">店舗が見つかりませんでした。</div>
+
+    <div class="container" id="content" style="display:none;">
+        <div class="notice">
+            これは開発中のテストページです。ここではまだ予約の確定・空き状況の
+            確認・メニューや料金のご案内はできません（Phase1: 自然な音声会話
+            そのものの検証が目的です）。実際のご予約は店舗ページの「チャットで
+            予約」「通話で予約」をご利用ください。
+        </div>
+
+        <div class="voice-hero">
+            <div class="big-mic" id="bigMic">🎤</div>
+            <div id="statusText">タップして通話を開始</div>
+            <div id="subStatusText"></div>
+        </div>
+
+        <div class="btn-row">
+            <button class="btn-primary" id="startBtn" type="button">通話を開始</button>
+            <button class="btn-secondary" id="endBtn" type="button" style="display:none;">通話を終了</button>
+        </div>
+
+        <div class="latency-panel">
+            <h2>レイテンシ計測（発話終了 → AIの発話開始までの体感時間）</h2>
+            <div class="latency-row">
+                <span>直近のターン</span>
+                <span class="val" id="latestLatency">—</span>
+            </div>
+            <div class="latency-row">
+                <span>平均（このセッション）</span>
+                <span class="val" id="avgLatency">—</span>
+            </div>
+            <div class="latency-row">
+                <span>計測回数</span>
+                <span class="val" id="latencyCount">0</span>
+            </div>
+        </div>
+
+        <div class="latency-panel">
+            <h2>イベントログ（開発確認用）</h2>
+            <div id="eventLog"></div>
+        </div>
+    </div>
+
+    <footer>RECEPTRA Realtime Voice（Phase1・ブラウザ⇔OpenAI WebRTC直結）</footer>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const shopId = params.get('id');
+
+        document.getElementById('backLink').href = shopId ? ('/shop.html?id=' + encodeURIComponent(shopId)) : '/';
+
+        const loadingEl = document.getElementById('loading');
+        const notFoundEl = document.getElementById('not-found');
+        const contentEl = document.getElementById('content');
+        const pageShopName = document.getElementById('pageShopName');
+        const bigMic = document.getElementById('bigMic');
+        const statusText = document.getElementById('statusText');
+        const subStatusText = document.getElementById('subStatusText');
+        const startBtn = document.getElementById('startBtn');
+        const endBtn = document.getElementById('endBtn');
+        const eventLogEl = document.getElementById('eventLog');
+        const latestLatencyEl = document.getElementById('latestLatency');
+        const avgLatencyEl = document.getElementById('avgLatency');
+        const latencyCountEl = document.getElementById('latencyCount');
+
+        if (!shopId) {
+            loadingEl.style.display = 'none';
+            notFoundEl.style.display = 'block';
+            throw new Error('shop id missing');
+        }
+        loadingEl.style.display = 'none';
+        contentEl.style.display = 'flex';
+
+        // ===== イベントログ =====
+        function logEvent(text) {
+            const t = new Date().toLocaleTimeString('ja-JP', { hour12: false }) + '.' + String(new Date().getMilliseconds()).padStart(3, '0');
+            eventLogEl.textContent += `[${t}] ${text}\n`;
+            eventLogEl.scrollTop = eventLogEl.scrollHeight;
+        }
+
+        // ===== レイテンシ計測 =====
+        // OpenAI Realtime APIのイベント名・仕様は変更が速い領域のため、特定の
+        // JSON イベント名だけに依存せず、「サーバーが発話終了を検知した時刻
+        // (input_audio_buffer.speech_stopped)」から「実際にAIの声が聞こえ始めた
+        // 時刻（WebRTCで受信した音声トラックの音量が実際に立ち上がった瞬間、
+        // Web Audio APIで検出）」までを直接計測する。これにより、WebRTC接続では
+        // 音声チャンクがJSONイベントとしては流れてこない（音声トラックで直接
+        // 流れる）という現在の仕様変更の影響を受けずに、体感レイテンシを
+        // そのまま測定できる。
+        let lastSpeechStoppedAt = null;
+        let aiSpeakingNow = false;
+        const latencySamples = [];
+
+        function recordLatencySample(ms) {
+            latencySamples.push(ms);
+            latestLatencyEl.textContent = Math.round(ms) + ' ms';
+            const avg = latencySamples.reduce((a, b) => a + b, 0) / latencySamples.length;
+            avgLatencyEl.textContent = Math.round(avg) + ' ms';
+            latencyCountEl.textContent = String(latencySamples.length);
+            logEvent(`レイテンシ計測: ${Math.round(ms)}ms（発話終了 → AI発話検知）`);
+        }
+
+        function setupLatencyMeter(remoteStream) {
+            let audioCtx;
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            } catch (e) {
+                logEvent('Web Audio APIが利用できないため、レイテンシ自動計測は無効です: ' + e.message);
+                return;
+            }
+            const source = audioCtx.createMediaStreamSource(remoteStream);
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 512;
+            source.connect(analyser);
+            const data = new Uint8Array(analyser.frequencyBinCount);
+            const THRESHOLD = 12; // 0-255スケールの平均音量しきい値（環境ノイズにより要調整）
+
+            function tick() {
+                analyser.getByteFrequencyData(data);
+                const avg = data.reduce((a, b) => a + b, 0) / data.length;
+                const nowSpeaking = avg > THRESHOLD;
+                if (nowSpeaking && !aiSpeakingNow) {
+                    aiSpeakingNow = true;
+                    bigMic.classList.add('ai-speaking');
+                    if (lastSpeechStoppedAt !== null) {
+                        recordLatencySample(performance.now() - lastSpeechStoppedAt);
+                        lastSpeechStoppedAt = null;
+                    }
+                } else if (!nowSpeaking && aiSpeakingNow) {
+                    aiSpeakingNow = false;
+                    bigMic.classList.remove('ai-speaking');
+                }
+                if (pc) requestAnimationFrame(tick);
+            }
+            tick();
+        }
+
+        // ===== WebRTC接続 =====
+        let pc = null;
+        let localStream = null;
+        let dc = null;
+        let ended = false;
+        let maxDurationTimer = null;
+        const MAX_CALL_DURATION_MS = 30 * 60 * 1000; // 30分（テスト中の暴走・コスト安全装置。恒久的な上限ではない）
+
+        async function fetchSession() {
+            const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/session', {
+                method: 'POST',
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(data.detail || ('セッション発行エラー: ' + res.status));
+            }
+            return data;
+        }
+
+        function handleDataChannelEvent(raw) {
+            let msg;
+            try {
+                msg = JSON.parse(raw);
+            } catch (e) {
+                return;
+            }
+            const type = msg.type || '(不明)';
+            logEvent(type);
+
+            if (type === 'input_audio_buffer.speech_started') {
+                subStatusText.textContent = 'こちらの発話を認識中…';
+            } else if (type === 'input_audio_buffer.speech_stopped') {
+                lastSpeechStoppedAt = performance.now();
+                subStatusText.textContent = 'AIが応答を準備しています…';
+            } else if (type === 'response.created') {
+                subStatusText.textContent = 'AIが応答を生成中…';
+            } else if (type === 'response.done') {
+                subStatusText.textContent = '待機中（お話しください）';
+            } else if (type === 'error') {
+                logEvent('サーバーエラー: ' + JSON.stringify(msg.error || msg));
+            }
+        }
+
+        async function startCall() {
+            startBtn.disabled = true;
+            statusText.textContent = '接続しています…';
+            bigMic.classList.add('connecting');
+            eventLogEl.textContent = '';
+            latencySamples.length = 0;
+            latestLatencyEl.textContent = '—';
+            avgLatencyEl.textContent = '—';
+            latencyCountEl.textContent = '0';
+
+            try {
+                logEvent('ephemeralトークンを取得中…');
+                const session = await fetchSession();
+                pageShopName.textContent = session.shop_name + ' - Realtime音声AI';
+                logEvent('トークン取得OK（model=' + session.model + '）');
+
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+                pc = new RTCPeerConnection();
+
+                pc.ontrack = (ev) => {
+                    logEvent('リモート音声トラック受信');
+                    const audioEl = document.createElement('audio');
+                    audioEl.autoplay = true;
+                    audioEl.srcObject = ev.streams[0];
+                    document.body.appendChild(audioEl);
+                    setupLatencyMeter(ev.streams[0]);
+                };
+
+                localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+
+                dc = pc.createDataChannel('oai-events');
+                dc.addEventListener('message', (ev) => handleDataChannelEvent(ev.data));
+                dc.addEventListener('open', () => logEvent('データチャネル接続'));
+
+                pc.onconnectionstatechange = () => {
+                    logEvent('接続状態: ' + pc.connectionState);
+                    if (pc.connectionState === 'connected') {
+                        bigMic.classList.remove('connecting');
+                        bigMic.classList.add('connected');
+                        statusText.textContent = '通話中';
+                        subStatusText.textContent = '待機中（お話しください）';
+                        startBtn.style.display = 'none';
+                        endBtn.style.display = 'inline-block';
+                        endBtn.disabled = false;
+                    } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+                        if (!ended) endCall('接続が切断されました');
+                    }
+                };
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                const sdpResponse = await fetch('https://api.openai.com/v1/realtime/calls', {
+                    method: 'POST',
+                    body: offer.sdp,
+                    headers: {
+                        'Authorization': 'Bearer ' + session.client_secret,
+                        'Content-Type': 'application/sdp',
+                    },
+                });
+                if (!sdpResponse.ok) {
+                    throw new Error('OpenAIとの接続確立に失敗しました (HTTP ' + sdpResponse.status + ')');
+                }
+                const answerSdp = await sdpResponse.text();
+                await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+
+                maxDurationTimer = setTimeout(() => {
+                    endCall('テスト用の最大通話時間（30分）に達したため終了しました');
+                }, MAX_CALL_DURATION_MS);
+            } catch (e) {
+                logEvent('エラー: ' + e.message);
+                statusText.textContent = '接続に失敗しました';
+                subStatusText.textContent = e.message;
+                bigMic.classList.remove('connecting');
+                bigMic.classList.add('error');
+                startBtn.disabled = false;
+                cleanupConnection();
+            }
+        }
+
+        function cleanupConnection() {
+            if (maxDurationTimer) { clearTimeout(maxDurationTimer); maxDurationTimer = null; }
+            if (localStream) { localStream.getTracks().forEach((t) => t.stop()); localStream = null; }
+            if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+            document.querySelectorAll('audio').forEach((el) => el.remove());
+        }
+
+        function endCall(reason) {
+            if (ended) return;
+            ended = true;
+            cleanupConnection();
+            bigMic.classList.remove('connecting', 'connected', 'ai-speaking');
+            statusText.textContent = '通話終了';
+            subStatusText.textContent = reason || '';
+            startBtn.style.display = 'inline-block';
+            startBtn.disabled = false;
+            endBtn.style.display = 'none';
+            if (reason) logEvent(reason);
+        }
+
+        startBtn.addEventListener('click', () => {
+            ended = false;
+            startCall();
+        });
+        endBtn.addEventListener('click', () => endCall('通話を終了しました'));
+
+        window.addEventListener('beforeunload', () => {
+            cleanupConnection();
+        });
+    </script>
+</body>
+</html>

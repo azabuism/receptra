@@ -73,6 +73,18 @@ class Settings(BaseSettings):
     BOOKING_AI_MAX_TOKENS: int = 400
     BOOKING_AI_MAX_TURNS: int = 10
 
+    # ===== OpenAI Realtime API（ブラウザ⇔WebRTC直結の音声AI、Phase1〜）=====
+    # 音声そのものはブラウザとOpenAIの間をWebRTCで直接流れ、RECEPTRAのサーバーは
+    # 経由しない。サーバーは店舗情報からシステムプロンプトを組み立て、短命の
+    # ephemeralトークン(client secret)を発行するだけの役割に限定する。
+    # 2026年9月時点の現行世代モデル。日本語品質・barge-in性能・コストは
+    # Phase1の実機テストで比較検討し、安さだけで決め打ちしない方針。
+    OPENAI_REALTIME_MODEL: str = "gpt-realtime-2.1"
+    # ephemeralトークンの有効期限（秒）。この秒数以内にブラウザがWebRTC接続を
+    # 開始する必要がある（OpenAI仕様上10〜7200秒）。一度接続が始まった通話自体の
+    # 継続時間には影響しないため、通話時間の安全装置はフロントエンド側で別途設ける。
+    REALTIME_CLIENT_SECRET_TTL_SECONDS: int = 60
+
     # ===== PAY.JP設定 =====
     PAYJP_API_KEY: str = ""
     PAYJP_SECRET_KEY: str = ""
