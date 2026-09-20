@@ -253,6 +253,26 @@
                 <h2>イベントログ（開発確認用）</h2>
                 <div id="eventLog"></div>
             </div>
+
+            <!-- Phase2.6: OpenAI Realtime APIの実usage(トークン消費)を、通話終了後の
+                 原価計算に必要なデータが揃っているか確認するための一時的な観測パネル。
+                 DB保存・永続化は一切行わず、このページを開いている間だけメモリ上に
+                 保持する（リロードで消える）。会話内容・音声・個人情報は保存しない。
+                 用が済んだら本パネルごと削除して構わない。 -->
+            <div class="latency-panel">
+                <h2>Usage観測（Phase2.6・一時計測用）</h2>
+                <div class="status-grid">
+                    <span class="label">経過時間（接続完了〜終了/現在）</span><span class="val" id="usageElapsed">—</span>
+                    <span class="label">応答回数（response.done）</span><span class="val" id="usageResponseCount">0</span>
+                    <span class="label">input audio tokens 合計</span><span class="val" id="usageInputAudio">0</span>
+                    <span class="label">input text tokens 合計</span><span class="val" id="usageInputText">0</span>
+                    <span class="label">cached tokens 合計</span><span class="val" id="usageCached">0</span>
+                    <span class="label">output audio tokens 合計</span><span class="val" id="usageOutputAudio">0</span>
+                    <span class="label">output text tokens 合計</span><span class="val" id="usageOutputText">0</span>
+                    <span class="label">total tokens 合計</span><span class="val" id="usageTotalTokens">0</span>
+                </div>
+                <div id="usageLog" style="margin-top:10px; background:#111; color:#9be89b; font-family:'SFMono-Regular', Consolas, monospace; font-size:11px; line-height:1.6; border-radius:10px; padding:10px; max-height:160px; overflow-y:auto; white-space:pre-wrap; word-break:break-all;"></div>
+            </div>
         </div>
     </div>
 
@@ -292,6 +312,15 @@
         const stSessionEl = document.getElementById('stSession');
         const stUserSpeakEl = document.getElementById('stUserSpeak');
         const stAiSpeakEl = document.getElementById('stAiSpeak');
+        const usageElapsedEl = document.getElementById('usageElapsed');
+        const usageResponseCountEl = document.getElementById('usageResponseCount');
+        const usageInputAudioEl = document.getElementById('usageInputAudio');
+        const usageInputTextEl = document.getElementById('usageInputText');
+        const usageCachedEl = document.getElementById('usageCached');
+        const usageOutputAudioEl = document.getElementById('usageOutputAudio');
+        const usageOutputTextEl = document.getElementById('usageOutputText');
+        const usageTotalTokensEl = document.getElementById('usageTotalTokens');
+        const usageLogEl = document.getElementById('usageLog');
 
         if (!shopId) {
             loadingEl.style.display = 'none';
@@ -420,6 +449,102 @@
             return data;
         }
 
+        // ===== Phase2.6: usage観測（一時計測用。DB保存なし、会話内容・音声は扱わない） =====
+        // response.doneイベントのresponse.usageだけを抜き出し、通話中はメモリ上に
+        // 貯めて合計を画面表示・console出力する。ページを閉じる/リロードすると消える。
+        let callStartedAt = null;
+        let callEndedAt = null;
+        let elapsedTimerId = null;
+        const usageResponses = [];
+
+        function resetUsageObservation() {
+            usageResponses.length = 0;
+            if (usageLogEl) usageLogEl.textContent = '';
+            renderUsageSummary();
+        }
+
+        function renderUsageSummary() {
+            const sums = usageResponses.reduce((acc, e) => {
+                acc.count += 1;
+                acc.inputAudio += e.input_audio_tokens;
+                acc.inputText += e.input_text_tokens;
+                acc.cached += e.input_cached_tokens;
+                acc.outputAudio += e.output_audio_tokens;
+                acc.outputText += e.output_text_tokens;
+                acc.total += e.total_tokens;
+                return acc;
+            }, { count: 0, inputAudio: 0, inputText: 0, cached: 0, outputAudio: 0, outputText: 0, total: 0 });
+            usageResponseCountEl.textContent = String(sums.count);
+            usageInputAudioEl.textContent = String(sums.inputAudio);
+            usageInputTextEl.textContent = String(sums.inputText);
+            usageCachedEl.textContent = String(sums.cached);
+            usageOutputAudioEl.textContent = String(sums.outputAudio);
+            usageOutputTextEl.textContent = String(sums.outputText);
+            usageTotalTokensEl.textContent = String(sums.total);
+            return sums;
+        }
+
+        function updateElapsedDisplay() {
+            if (!callStartedAt) { usageElapsedEl.textContent = '—'; return; }
+            const end = callEndedAt || Date.now();
+            usageElapsedEl.textContent = Math.round((end - callStartedAt) / 1000) + '秒';
+        }
+
+        function recordUsageEvent(response) {
+            if (!response) return;
+            const usage = response.usage || {};
+            const inTD = usage.input_token_details || {};
+            const outTD = usage.output_token_details || {};
+            const entry = {
+                response_id: response.id || null,
+                status: response.status || null,
+                input_tokens: usage.input_tokens || 0,
+                output_tokens: usage.output_tokens || 0,
+                total_tokens: usage.total_tokens || 0,
+                input_text_tokens: inTD.text_tokens || 0,
+                input_audio_tokens: inTD.audio_tokens || 0,
+                input_cached_tokens: inTD.cached_tokens || 0,
+                output_text_tokens: outTD.text_tokens || 0,
+                output_audio_tokens: outTD.audio_tokens || 0,
+                output_reasoning_tokens: (outTD.reasoning_tokens !== undefined ? outTD.reasoning_tokens : null),
+                timestamp: new Date().toISOString()
+            };
+            usageResponses.push(entry);
+            // 会話内容・音声・個人情報は一切含めない、数値とresponse.idのみ。
+            console.log('[Phase2.6 usage]', entry);
+            renderUsageSummary();
+            if (usageLogEl) {
+                const idTail = (entry.response_id || '').slice(-8);
+                usageLogEl.textContent += `[${entry.timestamp.split('T')[1].replace('Z', '')}] `
+                    + `id=…${idTail} status=${entry.status} `
+                    + `in=${entry.input_tokens}(txt${entry.input_text_tokens}/aud${entry.input_audio_tokens}/cache${entry.input_cached_tokens}) `
+                    + `out=${entry.output_tokens}(txt${entry.output_text_tokens}/aud${entry.output_audio_tokens}`
+                    + (entry.output_reasoning_tokens !== null ? `/reason${entry.output_reasoning_tokens}` : '')
+                    + `) total=${entry.total_tokens}\n`;
+                usageLogEl.scrollTop = usageLogEl.scrollHeight;
+            }
+        }
+
+        function logFinalUsageSummary() {
+            if (!callStartedAt) return;
+            const durationSeconds = Math.round(((callEndedAt || Date.now()) - callStartedAt) / 1000);
+            const sums = renderUsageSummary();
+            const summary = {
+                duration_seconds: durationSeconds,
+                response_count: sums.count,
+                input_audio_tokens_total: sums.inputAudio,
+                input_text_tokens_total: sums.inputText,
+                cached_tokens_total: sums.cached,
+                output_audio_tokens_total: sums.outputAudio,
+                output_text_tokens_total: sums.outputText,
+                total_tokens_total: sums.total,
+                responses: usageResponses
+            };
+            console.log('[Phase2.6 usage summary]', summary);
+            logEvent('通話終了サマリー: duration_seconds=' + durationSeconds
+                + ', responses=' + sums.count + ', total_tokens=' + sums.total);
+        }
+
         function handleDataChannelEvent(raw) {
             let msg;
             try {
@@ -443,6 +568,7 @@
                 subStatusText.textContent = 'AIが応答を生成中…';
             } else if (type === 'response.done') {
                 subStatusText.textContent = '待機中（お話しください）';
+                recordUsageEvent(msg.response);
             } else if (type === 'error') {
                 logEvent('サーバーエラー: ' + JSON.stringify(msg.error || msg));
                 showErrorBanner('OpenAI側からエラーが返されました: ' + JSON.stringify(msg.error || msg));
@@ -520,6 +646,12 @@
             setStatus(stSessionEl, '未接続', null);
             setStatus(stUserSpeakEl, '待機', null);
             setStatus(stAiSpeakEl, '待機', null);
+            // Phase2.6: 新しい通話の開始にあたり、前回の計測状態をクリアする
+            // （実際の計測開始はWebRTC接続完了時点。下のconnectionstatechange参照）。
+            callStartedAt = null;
+            callEndedAt = null;
+            if (elapsedTimerId) { clearInterval(elapsedTimerId); elapsedTimerId = null; }
+            resetUsageObservation();
 
             // 重要: クリック直後の「ユーザー操作」が有効なうちに、他の非同期処理
             // (トークン取得のfetch等)より先にgetUserMediaを呼び出す。
@@ -593,6 +725,17 @@
                         startBtn.style.display = 'none';
                         endBtn.style.display = 'inline-block';
                         endBtn.disabled = false;
+                        // Phase2.6: 実際にWebRTCが繋がり会話が始まりうるタイミングを
+                        // 「通話開始」として計測開始する（ボタン押下時点ではまだ
+                        // usageが発生しないため）。
+                        if (!callStartedAt) {
+                            callStartedAt = Date.now();
+                            callEndedAt = null;
+                            resetUsageObservation();
+                            if (elapsedTimerId) clearInterval(elapsedTimerId);
+                            elapsedTimerId = setInterval(updateElapsedDisplay, 1000);
+                            updateElapsedDisplay();
+                        }
                     } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
                         setStatus(stWebrtcEl, pc.connectionState, 'bad');
                         if (!ended) endCall('接続が切断されました（' + pc.connectionState + '）');
@@ -650,6 +793,14 @@
         function endCall(reason) {
             if (ended) return;
             ended = true;
+            // Phase2.6: 通話終了時点のusage合計を確定させる（cleanupConnectionより前に
+            // 実施し、状態表示のリセットの影響を受けないようにする）。
+            if (callStartedAt && !callEndedAt) {
+                callEndedAt = Date.now();
+                if (elapsedTimerId) { clearInterval(elapsedTimerId); elapsedTimerId = null; }
+                updateElapsedDisplay();
+                logFinalUsageSummary();
+            }
             cleanupConnection();
             bigMic.classList.remove('connecting', 'connected', 'ai-speaking');
             statusText.textContent = '通話終了';
