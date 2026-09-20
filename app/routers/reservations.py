@@ -238,7 +238,11 @@ async def check_single_slot_availability(
         select(ShopHours).filter(ShopHours.shop_id == shop.id, ShopHours.day_of_week == weekday)
     )
     hours = hours_result.scalar_one_or_none()
-    if hours is None or hours.is_closed:
+    # Phase3B.1: 「営業時間が未設定（店舗側の設定漏れ）」と「定休日（設定はある
+    # が休みの日）」を区別する。create_reservation()側も同じ区別に統一済み。
+    if hours is None:
+        return False, "business_hours_not_configured"
+    if hours.is_closed:
         return False, "shop_closed"
 
     service: Optional[Service] = None
@@ -443,13 +447,27 @@ async def create_reservation(
             select(ShopHours).filter(ShopHours.shop_id == request.shop_id, ShopHours.day_of_week == weekday)
         )
         hours = hours_result.scalar_one_or_none()
-        if hours is not None:
-            if hours.is_closed:
-                raise _http_error(400, "ご指定の日は定休日です", reason_code="shop_closed")
-            req_time = request.reservation_date.time()
-            latest_start_time = hours.last_order_time or hours.closing_time
-            if req_time < hours.opening_time or req_time > latest_start_time:
-                raise _http_error(400, "ご指定の時間は営業時間外です", reason_code="outside_business_hours")
+        # Phase3B.1: 以前は `if hours is not None:` により、ShopHoursが1件も
+        # 登録されていない店舗では営業時間チェック自体を丸ごとスキップしており、
+        # Phase3Aのcheck_availability（hours is None を shop_closed 扱い）や
+        # 既存WebのGET /availability（hours is None を「営業時間未設定」として
+        # 予約不可扱い）と意味が食い違っていた。実際に本番調査で
+        # reservations_enabled=True かつ ShopHours 0件の店舗が存在し、この経路
+        # 経由でのみ予約が成立してしまうことを確認したため、Source of Truthである
+        # ここで意味を統一する。「定休日（設定はあるが休みの日）」と
+        # 「営業時間が未設定（店舗側の設定漏れ）」は原因も対応も異なるため、
+        # reason_codeを分離する。
+        if hours is None:
+            raise _http_error(
+                400, "この店舗は営業時間が設定されていないため、オンラインでの予約確定ができません",
+                reason_code="business_hours_not_configured",
+            )
+        if hours.is_closed:
+            raise _http_error(400, "ご指定の日は定休日です", reason_code="shop_closed")
+        req_time = request.reservation_date.time()
+        latest_start_time = hours.last_order_time or hours.closing_time
+        if req_time < hours.opening_time or req_time > latest_start_time:
+            raise _http_error(400, "ご指定の時間は営業時間外です", reason_code="outside_business_hours")
 
         duration = (service.duration_minutes if service and service.duration_minutes else None) or shop.reservation_duration_minutes or 90
 

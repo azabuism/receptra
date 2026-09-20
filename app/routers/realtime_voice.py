@@ -14,14 +14,19 @@ shop.html は一切変更していない。
 """
 
 import logging
+import re
 import time
-from datetime import datetime, date as date_type
+import unicodedata
+from datetime import datetime, date as date_type, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_db
 from app.models.shop import Shop
+from app.models.reservation import Reservation, ReservationStatus
 from app.services import realtime_voice_ai
 from app.schemas.reservation import (
     CheckAvailabilityRequest, CheckAvailabilityResponse,
@@ -93,6 +98,125 @@ def _check_booking_tool_rate_limit(shop_id: str) -> None:
             detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
         )
     bucket.append(now)
+
+
+# ===== Phase3B.1: Layer2 - 別call_idによる実質的な重複予約の短時間検知 =====
+#
+# 設計方針（重要・必ず守ること。ユーザー承認済みの方針）:
+# - Layer1（idempotency_key: "realtime_voice:{shop_id}:{call_id}" によるDB一意
+#   インデックス ux_reservations_idempotency_key）は一切変更しない。「同一call_id
+#   の再送」はLayer1がDBレベルで完全に保証し続ける。
+# - Layer2は「異なるcall_idだが実質的に同じ予約意図」を対象とする別問題であり、
+#   DBの一意制約ではなく、アプリケーションレベルの短時間（3分以内）重複検知に
+#   よって“大幅に軽減”するものである。理論上、2つのリクエストがこの検索より
+#   先に両方とも「候補ゼロ」を通過すれば2件成立し得るが、それはLayer2が
+#   保証する範囲外として明示的に許容する（ユーザー承認済み）。
+# - 予約内容（日時・電話番号・氏名等の組み合わせ）そのものへの永続的なUNIQUE制約は
+#   絶対に追加しない。同じお客様が後日、意図的に全く同じ条件で予約する可能性が
+#   あるため。
+# - この仕組みはRealtime Voice専用の create_reservation_tool エンドポイント内
+#   にのみ実装し、共通の create_reservation() 本体には一切組み込まない。
+#   これにより、Web予約・shop_booking_ai（チャット予約）・管理画面予約の挙動は
+#   完全に変更されない。
+_DUPLICATE_DETECTION_WINDOW_SECONDS = 180  # 3分（ユーザー承認済みの初期値）
+
+# Layer2の重複候補に含める予約ステータス。キャンセル済み・ノーショー・完了済みは
+# 「現在有効な予約」ではないため、重複判定の対象から除外する。
+_ACTIVE_STATUSES_FOR_DEDUP = (ReservationStatus.PENDING.value, ReservationStatus.CONFIRMED.value)
+
+
+def _normalize_phone_for_dedup(phone: Optional[str]) -> str:
+    """
+    Layer2の重複比較専用の電話番号正規化。DBへ保存するguest_phoneの値そのものは
+    一切変更しない（この関数の戻り値は比較にのみ使う）。
+
+    許可される処理のみ行う: 全角英数字・記号の半角化(Unicode NFKC正規化)、
+    ハイフン・空白（半角/全角）・括弧の除去。
+    禁止されている処理は一切行わない: 欠落桁の補完、国番号の推測、先頭0の
+    自動追加、AIによる修正の反映。
+    """
+    if not phone:
+        return ""
+    normalized = unicodedata.normalize("NFKC", phone)
+    for ch in ("-", " ", "　", "(", ")"):
+        normalized = normalized.replace(ch, "")
+    return normalized
+
+
+def _normalize_name_for_dedup(name: Optional[str]) -> str:
+    """
+    Layer2の重複比較専用の氏名正規化。DBへ保存するguest_nameの値そのものは
+    一切変更しない。前後の空白除去、および連続する空白（全角スペース・タブ・
+    改行含む）の1つへの整理のみを行う。漢字⇔カナ変換・読み仮名推測等の
+    推測的な正規化は一切行わない。
+    """
+    if not name:
+        return ""
+    collapsed = re.sub(r"[ 　\t\r\n]+", " ", name)
+    return collapsed.strip()
+
+
+async def _find_recent_duplicate_reservation(
+    db: AsyncSession,
+    shop_id: str,
+    reservation_dt: datetime,
+    party_size: int,
+    guest_phone: str,
+    guest_name: str,
+    service_id: Optional[str],
+    staff_id: Optional[str],
+) -> Optional[Reservation]:
+    """
+    直近_DUPLICATE_DETECTION_WINDOW_SECONDS秒以内に、同じ店舗のRealtime Voice経由
+    （idempotency_keyが "realtime_voice:{shop_id}:" で始まる）で作成された、
+    現在有効なステータスの予約の中から、内容が実質的に一致するものを探す。
+
+    絞り込みはDB問い合わせ（shop_id・idempotency_keyのnamespaceプレフィックス・
+    created_at・status）だけで行い、値そのものの一致判定（電話番号・氏名の
+    正規化比較を含む）は必ずPython側で行う。既存DBのguest_phoneは正規化されずに
+    保存されているため、SQL側で正規化した値との完全一致検索は行わない
+    （新しい入力側だけをnormalizeしてSQL検索すると、表記ゆれのある既存データを
+    取りこぼすため）。
+    """
+    now = datetime.utcnow()
+    window_start = now - timedelta(seconds=_DUPLICATE_DETECTION_WINDOW_SECONDS)
+    prefix = f"realtime_voice:{shop_id}:"
+
+    result = await db.execute(
+        select(Reservation).filter(
+            Reservation.shop_id == shop_id,
+            Reservation.idempotency_key.isnot(None),
+            Reservation.idempotency_key.like(f"{prefix}%"),
+            Reservation.created_at >= window_start,
+            Reservation.status.in_(_ACTIVE_STATUSES_FOR_DEDUP),
+        )
+    )
+    candidates = result.scalars().all()
+    if not candidates:
+        return None
+
+    target_phone = _normalize_phone_for_dedup(guest_phone)
+    target_name = _normalize_name_for_dedup(guest_name)
+
+    for candidate in candidates:
+        if candidate.reservation_date != reservation_dt:
+            continue
+        if candidate.number_of_people != party_size:
+            continue
+        if _normalize_phone_for_dedup(candidate.guest_phone) != target_phone:
+            continue
+        if _normalize_name_for_dedup(candidate.guest_name) != target_name:
+            continue
+        # service_id/staff_id: 双方Noneなら一致、片方だけ値ありなら不一致
+        # （continueでスキップされる）、両方値ありならID完全一致を要求する。
+        # 単純な != 比較でこの3パターンを正しく判定できる。
+        if candidate.service_id != service_id:
+            continue
+        if candidate.staff_id != staff_id:
+            continue
+        return candidate
+
+    return None
 
 
 @router.post("/session")
@@ -233,6 +357,11 @@ async def create_reservation_tool(
       temporarily_unavailableにフォールバックし、絶対にsuccess=Trueを返さない。
     - guest_email・coupon_codeはPhase3Bのスコープ外のため、常にNone/未指定として
       既存ReservationCreateRequestを組み立てる。
+    - Phase3B.1: Layer1（上記のidempotency_keyによるDB一意制約）に加えて、
+      create_reservation()を呼ぶ前に_find_recent_duplicate_reservation()による
+      Layer2（別call_idだが3分以内・実質的に同一内容の重複検知）を行う。
+      Layer2はこのエンドポイント内にのみ実装しており、共通create_reservation()
+      本体・Web予約・shop_booking_ai・管理画面予約には一切影響しない。
     """
     _check_booking_tool_rate_limit(shop_id)
 
@@ -254,6 +383,36 @@ async def create_reservation_tool(
 
         reservation_dt = datetime.combine(target_date, target_time)
         idempotency_key = f"realtime_voice:{shop_id}:{request.call_id}"
+
+        # Phase3B.1 Layer2: 別call_id（＝Layer1のidempotency_keyでは検知できない）
+        # だが実質的に同一の予約意図によるリクエストを、DBへ新規INSERTする前に
+        # 検知する。一致した場合は新規予約を作らず、既存予約をこのリクエストの
+        # 結果としてそのまま返す（お客様から見れば、ネットワーク再試行等があっても
+        # 予約は正常に1件成立したように見える）。
+        duplicate = await _find_recent_duplicate_reservation(
+            db,
+            shop_id,
+            reservation_dt,
+            request.party_size,
+            request.guest_phone,
+            request.guest_name,
+            request.service_id,
+            request.staff_id,
+        )
+        if duplicate is not None:
+            logger.info(
+                "Layer2: 別call_idによる短時間重複を検知し、既存予約(id=%s)を返します "
+                "(shop_id=%s, new_call_id=%s)",
+                duplicate.id, shop_id, request.call_id,
+            )
+            return CreateReservationToolResponse(
+                success=True,
+                reservation_id=duplicate.id,
+                date=duplicate.reservation_date.strftime("%Y-%m-%d"),
+                time=duplicate.reservation_date.strftime("%H:%M"),
+                party_size=duplicate.number_of_people,
+                guest_name=duplicate.guest_name,
+            )
 
         create_request = ReservationCreateRequest(
             shop_id=shop_id,

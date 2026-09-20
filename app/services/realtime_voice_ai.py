@@ -92,10 +92,14 @@ _REALTIME_TOOLS = [
             "（どちらも該当する場合のみ。省略可）。\n"
             "戻り値のavailableがfalseの場合、reason_codeを見て案内してください。"
             "fully_booked=満席、outside_business_hours=営業時間外、"
-            "shop_closed=定休日、temporary_closure=臨時休業、"
+            "shop_closed=定休日、business_hours_not_configured=店舗側の営業時間が"
+            "まだ設定されていないため確認できない、temporary_closure=臨時休業、"
             "service_unavailable=そのサービス自体が現在利用不可、"
             "staff_unavailable=指名されたスタッフが空いていない、"
-            "いずれも確定した情報なので、そのまま理由を添えてお客様に案内してください。\n"
+            "いずれも確定した情報なので、そのまま理由を添えてお客様に案内してください"
+            "（business_hours_not_configuredの場合は、定休日と同様のトーンで"
+            "「現在オンラインでは空き状況をご案内できないため、お手数ですが"
+            "店舗へ直接お問い合わせください」のように案内してください）。\n"
             "reason_codeがinvalid_requestの場合、渡した日付や時刻の形式が"
             "誤っている可能性があります（date=YYYY-MM-DD, time=HH:MM(24時間)を"
             "再確認し、正しい形式が分かれば修正して再度呼び出してください）。\n"
@@ -175,6 +179,10 @@ _REALTIME_TOOLS = [
             "（これらはいずれも確定した情報です。確認した時点では空いていても、"
             "予約確定の直前に改めて空き状況を判定し直すため、その間に埋まった"
             "可能性があります。そのまま理由を添えて案内し、別の日時を伺ってください）、"
+            "business_hours_not_configured=店舗側の営業時間がまだ設定されていない"
+            "ため現在オンラインでは予約を確定できない（お客様の入力の問題ではない"
+            "ため、定休日と同様のトーンで、お店へ直接お問い合わせいただくようご案内"
+            "してください）、"
             "temporarily_unavailable=入力の誤りではなく、現在システム側で予約の成立を"
             "確認できない状態です。この場合は予約が取れた・取れなかったと絶対に案内せず、"
             "少し時間を置いて再度お試しいただくか、店舗へ直接お問い合わせいただくよう"
@@ -229,7 +237,12 @@ async def _build_hours_block(db: AsyncSession, shop_id: str) -> str:
     result = await db.execute(select(ShopHours).where(ShopHours.shop_id == shop_id))
     rows = {h.day_of_week: h for h in result.scalars().all()}
     if not rows:
-        return "（営業時間の登録がありません。ご希望日時はそのまま伺ってください）"
+        # Phase3B.1: 以前は「ご希望日時はそのまま伺ってください」としており、
+        # create_reservation()側の旧挙動（hours未設定時はチェックをスキップして
+        # 予約を成立させてしまう）と辻褄を合わせていたが、その旧挙動自体を廃止した
+        # （business_hours_not_configuredとして予約不可に統一）ため、AIへの案内も
+        # 実態に合わせて修正する。
+        return "（営業時間がまだ設定されていないため、現在オンラインでは予約を確定できません。日時を伺った上で、確定できない旨を簡潔にご案内してください）"
     lines = []
     for day in range(7):
         h = rows.get(day)

@@ -133,8 +133,9 @@ class CheckAvailabilityResponse(BaseModel):
     time: str
     party_size: int
     # available=False の場合のみ設定。候補:
-    # fully_booked / outside_business_hours / shop_closed / temporary_closure /
-    # service_unavailable / staff_unavailable / invalid_request / temporarily_unavailable
+    # fully_booked / outside_business_hours / shop_closed / business_hours_not_configured /
+    # temporary_closure / service_unavailable / staff_unavailable / invalid_request /
+    # temporarily_unavailable
     #
     # Phase3A当初は「入力不正」と「バックエンド側で確定できなかった」を
     # どちらもinvalid_requestに丸めていたが、ユーザー指摘により分離した:
@@ -145,6 +146,11 @@ class CheckAvailabilityResponse(BaseModel):
     # 「満席」のどちらとも案内せず、時間を置くか店舗へ問い合わせるよう
     # 案内すること、invalid_requestの場合は指定形式を見直すことを
     # それぞれ指示している。
+    #
+    # Phase3B.1: shop_closed（設定済みの定休日）と business_hours_not_configured
+    # （店舗側が営業時間を一度も設定していない）を区別した。原因も対応も異なる
+    # ため（前者は正常な休業日、後者は店舗側の設定漏れ）、check_availability /
+    # create_reservation / AI instructionsの3箇所で同じ語彙に統一している。
     reason_code: Optional[str] = None
 
 
@@ -185,12 +191,14 @@ class CreateReservationToolResponse(BaseModel):
     party_size: Optional[int] = None
     guest_name: Optional[str] = None
     # success=Falseの場合のみ設定。候補:
-    # invalid_request / reservation_not_enabled / shop_closed / temporary_closure /
-    # outside_business_hours / service_unavailable / staff_unavailable / fully_booked /
-    # temporarily_unavailable
+    # invalid_request / reservation_not_enabled / shop_closed / business_hours_not_configured /
+    # temporary_closure / outside_business_hours / service_unavailable / staff_unavailable /
+    # fully_booked / temporarily_unavailable
     #
     # check_availability(Phase3A)と同じ語彙をそのまま再利用している（AIが新しい
-    # 概念を覚える必要をなくすため）。fully_booked/staff_unavailableは「確認時点では
+    # 概念を覚える必要をなくすため）。Phase3B.1でbusiness_hours_not_configured
+    # （営業時間未設定）をshop_closed（定休日）と分離した。
+    # fully_booked/staff_unavailableは「確認時点では
     # 空いていたが、予約確定時点で埋まっていた」ケースも含む（create_reservationは
     # 必ずその場でテーブル/スタッフの空き状況を再判定するため、Phase3Aの結果を
     # キャッシュして使い回すことはない）。

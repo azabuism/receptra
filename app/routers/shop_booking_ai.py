@@ -60,7 +60,11 @@ async def _build_hours_block(db: AsyncSession, shop_id: str) -> str:
     result = await db.execute(select(ShopHours).where(ShopHours.shop_id == shop_id))
     rows = {h.day_of_week: h for h in result.scalars().all()}
     if not rows:
-        return "（営業時間の登録がありません。ご希望日時はそのまま伺い、実際の可否は予約確定時にご案内します）"
+        # Phase3B.1: create_reservation()がShopHours未設定を予約不可
+        # （business_hours_not_configured）に統一したため、AIへの案内も
+        # 実態に合わせて修正する（以前は「予約確定時にご案内します」としていたが、
+        # 実際には予約自体が成立しないため誤案内になっていた）。
+        return "（営業時間がまだ設定されていないため、現在オンラインでは予約を確定できません。日時を伺った上で、確定できない旨を簡潔にご案内してください）"
     lines = []
     for day in range(7):
         h = rows.get(day)
