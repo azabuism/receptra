@@ -97,3 +97,39 @@ class AvailabilityResponse(BaseModel):
     is_open: bool
     message: Optional[str] = None
     slots: List[AvailabilitySlot] = []
+
+
+# ===== Realtime Voice AI Phase3A: check_availability Tool Calling用 =====
+#
+# 設計方針（重要）:
+# - shop_id をここに含めない。Realtime AI（OpenAI側）が呼び出すTool引数には
+#   日付・時刻・人数・（任意で）service_id/staff_idのみを渡し、通話中の
+#   店舗のshop_idはRECEPTRAサーバー側がURLパス（/shops/{shop_id}/...）から
+#   決定する。AIに他店舗のshop_idを自由に指定させる余地を作らないため。
+# - レスポンスは意図的に最小限。availableがfalseの場合のみ、AIが次の案内を
+#   判断できるよう短い機械可読な reason_code を付与する（自然言語の理由は
+#   ここでは返さない。文言はAI側のinstructions/toolの説明文に任せる）。
+
+class CheckAvailabilityRequest(BaseModel):
+    """Realtime AIのcheck_availability Toolからの引数"""
+    date: str = Field(..., description="日付（YYYY-MM-DD）")
+    time: str = Field(..., description="時刻（HH:MM、24時間表記）")
+    party_size: int = Field(1, ge=1, le=999, description="人数")
+    service_id: Optional[str] = Field(None, description="サービスID（美容院・クリニック等、サービス単位で予約する業種の場合のみ）")
+    staff_id: Optional[str] = Field(None, description="スタッフ指名がある場合のみ")
+
+
+class CheckAvailabilityResponse(BaseModel):
+    """Realtime AIへ返す最小レスポンス（DBへの保存は行わない）"""
+    available: bool
+    date: str
+    time: str
+    party_size: int
+    # available=False の場合のみ設定。候補:
+    # fully_booked / outside_business_hours / shop_closed / temporary_closure /
+    # service_unavailable / staff_unavailable / invalid_request
+    # invalid_request は「入力不正」だけでなく「バックエンド側で予約状況を
+    # 確定できなかった（内部エラー等）」場合の安全側フォールバックとしても
+    # 使う。AI側の説明文で、この場合は満席と案内せず確認できなかった旨を
+    # 案内するよう指示する。
+    reason_code: Optional[str] = None

@@ -166,6 +166,81 @@ async def _find_available_staff_for_service(
     return None, False
 
 
+async def check_single_slot_availability(
+    db: AsyncSession,
+    shop: Shop,
+    target_date: date_type,
+    target_time,
+    party_size: int,
+    service_id: Optional[str] = None,
+    staff_id: Optional[str] = None,
+) -> tuple[bool, Optional[str]]:
+    """
+    Realtime Voice AI Phase3A: check_availability Tool Calling用。
+
+    指定された単一の日時について、実際に予約可能かどうかを判定する。
+    GET /shop/{shop_id}/availability （1日分のスロット一覧を計算するエンドポイント）
+    と全く同じ営業時間・臨時休業・卓/スタッフの空き判定ロジックを、1つの
+    日時に対してだけ適用する。ロジックを別系統で二重実装しないよう、
+    _get_closure_for_date / _find_available_table / _find_available_staff_for_service
+    を直接再利用する。
+
+    戻り値: (available, reason_code)。reason_code は available=False の
+    ときのみ設定する（候補は app.schemas.reservation.CheckAvailabilityResponse
+    のコメントを参照）。
+
+    重要: この関数はあくまで「現時点の空き状況の判定」のみを行い、DBへの
+    書き込みは一切行わない（Phase3Aではcreate_reservationは実装しない）。
+    """
+    if not shop.reservations_enabled:
+        return False, "service_unavailable"
+
+    closure = await _get_closure_for_date(db, shop.id, target_date)
+    if closure:
+        return False, "temporary_closure"
+
+    weekday = target_date.weekday()
+    hours_result = await db.execute(
+        select(ShopHours).filter(ShopHours.shop_id == shop.id, ShopHours.day_of_week == weekday)
+    )
+    hours = hours_result.scalar_one_or_none()
+    if hours is None or hours.is_closed:
+        return False, "shop_closed"
+
+    service: Optional[Service] = None
+    if service_id:
+        service = await db.get(Service, service_id)
+        if not service or service.shop_id != shop.id or service.is_active != "active":
+            return False, "service_unavailable"
+
+    duration = (service.duration_minutes if service and service.duration_minutes else None) or shop.reservation_duration_minutes or 90
+    latest_start_time = hours.last_order_time or (
+        (datetime.combine(target_date, hours.closing_time) - timedelta(minutes=duration)).time()
+    )
+
+    if target_time < hours.opening_time or target_time > latest_start_time:
+        return False, "outside_business_hours"
+
+    start_dt = datetime.combine(target_date, target_time)
+    # create_reservation / get_availability と同じ比較方法（既存の挙動に
+    # 合わせる。タイムゾーンの厳密な扱いはPhase3Aのスコープ外）。
+    if start_dt <= datetime.utcnow():
+        return False, "invalid_request"
+
+    if service:
+        found_staff_id, unmanaged = await _find_available_staff_for_service(
+            db, shop.id, service.id, start_dt, duration, staff_id
+        )
+        if unmanaged or found_staff_id is not None:
+            return True, None
+        return False, ("staff_unavailable" if staff_id else "fully_booked")
+    else:
+        table_id, unmanaged = await _find_available_table(db, shop.id, party_size, start_dt, duration)
+        if unmanaged or table_id is not None:
+            return True, None
+        return False, "fully_booked"
+
+
 async def _resolve_coupon_for_booking(
     db: AsyncSession, shop_id: str, code: str, base_amount: float
 ) -> tuple[Coupon, int, int]:

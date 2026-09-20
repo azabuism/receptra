@@ -59,6 +59,67 @@ _VOICE_PREVIEW_INSTRUCTIONS = (
     "「お電話ありがとうございます。本日はどのようなご用件でしょうか？」"
 )
 
+# ===== Realtime Voice AI Phase3A: Tool Calling（check_availabilityのみ） =====
+#
+# 設計方針（重要・必ず守ること）:
+# - ここで宣言するのは「AIが呼び出せる関数の名前・説明・引数スキーマ」のみ。
+#   実際の空き状況の判定は一切ここで行わず、必ず
+#   POST /api/v1/shops/{shop_id}/realtime-voice/tools/check-availability
+#   （FastAPI側、Reservation DB / ShopHours / ShopClosureを参照）の結果を
+#   唯一の正とする。このtoolsの説明文自体が「結果を見るまで自分で
+#   空き状況を判断・回答しない」ようAIに指示する役割を持つ。
+# - shop_id はこの関数の引数に含めない。実際にどの店舗かはRECEPTRAサーバー側
+#   （セッションを発行した店舗）で決まっており、AIに他店舗のshop_idを
+#   自由に指定させる余地を作らない。
+# - 型定義は openai==1.109.1 の
+#   openai.types.realtime.realtime_function_tool_param.RealtimeFunctionToolParam
+#   （type/name/description/parameters のフラットな構造）を実装時に確認して
+#   準拠している。ただし実際にOpenAI側からどのイベント（
+#   response.output_item.done の item.type=="function_call" 等）でどう
+#   送られてくるかは、SDKの型定義だけでなく実APIでの観測結果を最終的な
+#   根拠とする（Phase2.5と同じ方針）。
+_REALTIME_TOOLS = [
+    {
+        "type": "function",
+        "name": "check_availability",
+        "description": (
+            "お客様から来店予約の空き状況（指定した日時に予約できるかどうか）を"
+            "尋ねられたときに、必ずこの関数を呼び出してください。この結果が返る前に、"
+            "空いているかどうかを自分で判断したり、お客様に案内したりしないでください。\n"
+            "dateは必ずYYYY-MM-DD形式、timeは必ずHH:MM形式（24時間表記）で指定してください。\n"
+            "美容院・クリニックなどサービス単位の予約でサービス指定がある場合は"
+            "service_idを、スタッフ指名がある場合はstaff_idを指定してください"
+            "（どちらも該当する場合のみ。省略可）。\n"
+            "戻り値のavailableがfalseの場合、reason_codeを見て案内してください。"
+            "fully_booked=満席、outside_business_hours=営業時間外、"
+            "shop_closed=定休日、temporary_closure=臨時休業、"
+            "service_unavailable=そのサービス自体が現在利用不可、"
+            "staff_unavailable=指名されたスタッフが空いていない。"
+            "reason_codeがinvalid_requestの場合は、満席等の確定情報ではなく"
+            "「現在確認できなかった」ことを意味します。この場合は満席とは案内せず、"
+            "少し時間を置いて再度お試しいただくか、店舗へ直接お問い合わせいただくよう"
+            "お伝えしてください。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "日付（YYYY-MM-DD形式）"},
+                "time": {"type": "string", "description": "時刻（HH:MM形式、24時間表記）"},
+                "party_size": {"type": "integer", "description": "人数", "minimum": 1},
+                "service_id": {
+                    "type": "string",
+                    "description": "サービスID（美容院・クリニック等、サービス単位で予約する業種かつサービス指定がある場合のみ）",
+                },
+                "staff_id": {
+                    "type": "string",
+                    "description": "スタッフID（スタッフ指名がある場合のみ）",
+                },
+            },
+            "required": ["date", "time", "party_size"],
+        },
+    },
+]
+
 _client: Optional[AsyncOpenAI] = None
 
 
@@ -397,6 +458,13 @@ async def create_realtime_session(db: AsyncSession, shop: Shop) -> dict:
             },
         },
     }
+
+    # Phase3A: check_availability Tool Callingを有効化。
+    # session.tools はopenai==1.109.1のSDK型定義(RealtimeSessionCreateRequest.tools /
+    # RealtimeToolsConfig)でセッション直下のフラットな配列であることを確認済み。
+    # voice-preview用セッション(create_voice_preview_session)には意図的に含めない
+    # （試聴は声質確認のみが目的で、予約関連の会話を行わないため）。
+    session_config["tools"] = _REALTIME_TOOLS
 
     # reasoning（推論の深さ）: gpt-realtime-2.1のモデルページには
     # 「configurable reasoning effortに対応し、上げるほどレイテンシと
