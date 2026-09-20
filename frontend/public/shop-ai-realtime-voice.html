@@ -391,6 +391,10 @@
             avgLatencyEl.textContent = Math.round(avg) + ' ms';
             latencyCountEl.textContent = String(latencySamples.length);
             logEvent(`レイテンシ計測: ${Math.round(ms)}ms（発話終了 → AI発話検知）`);
+            if (zeroWaitAwaitingFirstPostGreetingLatency) {
+                zeroWaitAwaitingFirstPostGreetingLatency = false;
+                logEvent('[ZeroWait] KPI-5 Greeting後の最初のお客様発話→AI応答開始 = ' + Math.round(ms) + 'ms');
+            }
         }
 
         function setupLatencyMeter(remoteStream) {
@@ -521,6 +525,7 @@
             greetingTiming.loggedA = false;
             greetingTiming.loggedB = false;
             greetingTiming.loggedC = false;
+            if (zeroWaitEnabled) resetZeroWaitCallState();
         }
 
         function logGreetingLatenciesIfReady() {
@@ -542,19 +547,234 @@
             }
         }
 
-        function maybeSendInitialGreeting() {
+        // ===== Phase3C.1 PoC: Zero-Wait Greeting =====
+        //
+        // 目的（重要）: OpenAI Realtimeそのものの接続を速くすることではなく、
+        // 接続に必要な約3秒（Phase3C実測）をGreetingの裏に隠すこと。通話開始
+        // クリックの直後、事前生成済みの第一声音声(mp3)をほぼ即座に再生しつつ、
+        // 裏でRealtime接続(startCall内の既存処理)を並行して進める。
+        //
+        // スコープ（重要・必ず守ること）: PoCはE2Eテスト店舗にのみ有効化する。
+        // 他店舗はZERO_WAIT_GREETING_SHOP_IDSに含まれないため
+        // zeroWaitEnabled=falseとなり、以下のロジックの影響を一切受けず、
+        // 常にPhase3C(Realtime第一声)のみで動作する（既存動作を完全に保持）。
+        const ZERO_WAIT_GREETING_SHOP_IDS = ['82dff3eb-7e99-49c6-828f-870b4a069e75'];
+        const zeroWaitEnabled = ZERO_WAIT_GREETING_SHOP_IDS.includes(shopId);
+        const ZERO_WAIT_AUDIO_URL = '/greeting_audio/' + encodeURIComponent(shopId) + '.mp3';
+        // 第一声response.create送信可否の判定を、Zero-Waitの結果確定まで待つ
+        // 最大時間。Zero-Wait再生開始(KPI-1)は数百ms以内に確定する想定のため、
+        // これより十分大きい値にしておけば通常は待たされない。
+        const ZERO_WAIT_DECISION_GRACE_MS = 800;
+        // play()呼び出し後、'playing'イベントも失敗も一切発生しないまま
+        // ハングし続けることを防ぐ安全装置（発生した場合は失敗として扱う）。
+        const ZERO_WAIT_PLAY_TIMEOUT_MS = 3000;
+
+        // 状態遷移: 'idle' -> 'preloading' -> 'ready' | 'preload_failed'
+        //          -> (通話開始後) 'playing' -> 'ended' | 'play_failed'
+        let zeroWaitState = 'idle';
+        let zeroWaitAudioEl = null;       // Audioオブジェクト本体（Fetch→Blob→ObjectURL方式）
+        let zeroWaitObjectUrl = null;     // 明示的なrevokeObjectURLのために保持
+        let zeroWaitGreetingText = null;  // /realtime-voice/greeting-text で取得した第一声文言（会話履歴通知用）
+        let zeroWaitOutcomeResolve = null;
+        let zeroWaitOutcomePromise = null; // 通話ごとに作り直す。'success'|'failure'|'not_applicable'|'timeout'に解決
+        let zeroWaitAwaitingFirstPostGreetingLatency = false; // KPI-5計測用
+
+        const zeroWaitTiming = {
+            playingEventAt: null,   // 'playing'イベント実測（KPI-1の分子）
+            endedAt: null,
+            realtimeReadyAt: null,  // session.created実測時刻のコピー（KPI-2/3比較用）
+        };
+
+        function resetZeroWaitCallState() {
+            // プリロード成功済みなら'ready'に戻す。プリロード自体が未完了/失敗の
+            // 場合はその状態を維持する（ページ読み込み時に一度だけ行う）。
+            if (zeroWaitState === 'playing' || zeroWaitState === 'ended' || zeroWaitState === 'play_failed') {
+                zeroWaitState = 'ready';
+            }
+            if (zeroWaitAudioEl) {
+                try { zeroWaitAudioEl.pause(); zeroWaitAudioEl.currentTime = 0; } catch (e) {}
+            }
+            zeroWaitTiming.playingEventAt = null;
+            zeroWaitTiming.endedAt = null;
+            zeroWaitTiming.realtimeReadyAt = null;
+            zeroWaitAwaitingFirstPostGreetingLatency = false;
+            zeroWaitOutcomePromise = new Promise((resolve) => { zeroWaitOutcomeResolve = resolve; });
+        }
+
+        // ページ読み込み時（通話開始クリックより前）に音声本体と第一声テキストを
+        // 並行してプリロードする。片方が失敗してももう片方には影響しない。
+        async function preloadZeroWaitGreetingAudio() {
+            if (!zeroWaitEnabled) return;
+            zeroWaitState = 'preloading';
+            const t0 = performance.now();
+            logEvent('[ZeroWait] 音声プリロード開始: ' + ZERO_WAIT_AUDIO_URL);
+            try {
+                const res = await fetch(ZERO_WAIT_AUDIO_URL);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const blob = await res.blob();
+                zeroWaitObjectUrl = URL.createObjectURL(blob);
+                zeroWaitAudioEl = new Audio();
+                zeroWaitAudioEl.preload = 'auto';
+                zeroWaitAudioEl.src = zeroWaitObjectUrl;
+                zeroWaitAudioEl.load();
+                zeroWaitState = 'ready';
+                logEvent('[ZeroWait] プリロード完了 (' + Math.round(performance.now() - t0) + 'ms, '
+                    + blob.size + 'bytes)');
+            } catch (e) {
+                zeroWaitState = 'preload_failed';
+                logEvent('[ZeroWait] プリロード失敗（通話時はPhase3Cの第一声にフォールバックします）: ' + e.message);
+            }
+        }
+
+        async function preloadZeroWaitGreetingText() {
+            if (!zeroWaitEnabled) return;
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/greeting-text');
+                const data = await res.json().catch(() => null);
+                if (res.ok && data && typeof data.greeting_text === 'string') {
+                    zeroWaitGreetingText = data.greeting_text;
+                    logEvent('[ZeroWait] 第一声テキストを取得しました（会話履歴通知用）');
+                }
+            } catch (e) {
+                // 取得失敗してもZero-Wait Greeting自体（音声再生）は継続可能。
+                // 影響はRealtime会話履歴への明示的な通知(conversation.item.create)が
+                // 省略されることのみ（二重発話・機能停止にはならない）。
+                logEvent('[ZeroWait] 第一声テキスト取得に失敗（会話履歴通知は省略されます）: ' + e.message);
+            }
+        }
+
+        if (zeroWaitEnabled) {
+            resetZeroWaitCallState();
+            preloadZeroWaitGreetingAudio();
+            preloadZeroWaitGreetingText();
+        }
+
+        // startCall()の同期チェーン内（getUserMediaより前・awaitを挟まない）から
+        // 呼び出すこと（section11相当: ユーザー操作由来のジェスチャーとして
+        // 扱われるうちにplay()を呼び、自動再生制限を回避するため）。
+        function startZeroWaitGreeting() {
+            if (!zeroWaitEnabled) {
+                if (zeroWaitOutcomeResolve) zeroWaitOutcomeResolve('not_applicable');
+                return;
+            }
+            if (zeroWaitState !== 'ready' || !zeroWaitAudioEl) {
+                logEvent('[ZeroWait] 再生スキップ（状態=' + zeroWaitState + '）。Phase3Cの第一声にフォールバックします');
+                zeroWaitOutcomeResolve('failure');
+                return;
+            }
+
+            zeroWaitAudioEl.currentTime = 0;
+            const playCalledAt = greetingTiming.callStart;
+
+            const onPlaying = () => {
+                zeroWaitAudioEl.removeEventListener('playing', onPlaying);
+                zeroWaitState = 'playing';
+                zeroWaitTiming.playingEventAt = performance.now();
+                logEvent('[ZeroWait] KPI-1 通話開始→Greeting実際の再生開始 = '
+                    + Math.round(zeroWaitTiming.playingEventAt - playCalledAt) + 'ms');
+                bigMic.classList.add('ai-speaking');
+                statusText.textContent = '通話中';
+                subStatusText.textContent = '（ご案内音声を再生中）';
+                zeroWaitOutcomeResolve('success');
+            };
+            const onEnded = () => {
+                zeroWaitAudioEl.removeEventListener('ended', onEnded);
+                zeroWaitState = 'ended';
+                zeroWaitTiming.endedAt = performance.now();
+                bigMic.classList.remove('ai-speaking');
+                if (zeroWaitTiming.realtimeReadyAt !== null) {
+                    logEvent('[ZeroWait] KPI-3 Greeting終了→Realtime準備完了 = '
+                        + Math.round(zeroWaitTiming.realtimeReadyAt - zeroWaitTiming.endedAt) + 'ms'
+                        + '（負値=Realtimeの方が先に準備完了済み）');
+                } else {
+                    logEvent('[ZeroWait] Greeting再生終了。Realtimeはまだ準備中です（KPI-3はRealtime準備完了時に記録されます）');
+                }
+                subStatusText.textContent = '待機中（お話しください）';
+            };
+            zeroWaitAudioEl.addEventListener('playing', onPlaying, { once: true });
+            zeroWaitAudioEl.addEventListener('ended', onEnded, { once: true });
+
+            const failIfStillUnresolved = (reason) => {
+                if (zeroWaitState !== 'playing' && zeroWaitState !== 'ended') {
+                    zeroWaitState = 'play_failed';
+                    logEvent('[ZeroWait] 再生失敗（Phase3Cの第一声にフォールバックします）: ' + reason);
+                    zeroWaitOutcomeResolve('failure');
+                }
+            };
+
+            try {
+                const playPromise = zeroWaitAudioEl.play();
+                if (playPromise && typeof playPromise.catch === 'function') {
+                    playPromise.catch((e) => failIfStillUnresolved(e.message || e.name || String(e)));
+                }
+            } catch (e) {
+                failIfStillUnresolved(e.message || String(e));
+                return;
+            }
+            setTimeout(() => failIfStillUnresolved('再生開始タイムアウト(' + ZERO_WAIT_PLAY_TIMEOUT_MS + 'ms)'), ZERO_WAIT_PLAY_TIMEOUT_MS);
+        }
+
+        function waitForZeroWaitOutcome() {
+            if (!zeroWaitEnabled) return Promise.resolve('not_applicable');
+            return Promise.race([
+                zeroWaitOutcomePromise,
+                new Promise((resolve) => setTimeout(() => resolve('timeout'), ZERO_WAIT_DECISION_GRACE_MS)),
+            ]);
+        }
+
+        async function maybeSendInitialGreeting() {
             if (initialGreetingSent) return;
             if (userSpokeBeforeGreeting) {
                 // お客様が第一声より先に話し始めたため、こちらからは送らない。
-                // 既存のturn_detectionによる自動応答にそのまま任せる。
+                // 既存のturn_detectionによる自動応答にそのまま任せる
+                // （Zero-Wait再生中の割り込みも同じ扱い。section17: 複雑な
+                // 独自の打ち切り制御は追加せず、既存の標準動作に委ねる）。
                 initialGreetingSent = true;
                 logEvent('第一声: お客様が先に発話したため、自動送信をスキップします');
                 return;
             }
             if (!dc || dc.readyState !== 'open') return;
             initialGreetingSent = true;
+
+            const zeroWaitOutcome = await waitForZeroWaitOutcome();
+            if (zeroWaitEnabled) {
+                logEvent('[ZeroWait] 第一声方式の判定: outcome=' + zeroWaitOutcome + '（再生状態=' + zeroWaitState + '）');
+            }
+
+            if (zeroWaitOutcome === 'success') {
+                // 二重発話防止（最重要・section12）: Zero-Wait Greetingが実際に
+                // 再生開始したことを'playing'イベントで確認済みのため、
+                // Phase3Cのresponse.createは絶対に送らない。
+                if (zeroWaitGreetingText) {
+                    try {
+                        // response.createを伴わないconversation.item.createは
+                        // それ自体が発話を誘発しない（再度喋らせることにはならない）。
+                        // これによりRealtimeの会話履歴に「既にこの第一声を話した」
+                        // という文脈だけを与え、お客様の直後の発言を正しく解釈
+                        // できるようにする（section19）。
+                        dc.send(JSON.stringify({
+                            type: 'conversation.item.create',
+                            item: {
+                                type: 'message',
+                                role: 'assistant',
+                                content: [{ type: 'text', text: zeroWaitGreetingText }],
+                            },
+                        }));
+                        logEvent('[ZeroWait] Realtime会話履歴へ第一声テキストを通知しました（response.createは送信しません＝二重発話防止）');
+                    } catch (e) {
+                        logEvent('[ZeroWait] 会話履歴通知に失敗（通話は継続します。二重発話は発生しません）: ' + e.message);
+                    }
+                } else {
+                    logEvent('[ZeroWait] 第一声テキスト未取得のため会話履歴通知は省略します（response.createは送信しません）');
+                }
+                zeroWaitAwaitingFirstPostGreetingLatency = true;
+                return;
+            }
+
+            // Zero-Wait対象外 / 失敗 / タイムアウト: Phase3Cの第一声にフォールバック。
             greetingTiming.greetingResponseCreateSent = performance.now();
-            logEvent('第一声用response.createを送信します（1通話につき1回のみ）');
+            logEvent('第一声用response.createを送信します（1通話につき1回のみ'
+                + (zeroWaitEnabled ? '、Zero-Waitフォールバック経路' : '') + '）');
             try {
                 // 重要（本番E2Eで判明・修正済み）: OpenAI Realtime APIの仕様上、
                 // response.create の response.instructions を指定すると、その
@@ -882,10 +1102,23 @@
                 setStatus(stSessionEl, type, 'ok');
                 if (greetingTiming.sessionCreated === null) {
                     greetingTiming.sessionCreated = performance.now();
+                    if (zeroWaitEnabled) {
+                        zeroWaitTiming.realtimeReadyAt = greetingTiming.sessionCreated;
+                        logEvent('[ZeroWait] KPI-2 Realtime準備完了時点のGreeting再生状態: ' + zeroWaitState
+                            + '（Greeting中に準備完了=' + (zeroWaitState === 'playing' ? 'Y' : 'N') + '）');
+                        if (zeroWaitState === 'ended' && zeroWaitTiming.endedAt !== null) {
+                            logEvent('[ZeroWait] KPI-3 Greeting終了→Realtime準備完了 = '
+                                + Math.round(zeroWaitTiming.realtimeReadyAt - zeroWaitTiming.endedAt) + 'ms');
+                        }
+                    }
                 }
-                maybeSendInitialGreeting();
+                maybeSendInitialGreeting().catch((e) => logEvent('第一声処理中にエラー: ' + e.message));
             } else if (type === 'input_audio_buffer.speech_started') {
                 if (!initialGreetingSent) userSpokeBeforeGreeting = true;
+                if (zeroWaitEnabled && zeroWaitState === 'playing') {
+                    // section18: 対処は行わず観測のみ（エコーによるVAD誤反応の可能性）。
+                    logEvent('[ZeroWait] 観測: Greeting再生中にspeech_startedを検知（エコー等による誤検知の可能性。対処は行わずログのみ記録）');
+                }
                 subStatusText.textContent = 'こちらの発話を認識中…';
                 setStatus(stUserSpeakEl, '発話中（認識中）', 'ok');
             } else if (type === 'input_audio_buffer.speech_stopped') {
@@ -974,6 +1207,11 @@
         async function startCall() {
             resetGreetingState();
             greetingTiming.callStart = performance.now();
+            // Phase3C.1 section9相当（重要）: Zero-Wait Greetingの再生開始と
+            // Realtime接続（この後に続く一連の処理）は並行に開始する。
+            // ここではawaitを挟まず、下のgetUserMedia呼び出しへ同期的に進む
+            // （両方ともクリックのユーザー操作ジェスチャーの中で開始される）。
+            startZeroWaitGreeting();
             startBtn.disabled = true;
             hideErrorBanner();
             statusText.textContent = '接続しています…';
@@ -1003,7 +1241,14 @@
             // （特にiOS Safari）ユーザー操作から時間が空きすぎたと判断され、
             // マイク許可ダイアログ自体が出ないまま静かに失敗することがある。
             try {
-                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                // Phase3C.1 section18: Zero-Wait Greeting対象店舗でのみ、
+                // エコー（Greeting音声がスピーカー→マイクへ回り込みRealtimeの
+                // VADを誤反応させるリスク）対策として明示的にAEC等を要求する。
+                // 他店舗は既存動作（{ audio: true }）を一切変更しない。
+                const micConstraints = zeroWaitEnabled
+                    ? { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
+                    : { audio: true };
+                localStream = await navigator.mediaDevices.getUserMedia(micConstraints);
             } catch (e) {
                 const friendly = describeGetUserMediaError(e);
                 logEvent('getUserMediaエラー: ' + e.name + ' - ' + e.message);
@@ -1168,6 +1413,11 @@
 
         window.addEventListener('beforeunload', () => {
             cleanupConnection();
+            // Phase3C.1: プリロード用に確保したObjectURLをページ離脱時に解放する
+            // （通話中の再利用に備え、通話終了(endCall)のたびには解放しない）。
+            if (zeroWaitObjectUrl) {
+                try { URL.revokeObjectURL(zeroWaitObjectUrl); } catch (e) {}
+            }
         });
     </script>
 </body>

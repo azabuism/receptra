@@ -865,3 +865,29 @@ async def generate_greeting_tts_audio(shop: Shop, staff_settings: Optional["AISt
         "model": settings.OPENAI_TTS_MODEL,
         "greeting_text": greeting_text,
     }
+
+
+async def get_effective_greeting_text(db: AsyncSession, shop: Shop) -> str:
+    """
+    Phase3C.1: Zero-Wait Greeting用に、通話ページ（お客様向け・認証不要）が
+    「今この店舗のRealtime instructions／事前生成音声がどちらも前提としている
+    第一声の文字列」を取得するための公開ヘルパー。
+
+    重要:
+    - _resolve_greeting_text()を唯一の正として使う（build_realtime_instructions
+      が組み立てるinstructions、generate_greeting_tts_audio()が生成する音声の
+      両方と、常に完全一致する）。
+    - 認証不要のroutersからも安全に呼べるよう、DBアクセス(_get_staff_settings)
+      までこの関数の中に閉じ込める。第一声の文言はお客様に電話で話しかける
+      内容そのものであり秘匿情報ではないため、公開エンドポイントから返しても
+      情報漏洩にはならない（既存の/realtime-voice/sessionが認証不要なのと
+      同じ扱い）。
+    - Zero-Wait Greeting成功時にRealtimeの会話履歴へ
+      「この文言は既に話した」と伝える(conversation.item.create)ためだけに
+      使う。事前生成音声ファイル自体の内容と完全に一致している保証は、
+      両者が同じ_resolve_greeting_text()を経由していることに依存する
+      （事前生成音声は手動再生成のため、AIStaffSettings変更直後は音声だけが
+      一時的に古くなりうる。将来の自動再生成の設計は別途報告する）。
+    """
+    staff_settings = await _get_staff_settings(db, shop.id)
+    return _resolve_greeting_text(staff_settings, shop.name)

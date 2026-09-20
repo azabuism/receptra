@@ -219,6 +219,57 @@ async def _find_recent_duplicate_reservation(
     return None
 
 
+# Phase3C.1: Zero-Wait Greeting用の第一声テキスト取得エンドポイント専用のバケット。
+# ページ読み込み時に1回呼ばれる想定の軽量な読み取り専用リクエストのため、
+# /sessionより緩めに設定する。
+_GREETING_TEXT_RATE_LIMIT_WINDOW_SECONDS = 60
+_GREETING_TEXT_RATE_LIMIT_MAX_REQUESTS = 20
+_recent_greeting_text_requests: dict[str, list] = {}
+
+
+def _check_greeting_text_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _recent_greeting_text_requests.setdefault(shop_id, [])
+    bucket[:] = [t for t in bucket if now - t < _GREETING_TEXT_RATE_LIMIT_WINDOW_SECONDS]
+    if len(bucket) >= _GREETING_TEXT_RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
+
+
+@router.get("/greeting-text")
+async def get_realtime_voice_greeting_text(shop_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Phase3C.1: Zero-Wait Greeting用。この店舗のRealtime instructions／事前生成
+    音声が前提としている第一声の文字列を返す（会員登録不要・認証不要）。
+
+    重要: この文字列はお客様に電話で話しかける内容そのものであり秘匿情報では
+    ないため、/session と同様に認証不要で公開する。用途はZero-Wait Greeting
+    成功時に、Realtimeの会話履歴へ「この文言は既に話した」と伝える
+    (conversation.item.create、response.createは送らない＝再度喋らせない)ため
+    のみ。事前生成音声ファイル自体は別途静的ファイルとして配置されるため、
+    このエンドポイントは文字列のみを返し、音声データは一切扱わない。
+    """
+    _check_greeting_text_rate_limit(shop_id)
+
+    shop = await db.get(Shop, shop_id)
+    if not shop or not shop.is_active:
+        raise HTTPException(status_code=404, detail="店舗が見つかりません")
+
+    try:
+        greeting_text = await realtime_voice_ai.get_effective_greeting_text(db, shop)
+    except Exception as e:
+        logger.error("greeting-text取得に失敗 (shop_id=%s): %s", shop_id, e)
+        raise HTTPException(
+            status_code=502,
+            detail="第一声情報の取得に失敗しました。しばらくしてから再度お試しください。",
+        )
+
+    return {"shop_id": shop_id, "greeting_text": greeting_text}
+
+
 @router.post("/session")
 async def create_realtime_voice_session(shop_id: str, db: AsyncSession = Depends(get_db)):
     """
