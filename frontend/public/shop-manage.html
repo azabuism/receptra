@@ -879,7 +879,15 @@
         function escapeHtml(str) {
             const div = document.createElement('div');
             div.textContent = str || '';
-            return div.innerHTML;
+            // div.innerHTML自体は「テキストノードとして安全」な範囲でしか
+            // エスケープしない（&/</>のみ）ため、そのままだと
+            // value="' + escapeHtml(x) + '"のようにHTML属性値へ埋め込む箇所
+            // （FAQ編集フォーム等）でxに二重引用符が含まれると属性値から
+            // 抜け出すインジェクションが可能になってしまう。テキストノードの
+            // 内容として&quot;は単なる"として表示されるため、属性値としても
+            // テキストノードとしても安全なよう、二重引用符も明示的に
+            // エスケープしておく。
+            return div.innerHTML.split('"').join('&quot;');
         }
 
         function showMsg(el, text, type) {
