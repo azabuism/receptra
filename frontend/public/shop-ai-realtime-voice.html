@@ -479,10 +479,14 @@
         //   response.cancel処理等は追加しない。
         // - 第一声の具体的な文言はハードコードしない。既存のsession instructions
         //   （AIスタッフ設定のgreetingを反映する_build_greeting_section等、
-        //   Phase2で完成済み）にそのまま従わせる。response.create送信時に付与する
-        //   response-level instructionsは「まだ何も話していないので、あなたから
-        //   先に話してください」というタイミングの補足のみとし、Phase1の言語
-        //   ルールやAIスタッフ人格設定を上書きする内容は一切含めない。
+        //   Phase2で完成済み）にそのまま従わせる。第一声用response.createには
+        //   response-level instructionsを一切付与しない（本番E2Eで判明: OpenAI
+        //   Realtime APIはresponse.instructionsを「補足」ではなく、その
+        //   レスポンス限りでセッション全体のinstructionsを「置き換える」仕様
+        //   のため、付与するとAIスタッフ設定のgreeting/人格が第一声から消えて
+        //   しまう。詳細はmaybeSendInitialGreeting()内のコメントと
+        //   realtime_voice_ai.pyのbuild_realtime_instructions/
+        //   _build_greeting_sectionのPhase3C追記を参照）。
         let initialGreetingSent = false;
         let userSpokeBeforeGreeting = false;
 
@@ -552,19 +556,19 @@
             greetingTiming.greetingResponseCreateSent = performance.now();
             logEvent('第一声用response.createを送信します（1通話につき1回のみ）');
             try {
-                dc.send(JSON.stringify({
-                    type: 'response.create',
-                    response: {
-                        // 第一声だけの局所的な補足指示。挨拶の具体的な文言・声色・
-                        // 人格はセッションinstructions（AIスタッフ設定）にすでに
-                        // 含まれているため、ここでは「まだ何も話していないので
-                        // 先に話しかけてください」というタイミングの補足のみ行う。
-                        instructions:
-                            '通話が接続されました。お客様はまだ何も話していません。'
-                            + 'あなたから先に、自然な受付の第一声を短く話しかけてください。'
-                            + '日本語で話してください。',
-                    },
-                }));
+                // 重要（本番E2Eで判明・修正済み）: OpenAI Realtime APIの仕様上、
+                // response.create の response.instructions を指定すると、その
+                // レスポンス1回に限りセッション全体のinstructionsが完全に
+                // 上書きされてしまう（「補足」ではなく「置き換え」になる）。
+                // そのため、ここでresponse.instructionsを付与すると、AIスタッフ
+                // 設定のgreeting/人格/Phase1言語ルールがすべて無視された状態で
+                // 第一声が生成されてしまうことが確認された（Test F）。
+                // 対策として、第一声用response.createにはinstructionsを一切
+                // 付与せず、既存のセッションinstructions（_build_greeting_section
+                // により「通話開始時に自分から話し始める」旨が常時含まれる。
+                // realtime_voice_ai.pyのbuild_realtime_instructions参照）に
+                // そのまま従わせる。
+                dc.send(JSON.stringify({ type: 'response.create' }));
             } catch (e) {
                 // 第一声の送信に失敗しても通話全体は継続する。お客様が話しかければ
                 // 通常のturn_detectionによる応答フローに問題なく移行できる。

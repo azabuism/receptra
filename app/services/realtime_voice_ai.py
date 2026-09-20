@@ -498,17 +498,31 @@ def _build_personality_section(s: "AIStaffSettings") -> str:
     return "# AIスタッフの人物設定\n" + "\n".join(lines)
 
 
-def _build_greeting_section(s: "AIStaffSettings", shop_name: str) -> str:
+def _build_greeting_section(s: Optional["AIStaffSettings"], shop_name: str) -> str:
     """
     電話に出たときの第一声。店舗オーナーが設定していない場合や空文字の
     場合は、スタッフ名の有無に応じた自然なフォールバック文を使う
     （設定が存在しても greeting が空欄なら「名乗らない」フォールバックに
     なるよう配慮している）。
+
+    Phase3C追記: この関数はAIスタッフ設定(staff_settings)の有無に関わらず、
+    全店舗のinstructionsに常時含める（build_realtime_instructions側の
+    呼び出し箇所を参照）。理由: フロントエンドの第一声用response.createは
+    response-level instructionsを付与しない設計（session側のinstructionsを
+    そのまま使わせるため）にしたため、AIスタッフ設定が無い店舗であっても
+    「通話開始時にまず自分から話し始める」という指示自体はsession
+    instructions側に常に存在している必要がある。s=Noneの場合は
+    「名乗らない」フォールバック文のみを使う（Phase1のみの店舗の人格・
+    名乗りに関する既存の沈黙を破らないため）。
     """
-    greeting = (s.greeting or "").strip()
+    greeting = ""
+    staff_name = None
+    if s is not None:
+        greeting = (s.greeting or "").strip()
+        staff_name = s.staff_name
     if not greeting:
-        if s.staff_name:
-            greeting = f"お電話ありがとうございます。{shop_name}、AI受付の{s.staff_name}です。"
+        if staff_name:
+            greeting = f"お電話ありがとうございます。{shop_name}、AI受付の{staff_name}です。"
         else:
             greeting = f"お電話ありがとうございます。{shop_name}でございます。"
     return (
@@ -554,18 +568,26 @@ async def build_realtime_instructions(
       2. Scope（Phase3B: 受付業務の会話範囲ルール）          … 常に固定
       3. Examples（話し方の見本）                            … 常に固定
       4. Shop Information（営業時間・本日の日付）            … 常に固定
-      5. AI Staff Personality / Greeting                     … staff_settingsがある場合のみ
+      5a. AI Staff Personality                               … staff_settingsがある場合のみ
+      5b. 電話に出たときの第一声（Greeting）                 … Phase3Cより常に付与
       6. Shop Custom Instructions（店舗独自の補助指示）      … 明示的に下位と位置づけ
       7. Constraints（現時点での制約）                       … 常に固定
       8. Booking Safety（Phase3B: 予約成立宣言の絶対ルール） … 常に固定・最後
 
     staff_settingsがNone、またはPhase2で追加されたフィールドが全て未設定の
-    場合は、5・6が完全に省略される。なお、Phase3A/3Bの導入以降は7の内容自体が
+    場合は、5a・6が省略される。なお、Phase3A/3Bの導入以降は7の内容自体が
     Phase1と異なり（check_availability/create_reservationの存在を前提とした
     内容に更新済み）、2・8も常に付与されるため、「staff_settingsがNoneならPhase1と
     完全にバイト同一」という以前の不変条件はPhase3A時点で既に崩れている
     （toolsを常時有効化した時点でPhase1とは別物であるため、この崩れ自体は
     Phase3Bで新たに生じたものではない）。
+
+    Phase3C追記: 5b（電話に出たときの第一声）は、staff_settingsの有無に
+    関わらず常に付与するよう変更した。理由は_build_greeting_section()の
+    docstringを参照（フロントエンドの第一声用response.createが
+    response-level instructionsを付与しない設計になったため、
+    「通話開始時に自分から話し始める」という指示自体をsession instructions
+    側に常時含める必要があるため）。
     """
     hours_block = await _build_hours_block(db, shop.id)
 
@@ -581,11 +603,19 @@ async def build_realtime_instructions(
         if personality_section:
             sections.append(personality_section)
 
-        # 第一声の案内は、AIスタッフ設定のレコード自体が作成されている
-        # 店舗にのみ追加する（Phase1のみの店舗はこのセクション自体が
-        # 無いことで、instructions文字列を完全に元のままに保つ）。
-        sections.append(_build_greeting_section(staff_settings, shop.name))
+    # Phase3C: 第一声の案内は、AIスタッフ設定の有無に関わらず常に追加する。
+    # 理由: フロントエンドが通話開始直後に送る第一声用response.createは
+    # response-level instructionsを付与しないため（付与するとOpenAI Realtime
+    # APIの仕様によりsession instructions全体がそのresponseに限り上書きされて
+    # しまい、AIスタッフ設定のgreeting/人格が第一声に反映されなくなることが
+    # 本番E2E（Test F）で確認された）、「通話開始時にまず自分から話し始める」
+    # という指示自体をsession instructions側に常時含める必要がある。
+    # staff_settingsがNoneの場合は_build_greeting_section内部の
+    # 「名乗らない」フォールバック文のみが使われ、Phase1のみの店舗の人格・
+    # 名乗りに関する既存の沈黙（personality_section等）は変更しない。
+    sections.append(_build_greeting_section(staff_settings, shop.name))
 
+    if staff_settings is not None:
         if staff_settings.custom_instructions and staff_settings.custom_instructions.strip():
             sections.append(_build_custom_instructions_section(staff_settings.custom_instructions.strip()))
 
