@@ -166,6 +166,22 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ shops.reservations_enabled カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # Phase3B: Realtime Voice経由のcreate_reservation専用の冪等性キー。
+            # 既存のWeb予約・チャット予約・管理画面予約は一切これを使用せず常にNULLのまま
+            # （create_reservation()の新しい分岐はidempotency_keyが指定された場合のみ通る）。
+            # PostgreSQLの一意インデックスはNULL同士を重複とみなさないため、既存の全予約行
+            # （このカラム追加時点では必ずNULL）には一切影響を与えずに追加できる。
+            # 同一キーでの同時多重INSERTをDBレベルで確実に1件だけに絞るための最終防衛線として、
+            # アプリケーション側のSELECTだけに頼らずCREATE UNIQUE INDEXを必ず張る。
+            try:
+                await conn.execute(text("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(200)"))
+                await conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_reservations_idempotency_key "
+                    "ON reservations (idempotency_key)"
+                ))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ reservations.idempotency_key カラム/一意インデックスの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
             # 既存店舗（旧カテゴリー体系で登録されたもの）を新しいタクソノミーに移行する
             try:
                 from app.taxonomy import LEGACY_CATEGORY_MAP

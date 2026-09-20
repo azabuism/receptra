@@ -20,6 +20,13 @@ class ReservationCreateRequest(BaseModel):
     guest_phone: str = Field(..., min_length=1, max_length=20, description="連絡先電話番号")
     guest_email: Optional[EmailStr] = Field(None, description="連絡先メールアドレス")
     special_requests: Optional[str] = Field(None, max_length=500, description="特別リクエスト")
+    # Phase3B: Realtime Voice経由のcreate_reservation専用の冪等性キー。
+    # 通常のWeb予約・チャット予約では一切指定しない（常にNone）。指定された場合のみ
+    # create_reservation()内でDBの一意制約を用いた冪等処理の分岐に入る。
+    idempotency_key: Optional[str] = Field(
+        None, max_length=200,
+        description="Realtime Voice等、サーバー側で二重書き込み防止が必要な呼び出し元専用の冪等性キー。通常のWeb予約・チャット予約では使用しない"
+    )
 
 
 class ReservationUpdateRequest(BaseModel):
@@ -138,4 +145,53 @@ class CheckAvailabilityResponse(BaseModel):
     # 「満席」のどちらとも案内せず、時間を置くか店舗へ問い合わせるよう
     # 案内すること、invalid_requestの場合は指定形式を見直すことを
     # それぞれ指示している。
+    reason_code: Optional[str] = None
+
+
+# ===== Realtime Voice AI Phase3B: create_reservation Tool Calling用 =====
+#
+# 設計方針（重要）:
+# - shop_id・call_idをAIに渡すToolの引数(parameters)には含めない。
+#   shop_idはcheck_availabilityと同じくURLパス由来、call_idはブラウザ側が
+#   OpenAI Realtime APIのfunction_callイベント(response.output_item.done)から
+#   直接読み取った値をリクエストボディに含めて送る（AI自身の出力JSONには含まれない）。
+#   RECEPTRA側（このToolのエンドポイント実装）がcall_idを
+#   "realtime_voice:{shop_id}:{call_id}" の形にnamespace化してから
+#   ReservationCreateRequest.idempotency_keyとして既存create_reservation()へ渡す。
+# - guest_email・coupon_codeはPhase3Bのスコープ外（音声受付の初期版では不要という
+#   ユーザー判断）。ReservationCreateRequest構築時は常にNone/未指定として扱う。
+
+class CreateReservationToolRequest(BaseModel):
+    """Realtime AIのcreate_reservation Toolからの引数 + ブラウザが付与するcall_id"""
+    date: str = Field(..., description="来店日（YYYY-MM-DD）")
+    time: str = Field(..., description="来店時刻（HH:MM、24時間表記）")
+    party_size: int = Field(..., ge=1, le=999, description="人数")
+    guest_name: str = Field(..., min_length=1, max_length=255, description="予約者名")
+    guest_phone: str = Field(..., min_length=1, max_length=20, description="連絡先電話番号")
+    service_id: Optional[str] = Field(None, description="サービスID（美容院・クリニック等、サービス単位で予約する業種の場合のみ）")
+    staff_id: Optional[str] = Field(None, description="スタッフ指名がある場合のみ")
+    special_requests: Optional[str] = Field(None, max_length=500, description="特別なご要望（あれば）")
+    # AIの出力ではなく、ブラウザがOpenAI Realtimeのfunction_callイベントから
+    # 直接読み取ったcall_idをそのまま転送する（AI自身にはこの値を生成させない）。
+    call_id: str = Field(..., min_length=1, max_length=128, description="OpenAI Realtime APIのfunction_call call_id（ブラウザが転送。AIの引数ではない）")
+
+
+class CreateReservationToolResponse(BaseModel):
+    """Realtime AIへ返す最小レスポンス"""
+    success: bool
+    reservation_id: Optional[str] = None
+    date: Optional[str] = None
+    time: Optional[str] = None
+    party_size: Optional[int] = None
+    guest_name: Optional[str] = None
+    # success=Falseの場合のみ設定。候補:
+    # invalid_request / reservation_not_enabled / shop_closed / temporary_closure /
+    # outside_business_hours / service_unavailable / staff_unavailable / fully_booked /
+    # temporarily_unavailable
+    #
+    # check_availability(Phase3A)と同じ語彙をそのまま再利用している（AIが新しい
+    # 概念を覚える必要をなくすため）。fully_booked/staff_unavailableは「確認時点では
+    # 空いていたが、予約確定時点で埋まっていた」ケースも含む（create_reservationは
+    # 必ずその場でテーブル/スタッフの空き状況を再判定するため、Phase3Aの結果を
+    # キャッシュして使い回すことはない）。
     reason_code: Optional[str] = None

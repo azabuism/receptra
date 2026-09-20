@@ -74,6 +74,18 @@ class Reservation(Base):
     
     # マーケティング情報
     reservation_source = Column(String(50), nullable=True)  # 検索、広告、クーポン等
+
+    # ★★★ Phase3B: Realtime Voice経由の予約作成専用の冪等性キー
+    # 既存のWeb予約・チャット予約・管理画面予約は一切これを使用せず、常にNULLのまま
+    # （create_reservation()はidempotency_keyが指定された場合のみ新しい分岐に入る設計）。
+    # 形式は "realtime_voice:{shop_id}:{call_id}" （OpenAI Realtime APIのfunction_call
+    # call_idをRECEPTRA側でnamespace化したもの。AI自身には生成させない）。
+    # DB側で ux_reservations_idempotency_key というunique indexを別途張っており
+    # （app/main.pyのstartup処理でCREATE UNIQUE INDEX IF NOT EXISTS）、同一キーでの
+    # 同時多重INSERTもDBレベルで確実に1件しか成立しない。PostgreSQLの仕様上、
+    # このカラムがNULLの行同士は一意制約に抵触しないため、既存の全予約行（NULL）には
+    # 一切影響しない。
+    idempotency_key = Column(String(200), nullable=True)
     
     # タイムスタンプ
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

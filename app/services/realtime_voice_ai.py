@@ -59,7 +59,7 @@ _VOICE_PREVIEW_INSTRUCTIONS = (
     "「お電話ありがとうございます。本日はどのようなご用件でしょうか？」"
 )
 
-# ===== Realtime Voice AI Phase3A: Tool Calling（check_availabilityのみ） =====
+# ===== Realtime Voice AI Tool Calling（Phase3A: check_availability / Phase3B: create_reservation） =====
 #
 # 設計方針（重要・必ず守ること）:
 # - ここで宣言するのは「AIが呼び出せる関数の名前・説明・引数スキーマ」のみ。
@@ -120,6 +120,91 @@ _REALTIME_TOOLS = [
                 },
             },
             "required": ["date", "time", "party_size"],
+        },
+    },
+    # ===== Phase3B: create_reservation =====
+    #
+    # 設計方針（重要・必ず守ること）:
+    # - check_availabilityと同じく、shop_idも予約作成の実処理も一切ここでは行わない。
+    #   必ず POST /api/v1/shops/{shop_id}/realtime-voice/tools/create-reservation
+    #   （FastAPI側、既存のcreate_reservation()をそのまま呼び出す）の結果を唯一の正とする。
+    # - Realtime Voiceはブラウザ⇔OpenAI直結のWebRTCで、RECEPTRAサーバーは音声も会話内容も
+    #   経由しない。そのため既存のshop_booking_ai.py（チャット予約）が使っている
+    #   「AIの発話をシステム側の確定文言に後から差し替える」仕組み（override_last_assistant_message）
+    #   はこの経路では技術的に使えない（一度声に出した発話を後から書き換えることはできない）。
+    #   したがって「Tool結果が返るまで予約成立を宣言しない」という安全性は、この説明文と
+    #   build_realtime_instructions()側の_BOOKING_SAFETY_TEMPLATEという二重の指示（挙動レベルの
+    #   安全策であり、Phase3Aのtemporarily_unavailable運用と同種の設計）でのみ担保している。
+    #   一方、実際にDBへ予約が書き込まれるかどうか（＝真の予約成立）は、AIが何を話したかに
+    #   一切左右されず、必ずバックエンドのcreate_reservation()成功の有無だけで決まる。
+    # - call_idはこのToolのparametersに含めない。AIの出力JSONにはcall_idを一切含めさせず、
+    #   ブラウザがOpenAI Realtime APIのfunction_callイベント(response.output_item.done の
+    #   item.call_id)から直接読み取った値のみを、RECEPTRA側のToolエンドポイントへの
+    #   リクエストボディに追加して転送する。RECEPTRA側でこれを
+    #   "realtime_voice:{shop_id}:{call_id}" にnamespace化した上でDBの一意インデックスによる
+    #   冪等性キーとして使う（同一call_idでの二重予約作成をDBレベルで確実に防ぐため）。
+    {
+        "type": "function",
+        "name": "create_reservation",
+        "description": (
+            "お客様が実際に来店予約を確定したいときにのみ呼び出してください。"
+            "呼び出す前に必ず、来店日時・人数・お名前・電話番号（該当する場合は"
+            "サービス内容・スタッフ指名）を一つずつお客様と確認し、特に電話番号は"
+            "お客様からうかがった番号をそのまま1桁ずつ日本語で読み上げて復唱し、"
+            "間違いがないか確認してください（推測や聞き取れなかった桁の補完は"
+            "絶対にしないでください）。\n"
+            "その上で「この内容で予約してよろしいですか？」のようにはっきり確認し、"
+            "お客様が明確に肯定した場合にのみ呼び出してください。曖昧な返事や沈黙の"
+            "まま呼び出してはいけません。\n"
+            "この関数の結果（success）が返る前に、予約が取れた・完了した・確定した等と"
+            "一切案内しないでください。呼び出し中は「予約状況を確認して確定しますので、"
+            "少々お待ちください」程度の中立的な案内だけにしてください。\n"
+            "dateは必ずYYYY-MM-DD形式、timeは必ずHH:MM形式（24時間表記）で指定してください。"
+            "美容院・クリニックなどサービス単位の予約でサービス指定がある場合はservice_idを、"
+            "スタッフ指名がある場合はstaff_idを指定してください（該当する場合のみ。省略可）。\n"
+            "戻り値のsuccessがtrueの場合のみ予約が成立したとご案内してよく、その際は必ず"
+            "戻り値に含まれる日時・人数と完全に一致する内容だけを使ってください。\n"
+            "successがfalseの場合、reason_codeを見て案内してください。"
+            "invalid_request=入力形式に誤りの可能性（date/timeの形式等を再確認し、"
+            "正しい形式が分かれば修正して再度呼び出してください）、"
+            "reservation_not_enabled=この店舗は現在オンライン予約自体を受け付けていない"
+            "（お客様の入力の問題ではないため、お店へ直接お問い合わせいただくようご案内）、"
+            "fully_booked=満席、staff_unavailable=指名されたスタッフが空いていない、"
+            "shop_closed=定休日、temporary_closure=臨時休業、"
+            "service_unavailable=そのサービス自体が現在利用不可"
+            "（これらはいずれも確定した情報です。確認した時点では空いていても、"
+            "予約確定の直前に改めて空き状況を判定し直すため、その間に埋まった"
+            "可能性があります。そのまま理由を添えて案内し、別の日時を伺ってください）、"
+            "temporarily_unavailable=入力の誤りではなく、現在システム側で予約の成立を"
+            "確認できない状態です。この場合は予約が取れた・取れなかったと絶対に案内せず、"
+            "少し時間を置いて再度お試しいただくか、店舗へ直接お問い合わせいただくよう"
+            "お伝えしてください。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "来店日（YYYY-MM-DD形式）"},
+                "time": {"type": "string", "description": "来店時刻（HH:MM形式、24時間表記）"},
+                "party_size": {"type": "integer", "description": "人数", "minimum": 1},
+                "guest_name": {"type": "string", "description": "予約者名"},
+                "guest_phone": {
+                    "type": "string",
+                    "description": "連絡先電話番号（お客様から実際にうかがい、1桁ずつ読み上げて復唱・確認した番号のみ。推測は絶対にしないこと）",
+                },
+                "service_id": {
+                    "type": "string",
+                    "description": "サービスID（美容院・クリニック等、サービス単位で予約する業種かつサービス指定がある場合のみ）",
+                },
+                "staff_id": {
+                    "type": "string",
+                    "description": "スタッフID（スタッフ指名がある場合のみ）",
+                },
+                "special_requests": {
+                    "type": "string",
+                    "description": "特別なご要望（アレルギー・個室希望等、あれば）",
+                },
+            },
+            "required": ["date", "time", "party_size", "guest_name", "guest_phone"],
         },
     },
 ]
@@ -258,16 +343,58 @@ AI:「5,500円です。」
 AI:（ここでは明示的に英語を希望しているため、英語に切り替えて応対する）\
 """
 
-# 現時点での制約。Phase1から変更しない固定文言。常に最後に配置する。
+# 現時点での制約。Phase3Bで内容を更新（Phase1時点の「予約機能はまだ無い」という
+# 記述は、Phase3A(check_availability)・Phase3B(create_reservation)の導入により
+# 事実と異なるものになったため、正確な内容に書き換えた。常に最後から2番目に配置し、
+# 直後に_BOOKING_SAFETY_TEMPLATEを続ける）。
 _CONSTRAINTS_TEMPLATE = """\
 # 現時点での制約（重要・必ず守ってください）
-このバージョンでは、まだ予約データベース・空き状況・メニュー・料金を
-参照する機能を持っていません。日時やご希望人数などのヒアリングはしてよい
-ですが、実際に予約が取れるかどうかの確定的な回答（「空いています」
-「予約完了です」等）はまだしないでください。ヒアリングが終わったら、
-「担当の者が確認してご連絡いたします」という趣旨で丁寧に案内してください。
-存在しない予約状況やメニュー・料金を想像で答えることは絶対にしないで
-ください。\
+空き状況の確認は check_availability ツールの結果を、予約の確定は
+create_reservation ツールの結果を、それぞれ受け取った場合にのみ行ってください。
+ツールの結果を待たずに、自分の判断で空き状況や予約の成立を答えることは
+絶対にしないでください。存在しない空き状況・予約状況・メニュー・料金を
+想像で答えることも絶対にしないでください。まだ提供していないメニュー詳細・
+料金等について聞かれた場合は「詳しくは店舗に直接お問い合わせください」と
+ご案内してください。\
+"""
+
+# Phase3B: 予約成立の宣言に関する安全ルール。常に最後に配置する固定文言
+# （店舗独自のcustom_instructionsによって上書き・無効化されない）。
+#
+# 重要な設計上の制約（調査結果）: Realtime Voiceはブラウザ⇔OpenAI直結のWebRTCで
+# あり、RECEPTRAサーバーは音声・会話内容を一切経由しない。そのためチャット予約
+# (shop_booking_ai.py)が使っている「AIの発話を後からシステム側の確定文言に
+# 差し替える」仕組み(override_last_assistant_message)はここでは技術的に使えない
+# （一度声に出した発話を後から書き換えることはできない）。したがってこの
+# テンプレートおよびcreate_reservationツールの説明文による指示が、AIに誤った
+# 予約成立を宣言させないための唯一の防御線となる（Phase3Aのtemporarily_unavailable
+# 運用で実証済みの「tool descriptionによる挙動制御は高い信頼性で機能する」という
+# 知見に基づく設計だが、100%の技術的保証ではないことに留意）。なお、AIが仮に
+# 先走って発話してしまった場合でも、DBへの実際の書き込みはcreate_reservation()の
+# 成功可否だけで決まるため、システム上の実際の予約状態が誤ることはない。
+_BOOKING_SAFETY_TEMPLATE = """\
+# 予約成立の宣言に関する絶対ルール（最重要・必ず守ってください）
+- create_reservation ツールを呼び出す前に、必ず次のすべてを一つずつお客様と
+  確認してください: 来店希望日時、人数、お名前、電話番号
+  （該当する場合はサービス内容・スタッフ指名）。
+- 電話番号は、お客様からうかがった内容を必ず1桁ずつ日本語で読み上げて復唱し、
+  お客様に間違いがないか確認してから先に進んでください。電話番号を推測したり、
+  聞き取れなかった桁を適当に補ったりすることは絶対にしないでください。
+- 上記すべてが確認できたら、最後に「この内容で予約してよろしいですか？」の
+  ようにはっきりと尋ね、お客様が明確に肯定した場合にのみ create_reservation
+  ツールを呼び出してください。曖昧な返事や沈黙のまま呼び出してはいけません。
+- create_reservation ツールを呼び出してから結果が返るまでの間は、
+  「予約状況を確認して確定しますので、少々お待ちください」程度の
+  中立的な案内だけにとどめてください。
+- ツールの結果で success が true になるまでは、次のような予約成立を意味する
+  発話を絶対にしないでください:
+  「予約できました」「ご予約完了です」「お取りしました」「承りました」
+  「予約確定しました」等。
+- ツールの結果が success:true で返ってきたら、その結果に含まれる日時・人数と
+  完全に一致する内容だけを使ってお客様にご案内してください。
+- ツールの結果が success:false の場合、reason_code に応じて安全に案内してください
+  （create_reservation ツールの説明文にある案内方針に従ってください）。
+  空いている・予約できたと推測することは絶対にしないでください。\
 """
 
 
@@ -362,18 +489,22 @@ async def build_realtime_instructions(
 
     連結順序（Phase1の元テンプレートにおける並び順 Core→Examples→ShopInfo→
     Constraints をそのまま維持し、Phase2の新セクションはShopInfoと
-    Constraintsの間にのみ挿入する。これにより staff_settings が None の
-    場合、Phase1と完全にバイト同一のinstructions文字列を生成できる）:
+    Constraintsの間にのみ挿入する）:
       1. Core Rules（話し方の絶対ルール・言語ルール）        … 常に固定・最上位
       2. Examples（話し方の見本）                            … 常に固定
       3. Shop Information（営業時間・本日の日付）            … 常に固定
       4. AI Staff Personality / Greeting                     … staff_settingsがある場合のみ
       5. Shop Custom Instructions（店舗独自の補助指示）      … 明示的に下位と位置づけ
-      6. Constraints（現時点での制約）                       … 常に固定・最後
+      6. Constraints（現時点での制約）                       … 常に固定
+      7. Booking Safety（Phase3B: 予約成立宣言の絶対ルール） … 常に固定・最後
 
     staff_settingsがNone、またはPhase2で追加されたフィールドが全て未設定の
-    場合は、4・5が完全に省略され、Phase1時点と完全に同一のinstructions
-    文字列を生成する（既存店舗の動作に一切影響を与えないための設計）。
+    場合は、4・5が完全に省略される。なお、Phase3A/3Bの導入以降は6の内容自体が
+    Phase1と異なり（check_availability/create_reservationの存在を前提とした
+    内容に更新済み）、7も常に付与されるため、「staff_settingsがNoneならPhase1と
+    完全にバイト同一」という以前の不変条件はPhase3A時点で既に崩れている
+    （toolsを常時有効化した時点でPhase1とは別物であるため、この崩れ自体は
+    Phase3Bで新たに生じたものではない）。
     """
     hours_block = await _build_hours_block(db, shop.id)
 
@@ -397,6 +528,7 @@ async def build_realtime_instructions(
             sections.append(_build_custom_instructions_section(staff_settings.custom_instructions.strip()))
 
     sections.append(_CONSTRAINTS_TEMPLATE)
+    sections.append(_BOOKING_SAFETY_TEMPLATE)
 
     return "\n\n".join(sections)
 

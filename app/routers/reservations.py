@@ -3,6 +3,7 @@ Reservation (予約) エンドポイント
 予約の作成、確認、管理機能、空き状況の計算
 """
 
+import logging
 import uuid
 from datetime import datetime, date as date_type, timedelta
 from typing import Optional, List
@@ -10,6 +11,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
@@ -25,6 +27,8 @@ from app.schemas.reservation import (
     ReservationUpdateRequest, ReservationListResponse,
     AvailabilityResponse, AvailabilitySlot
 )
+
+logger = logging.getLogger("receptra.reservations")
 
 router = APIRouter(prefix="/api/v1/reservations", tags=["reservations"])
 
@@ -62,6 +66,33 @@ def _to_response(reservation: Reservation) -> ReservationResponse:
         created_at=reservation.created_at,
         updated_at=reservation.updated_at,
     )
+
+
+def _http_error(status_code: int, detail: str, reason_code: Optional[str] = None) -> HTTPException:
+    """
+    Phase3B: HTTPExceptionに、Realtime Voice Tool層が文字列の部分一致に頼らず
+    機械可読なreason_codeで失敗理由を判別できるよう、任意の.reason_code属性を
+    追加で持たせる。detail/status_code自体は従来と完全に同一であり、既存の
+    Web予約・チャット予約側（shop_booking_ai.pyのe.detail参照等）の挙動には
+    一切影響しない。reason_codeを見ない既存呼び出し元からは通常のHTTPExceptionと
+    区別がつかない。
+    """
+    exc = HTTPException(status_code=status_code, detail=detail)
+    exc.reason_code = reason_code
+    return exc
+
+
+async def _get_reservation_by_idempotency_key(db: AsyncSession, idempotency_key: str) -> Optional[Reservation]:
+    """Phase3B: 指定したidempotency_keyを持つ既存予約を1件取得する（無ければNone）"""
+    result = await db.execute(
+        select(Reservation)
+        .options(
+            selectinload(Reservation.table), selectinload(Reservation.staff),
+            selectinload(Reservation.service), selectinload(Reservation.coupon),
+        )
+        .filter(Reservation.idempotency_key == idempotency_key)
+    )
+    return result.scalar_one_or_none()
 
 
 async def _get_closure_for_date(db: AsyncSession, shop_id: str, target_date: date_type) -> Optional[ShopClosure]:
@@ -368,28 +399,44 @@ async def create_reservation(
     db: AsyncSession = Depends(get_db),
     current_user: Optional[CurrentUser] = Depends(get_optional_current_user),
 ) -> ReservationCreateResponse:
+    # Phase3B: idempotency_keyが指定されている場合（Realtime Voice経由のみを想定。
+    # 通常のWeb予約・チャット予約は指定しないため、この分岐には入らず従来通り動作する）、
+    # 既に同一キーで成立済みの予約があれば、新たに作成せずそれをそのまま成功として返す。
+    # ここでは意図的に営業時間・満席等の再検証を行わない。既に一度正当に成立した予約の
+    # 再送であることが確定しているため（reason: 予約成立後に状況が変わっていても、
+    # 既に成立した事実を覆す判定をここで行うべきではない）。
+    if request.idempotency_key:
+        existing = await _get_reservation_by_idempotency_key(db, request.idempotency_key)
+        if existing:
+            return ReservationCreateResponse(
+                success=True,
+                message="予約リクエストを受け付けました。店舗からの確定連絡をお待ちください",
+                reservation_id=existing.id,
+                reservation=_to_response(existing),
+            )
+
     try:
         shop = await db.get(Shop, request.shop_id)
         if not shop or not shop.is_active:
-            raise HTTPException(status_code=404, detail="指定された店舗が見つかりません")
+            raise _http_error(404, "指定された店舗が見つかりません", reason_code="temporarily_unavailable")
 
         if not shop.reservations_enabled:
-            raise HTTPException(status_code=400, detail="この店舗は現在予約を受け付けていません")
+            raise _http_error(400, "この店舗は現在予約を受け付けていません", reason_code="reservation_not_enabled")
 
         if request.reservation_date <= datetime.utcnow():
-            raise HTTPException(status_code=400, detail="過去の日時で予約することはできません")
+            raise _http_error(400, "過去の日時で予約することはできません", reason_code="invalid_request")
 
         closure = await _get_closure_for_date(db, request.shop_id, request.reservation_date.date())
         if closure:
-            raise HTTPException(status_code=400, detail="ご指定の日は臨時休業のため予約できません")
+            raise _http_error(400, "ご指定の日は臨時休業のため予約できません", reason_code="temporary_closure")
 
         service: Optional[Service] = None
         if request.service_id:
             service = await db.get(Service, request.service_id)
             if not service or service.shop_id != request.shop_id:
-                raise HTTPException(status_code=404, detail="指定されたサービスが見つかりません")
+                raise _http_error(404, "指定されたサービスが見つかりません", reason_code="service_unavailable")
             if service.is_active != "active":
-                raise HTTPException(status_code=400, detail="このサービスは現在受付を停止しています")
+                raise _http_error(400, "このサービスは現在受付を停止しています", reason_code="service_unavailable")
 
         weekday = request.reservation_date.weekday()
         hours_result = await db.execute(
@@ -398,11 +445,11 @@ async def create_reservation(
         hours = hours_result.scalar_one_or_none()
         if hours is not None:
             if hours.is_closed:
-                raise HTTPException(status_code=400, detail="ご指定の日は定休日です")
+                raise _http_error(400, "ご指定の日は定休日です", reason_code="shop_closed")
             req_time = request.reservation_date.time()
             latest_start_time = hours.last_order_time or hours.closing_time
             if req_time < hours.opening_time or req_time > latest_start_time:
-                raise HTTPException(status_code=400, detail="ご指定の時間は営業時間外です")
+                raise _http_error(400, "ご指定の時間は営業時間外です", reason_code="outside_business_hours")
 
         duration = (service.duration_minutes if service and service.duration_minutes else None) or shop.reservation_duration_minutes or 90
 
@@ -419,7 +466,7 @@ async def create_reservation(
                     )
                 )
                 if not staff_check.scalars().first():
-                    raise HTTPException(status_code=400, detail="指定されたスタッフはこのサービスを提供していません")
+                    raise _http_error(400, "指定されたスタッフはこのサービスを提供していません", reason_code="staff_unavailable")
 
             found_staff_id, unmanaged = await _find_available_staff_for_service(
                 db, request.shop_id, service.id, request.reservation_date, duration, request.staff_id
@@ -430,21 +477,21 @@ async def create_reservation(
                     if request.staff_id else
                     "ご希望の時間はスタッフの空きがありません。他の時間をお試しください"
                 )
-                raise HTTPException(status_code=400, detail=detail)
+                raise _http_error(400, detail, reason_code="staff_unavailable")
             final_staff_id = found_staff_id if not unmanaged else request.staff_id
         else:
             table_id, unmanaged = await _find_available_table(
                 db, request.shop_id, request.number_of_people, request.reservation_date, duration
             )
             if not unmanaged and table_id is None:
-                raise HTTPException(status_code=400, detail="ご希望の時間は満席です。他の時間をお試しください")
+                raise _http_error(400, "ご希望の時間は満席です。他の時間をお試しください", reason_code="fully_booked")
 
         coupon: Optional[Coupon] = None
         discount_amount = 0
         total_price = int(round(service.base_price)) if service else None
         if request.coupon_code:
             if not service:
-                raise HTTPException(status_code=400, detail="クーポンはサービスの予約にのみご利用いただけます")
+                raise _http_error(400, "クーポンはサービスの予約にのみご利用いただけます", reason_code="invalid_request")
             coupon, total_price, discount_amount = await _resolve_coupon_for_booking(
                 db, request.shop_id, request.coupon_code, service.base_price
             )
@@ -470,6 +517,7 @@ async def create_reservation(
             discount_amount=(discount_amount if coupon else None),
             payment_status=("unpaid" if service else None),
             reservation_source=("coupon" if coupon else "online"),
+            idempotency_key=request.idempotency_key,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
         )
@@ -485,7 +533,34 @@ async def create_reservation(
         shop.total_reservations += 1
         shop.updated_at = datetime.utcnow()
 
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError as ie:
+            # Phase3B: 同一idempotency_keyでの同時多重INSERT（Request A/Bが共に
+            # 「SELECT時点では存在しない」を通過した後、片方がcommitに成功し、
+            # もう片方がDBの一意制約(ux_reservations_idempotency_key)違反で
+            # ここに到達するケース）。これはidempotency_keyが指定されている場合
+            # にのみ起こり得る想定のため、その場合は先にcommitできた側の予約を
+            # 取得して同じ成功結果を返す（rollback → 既存Reservation再取得 →
+            # 同じ成功結果、というDB一意制約を最終防衛線とした設計）。
+            await db.rollback()
+            if request.idempotency_key:
+                existing = await _get_reservation_by_idempotency_key(db, request.idempotency_key)
+                if existing:
+                    logger.info(
+                        "idempotency_key=%s のcommit競合を検知。先に成立した予約(id=%s)を返します",
+                        request.idempotency_key, existing.id,
+                    )
+                    return ReservationCreateResponse(
+                        success=True,
+                        message="予約リクエストを受け付けました。店舗からの確定連絡をお待ちください",
+                        reservation_id=existing.id,
+                        reservation=_to_response(existing),
+                    )
+            # idempotency_keyが無い、または競合後も既存予約が見つからない場合
+            # （＝idempotency_keyに起因しない、本当に想定外の一意制約違反）は
+            # 従来通り安全側の500として扱う。
+            raise _http_error(500, f"予約作成に失敗しました: {ie}", reason_code="temporarily_unavailable")
 
         result = await db.execute(
             select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon)).filter(Reservation.id == reservation_id)
@@ -504,7 +579,7 @@ async def create_reservation(
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"予約作成に失敗しました: {str(e)}")
+        raise _http_error(500, f"予約作成に失敗しました: {str(e)}", reason_code="temporarily_unavailable")
 
 
 @router.get(

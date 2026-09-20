@@ -545,7 +545,7 @@
                 + ', responses=' + sums.count + ', total_tokens=' + sums.total);
         }
 
-        // ===== Phase3A: Realtime Tool Calling（check_availabilityのみ） =====
+        // ===== Realtime Tool Calling（Phase3A: check_availability / Phase3B: create_reservation） =====
         //
         // 設計方針（重要）:
         // - RECEPTRAのサーバーはRealtimeのDataChannelを一切見ていない
@@ -624,6 +624,61 @@
             }
         }
 
+        // ===== Phase3B: create_reservation =====
+        //
+        // 設計方針（重要）:
+        // - shop_idはcheck_availabilityと同じくAIの引数に含めない。加えて、
+        //   call_idもAIの出力JSONには一切含まれない（Toolのparametersに
+        //   call_idという項目自体が存在しない）。ここでhandleFunctionCallItemが
+        //   OpenAI Realtimeのfunction_callイベント本体(item.call_id)から
+        //   直接読み取った値を、リクエストボディにcall_idとして追加で載せて
+        //   FastAPI側へ転送する。AI自身にidempotency_keyやcall_idを
+        //   生成させることは絶対にしない。
+        // - FastAPI側がこのcall_idを "realtime_voice:{shop_id}:{call_id}" に
+        //   namespace化し、DBの一意インデックスで同一call_idの二重予約作成を
+        //   最終的に防止する（call_idの再送防止＝ここでのprocessedToolCallIds
+        //   と、DB一意制約による冪等性保証は別の防御層であり、片方だけに
+        //   依存しない設計）。
+        // - guest_email・coupon_codeはPhase3Bのスコープ外のため送らない。
+        async function callCreateReservationTool(args, callId) {
+            const body = {
+                date: args && args.date,
+                time: args && args.time,
+                party_size: args && args.party_size,
+                guest_name: args && args.guest_name,
+                guest_phone: args && args.guest_phone,
+                call_id: callId,
+            };
+            if (args && args.service_id) body.service_id = args.service_id;
+            if (args && args.staff_id) body.staff_id = args.staff_id;
+            if (args && args.special_requests) body.special_requests = args.special_requests;
+
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/create-reservation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || typeof data.success !== 'boolean') {
+                    // check_availabilityと同じ方針: HTTP 422（FastAPI自身のリクエスト
+                    // バリデーションエラー、引数自体が不正）はinvalid_request、
+                    // それ以外（429レート制限・5xx・ネットワーク断でJSON自体が
+                    // 取得できない等）はtemporarily_unavailableに分ける。
+                    return {
+                        success: false,
+                        reason_code: (res.status === 422) ? 'invalid_request' : 'temporarily_unavailable',
+                    };
+                }
+                return data;
+            } catch (e) {
+                // fetch自体が例外を投げるのはネットワーク断等のみのため、
+                // 入力の誤りではなくtemporarily_unavailable。
+                logEvent('create_reservation Tool呼び出しに失敗: ' + e.message);
+                return { success: false, reason_code: 'temporarily_unavailable' };
+            }
+        }
+
         async function handleFunctionCallItem(item) {
             const callId = item.call_id;
             if (!callId) return;
@@ -644,12 +699,15 @@
             if (item.name === 'check_availability') {
                 logEvent('Tool呼び出し受信: check_availability ' + JSON.stringify(args));
                 output = await callCheckAvailabilityTool(args || {});
+            } else if (item.name === 'create_reservation') {
+                logEvent('Tool呼び出し受信: create_reservation ' + JSON.stringify(args));
+                output = await callCreateReservationTool(args || {}, callId);
             } else {
-                // Phase3Aで宣言しているToolはcheck_availabilityのみ。
-                // 未知の関数名が来た場合も、応答せずに放置するとAIが
+                // Phase3Bで宣言しているToolはcheck_availability / create_reservationの
+                // 2つのみ。未知の関数名が来た場合も、応答せずに放置するとAIが
                 // 待ち続けてしまうため、安全側の失敗として返す。
                 logEvent('未知のTool呼び出し: ' + item.name);
-                output = { available: false, reason_code: 'invalid_request' };
+                output = { available: false, success: false, reason_code: 'invalid_request' };
             }
 
             logEvent('Tool結果送信: ' + JSON.stringify(output));
