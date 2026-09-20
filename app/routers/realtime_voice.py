@@ -117,10 +117,15 @@ async def check_availability_tool(
     - このエンドポイントは、どんな失敗（店舗未検出・不正な日付/時刻・想定外の例外等）
       であっても available=True を返してはならない。Realtime AIが「たぶん空いている」
       と推測することを防ぐため、FastAPI（このエンドポイント）とDBを唯一の正とする。
-      失敗時は available=False, reason_code="invalid_request" を返す
-      （レート制限のみ既存の/sessionと同様429を返す。呼び出し側(ブラウザ)で
-      429やネットワーク断が発生した場合も、AIには available=false 相当として
-      安全に案内させる必要がある — フロントエンド側の実装で対応する）。
+    - 失敗時のreason_codeは2種類に分ける（ユーザー指摘によりPhase3A完了後に修正）:
+      - "invalid_request": 日付/時刻の形式が不正など、引数自体が不正な場合
+        （＝入力を直せば解決しうる）
+      - "temporarily_unavailable": 店舗未検出・想定外の例外等、入力は正しいが
+        現時点でこちらの都合で確定できない場合（＝入力を直しても解決しない）
+      レート制限のみ既存の/sessionと同様429を返す。呼び出し側(ブラウザ)で
+      429やネットワーク断が発生した場合も、AIには
+      temporarily_unavailable相当として安全に案内させる必要がある
+      （フロントエンド側の実装で対応する）。
     """
     _check_tool_rate_limit(shop_id)
 
@@ -136,7 +141,9 @@ async def check_availability_tool(
     try:
         shop = await db.get(Shop, shop_id)
         if not shop or not shop.is_active:
-            return _safe_fallback("invalid_request")
+            # shop_idはAIの引数ではなくURLパス由来のため、これが起きるのは
+            # 店舗の非公開化等こちら側の事情であり、AIやお客様の入力ミスではない。
+            return _safe_fallback("temporarily_unavailable")
 
         try:
             target_date = date_type.fromisoformat(request.date)
@@ -164,5 +171,6 @@ async def check_availability_tool(
         raise
     except Exception as e:
         # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(available=False)で返す。
+        # DB/内部エラーであり、お客様の入力が悪いわけではないためtemporarily_unavailable。
         logger.error("check_availability Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
-        return _safe_fallback("invalid_request")
+        return _safe_fallback("temporarily_unavailable")

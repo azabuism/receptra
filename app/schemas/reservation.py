@@ -127,9 +127,15 @@ class CheckAvailabilityResponse(BaseModel):
     party_size: int
     # available=False の場合のみ設定。候補:
     # fully_booked / outside_business_hours / shop_closed / temporary_closure /
-    # service_unavailable / staff_unavailable / invalid_request
-    # invalid_request は「入力不正」だけでなく「バックエンド側で予約状況を
-    # 確定できなかった（内部エラー等）」場合の安全側フォールバックとしても
-    # 使う。AI側の説明文で、この場合は満席と案内せず確認できなかった旨を
-    # 案内するよう指示する。
+    # service_unavailable / staff_unavailable / invalid_request / temporarily_unavailable
+    #
+    # Phase3A当初は「入力不正」と「バックエンド側で確定できなかった」を
+    # どちらもinvalid_requestに丸めていたが、ユーザー指摘により分離した:
+    # - invalid_request      : 日付/時刻の形式不正など、引数自体が不正な場合
+    # - temporarily_unavailable : 店舗未検出・DB/API障害・想定外の例外など、
+    #                             入力は正しいが現時点で確定できない場合
+    # AI側のTool説明文で、temporarily_unavailableの場合は「空いている」
+    # 「満席」のどちらとも案内せず、時間を置くか店舗へ問い合わせるよう
+    # 案内すること、invalid_requestの場合は指定形式を見直すことを
+    # それぞれ指示している。
     reason_code: Optional[str] = None

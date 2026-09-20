@@ -94,11 +94,15 @@ _REALTIME_TOOLS = [
             "fully_booked=満席、outside_business_hours=営業時間外、"
             "shop_closed=定休日、temporary_closure=臨時休業、"
             "service_unavailable=そのサービス自体が現在利用不可、"
-            "staff_unavailable=指名されたスタッフが空いていない。"
-            "reason_codeがinvalid_requestの場合は、満席等の確定情報ではなく"
-            "「現在確認できなかった」ことを意味します。この場合は満席とは案内せず、"
-            "少し時間を置いて再度お試しいただくか、店舗へ直接お問い合わせいただくよう"
-            "お伝えしてください。"
+            "staff_unavailable=指名されたスタッフが空いていない、"
+            "いずれも確定した情報なので、そのまま理由を添えてお客様に案内してください。\n"
+            "reason_codeがinvalid_requestの場合、渡した日付や時刻の形式が"
+            "誤っている可能性があります（date=YYYY-MM-DD, time=HH:MM(24時間)を"
+            "再確認し、正しい形式が分かれば修正して再度呼び出してください）。\n"
+            "reason_codeがtemporarily_unavailableの場合は、入力の誤りではなく、"
+            "現在システム側で空き状況を確認できない状態です。この場合は"
+            "満席とも空いているとも絶対に案内せず、少し時間を置いて再度お試し"
+            "いただくか、店舗へ直接お問い合わせいただくようお伝えしてください。"
         ),
         "parameters": {
             "type": "object",

@@ -558,8 +558,12 @@
         // - Tool結果はFastAPI（Reservation DB / ShopHours / ShopClosure）を
         //   唯一の正とする。fetch失敗・タイムアウト・不正レスポンス等、
         //   どんな失敗であってもavailable:trueを合成してはならない。必ず
-        //   available:false, reason_code:"invalid_request" を返し、AIに
-        //   「確認できなかった」と案内させる（満席とは言わせない）。
+        //   available:falseを返し、AIに「確認できなかった」と案内させる
+        //   （満席とは言わせない）。reason_codeは、FastAPI側のバリデーション
+        //   エラー(HTTP 422、引数自体が不正)はinvalid_requestに、それ以外
+        //   （レート制限429・ネットワーク断・5xx等、入力は正しいが確認
+        //   できない場合）はtemporarily_unavailableに分けて返す
+        //   （ユーザー指摘によりPhase3A完了後に修正）。
         // - 同一call_idの二重処理を防止する（Phase3Aは読み取りのみなので
         //   実害は無いが、Phase3Bのcreate_reservationに備えて今のうちに
         //   仕組みを入れておく）。
@@ -592,25 +596,30 @@
                 const data = await res.json().catch(() => null);
                 if (!res.ok || !data || typeof data.available !== 'boolean') {
                     // FastAPI側は原則常に200+安全なavailable:falseを返す設計だが、
-                    // レート制限(429)やネットワーク断等、JSONを取得できない場合の
-                    // 最終フォールバックとしてここでも安全側に倒す。
+                    // ここに来るのは主に以下のいずれか:
+                    // - HTTP 422: FastAPI自身のリクエストバリデーションエラー
+                    //   （party_sizeの型/範囲など、引数自体が不正）→ invalid_request
+                    // - それ以外（429レート制限・5xx・ネットワーク断でJSON自体が
+                    //   取得できない等）→ temporarily_unavailable
                     return {
                         available: false,
                         date: body.date || null,
                         time: body.time || null,
                         party_size: body.party_size || null,
-                        reason_code: 'invalid_request',
+                        reason_code: (res.status === 422) ? 'invalid_request' : 'temporarily_unavailable',
                     };
                 }
                 return data;
             } catch (e) {
+                // fetch自体が例外を投げるのはネットワーク断等のみのため、
+                // 入力の誤りではなくtemporarily_unavailable。
                 logEvent('check_availability Tool呼び出しに失敗: ' + e.message);
                 return {
                     available: false,
                     date: body.date || null,
                     time: body.time || null,
                     party_size: body.party_size || null,
-                    reason_code: 'invalid_request',
+                    reason_code: 'temporarily_unavailable',
                 };
             }
         }
