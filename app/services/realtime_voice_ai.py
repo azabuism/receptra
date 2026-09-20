@@ -76,6 +76,8 @@ REALTIME_INSTRUCTIONS_TEMPLATE = """\
 店舗「{shop_name}」の音声通話に、実際の受付スタッフのように応対してください。
 
 # 話し方の絶対ルール
+- マニュアルを読み上げるような丁寧すぎる接客敬語ではなく、実際の店員が
+  電話口で話すような、自然でくだけたテンポの話し言葉にしてください。
 - 1回の発話は1〜2文、できるだけ短く話してください。長い前置きや繰り返しの
   お礼は不要です。
 - 一度に複数のことを質問しないでください。人間の受付スタッフのように、
@@ -87,6 +89,14 @@ REALTIME_INSTRUCTIONS_TEMPLATE = """\
 - お客様が話し始めたら、あなたの発話は途中でも止めてください。
 - お客様が言い直した場合（例:「3人、いや4人です」）は、最後に言った内容を
   正として自然に応じてください。聞き返して確認しても構いません。
+
+# 話し方の見本（この温度感・テンポをそのまま真似てください）
+客:「今日って空いてます？」
+AI:「はい。何時頃がいいですか？」
+客:「7時くらいかな」
+AI:「7時ですね。何名様ですか？」
+客:「3人。あ、やっぱ8時で」
+AI:「はい、8時ですね。3名様で確認します。」
 
 # 店舗の営業時間（曜日ごと）
 {hours_block}
@@ -127,23 +137,72 @@ async def create_realtime_session(db: AsyncSession, shop: Shop) -> dict:
 
     instructions = await build_realtime_instructions(db, shop)
 
+    # 会話品質の調査結果（2026年9月）を踏まえた明示設定。
+    # 以前はvoice/turn_detectionを未指定にしており、OpenAI側の暗黙の
+    # デフォルトに委ねていたことが「日本語がカタコト」「テンポが不自然」
+    # という報告の一因と考えられたため、公式ドキュメントの推奨に沿って
+    # 明示的に指定する。
+    #
+    # 重要: この2項目は、インストール済みのopenaiパッケージ(1.109.1)が
+    # 生成する型定義(RealtimeAudioConfigOutputParam/InputParam)で
+    # session.audio.output.voice / session.audio.input.turn_detection という
+    # ネスト構造であることを直接確認した上で、その構造で送っている
+    # （以前の実装案ではセッション直下にvoice/turn_detectionを置いていたが、
+    # それは誤りだったため、実装時に修正した）。
+    session_config: dict = {
+        "type": "realtime",
+        "model": settings.OPENAI_REALTIME_MODEL,
+        "instructions": instructions,
+        "audio": {
+            "output": {
+                # OpenAI公式のWebRTC接続ガイド・TTSガイドが
+                # gpt-realtime-2.1との組み合わせで明示的に推奨している音声。
+                "voice": settings.OPENAI_REALTIME_VOICE,
+            },
+            "input": {
+                # 現行デフォルトのsemantic_vad
+                # （無音時間ではなく発話内容の区切りで判定）を明示化。
+                # eagernessは今後の実機テストでチューニングする前提の初期値。
+                "turn_detection": {
+                    "type": "semantic_vad",
+                    "eagerness": settings.OPENAI_REALTIME_VAD_EAGERNESS,
+                },
+            },
+        },
+    }
+
+    # reasoning（推論の深さ）: gpt-realtime-2.1のモデルページには
+    # 「configurable reasoning effortに対応し、上げるほどレイテンシと
+    # トークン使用量が増える」と記載があるが、インストール済みの
+    # openai==1.109.1が生成する型定義には現時点でこのフィールドが
+    # 一切存在しない（実装時にopenai/types/realtime配下を直接確認して
+    # 確認済み）。つまり実際のAPIが本当にこのフィールドを受け付けるかは
+    # 未検証。本番同等環境でしか実キーによる検証ができないため、
+    # 送信自体は試すが、無効な場合に備えて空文字にすればこのフィールド
+    # ごと送らないようにしてあり、デプロイ後にセッション発行が失敗する
+    # 場合はまずこの値を空にして切り分けられるようにしている。
+    if settings.OPENAI_REALTIME_REASONING_EFFORT:
+        session_config["reasoning"] = {
+            "effort": settings.OPENAI_REALTIME_REASONING_EFFORT,
+        }
+
     client = _get_client()
     secret = await client.realtime.client_secrets.create(
         expires_after={
             "anchor": "created_at",
             "seconds": settings.REALTIME_CLIENT_SECRET_TTL_SECONDS,
         },
-        session={
-            "type": "realtime",
-            "model": settings.OPENAI_REALTIME_MODEL,
-            "instructions": instructions,
-        },
+        session=session_config,
     )
 
     logger.info(
-        "Realtimeセッションを発行 shop_id=%s model=%s expires_at=%s",
+        "Realtimeセッションを発行 shop_id=%s model=%s voice=%s vad_eagerness=%s "
+        "reasoning_effort=%s expires_at=%s",
         shop.id,
         settings.OPENAI_REALTIME_MODEL,
+        settings.OPENAI_REALTIME_VOICE,
+        settings.OPENAI_REALTIME_VAD_EAGERNESS,
+        settings.OPENAI_REALTIME_REASONING_EFFORT,
         secret.expires_at,
     )
 

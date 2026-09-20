@@ -84,6 +84,17 @@ class Settings(BaseSettings):
     # 開始する必要がある（OpenAI仕様上10〜7200秒）。一度接続が始まった通話自体の
     # 継続時間には影響しないため、通話時間の安全装置はフロントエンド側で別途設ける。
     REALTIME_CLIENT_SECRET_TTL_SECONDS: int = 60
+    # 会話品質調査（2026年9月）の結果を踏まえた明示設定。環境変数で
+    # 上書きできるようにし、コード変更なしでA/Bテストできるようにする。
+    # voice: OpenAI公式のWebRTC接続ガイド・TTSガイドがgpt-realtime-2.1との
+    # 組み合わせで明示的に推奨している音声（未指定時のデフォルトに頼らない）。
+    OPENAI_REALTIME_VOICE: str = "marin"
+    # turn_detection.eagerness: semantic_vadの踏み込みの早さ。
+    # auto(=medium)を初期値とし、実機テストでlow/highと比較する。
+    OPENAI_REALTIME_VAD_EAGERNESS: str = "auto"
+    # reasoning.effort: 上げるほどレイテンシ・トークン使用量が増えると
+    # 公式ドキュメントに明記されているため、単純な受付対話向けに低めに設定。
+    OPENAI_REALTIME_REASONING_EFFORT: str = "low"
 
     # ===== PAY.JP設定 =====
     PAYJP_API_KEY: str = ""
