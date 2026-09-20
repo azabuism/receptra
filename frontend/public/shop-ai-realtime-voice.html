@@ -752,12 +752,18 @@
                         // これによりRealtimeの会話履歴に「既にこの第一声を話した」
                         // という文脈だけを与え、お客様の直後の発言を正しく解釈
                         // できるようにする（section19）。
+                        // 重要（本番E2Eで判明・修正済み）: role:'assistant'の
+                        // message item に対しては、content[0].typeは'text'ではなく
+                        // 'output_text'を指定する必要がある。'text'を指定すると
+                        // サーバーから invalid_value エラー（"Value must be
+                        // 'output_text'"）が返る（user側のinput_text/input_audioと、
+                        // assistant側のoutput_text/output_audioが区別されている）。
                         dc.send(JSON.stringify({
                             type: 'conversation.item.create',
                             item: {
                                 type: 'message',
                                 role: 'assistant',
-                                content: [{ type: 'text', text: zeroWaitGreetingText }],
+                                content: [{ type: 'output_text', text: zeroWaitGreetingText }],
                             },
                         }));
                         logEvent('[ZeroWait] Realtime会話履歴へ第一声テキストを通知しました（response.createは送信しません＝二重発話防止）');
