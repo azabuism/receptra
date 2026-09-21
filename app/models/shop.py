@@ -153,6 +153,12 @@ class Shop(Base):
     shop_knowledge = relationship("ShopKnowledge", back_populates="shop", cascade="all, delete-orphan", uselist=False)
     shop_faqs = relationship("ShopFAQ", back_populates="shop", cascade="all, delete-orphan")
 
+    # Outbound AI Phase 1: 店舗削除時にジョブ・ログも一緒に削除されるようにする
+    # （Production E2E検証で、これが無いと予約経由の間接カスケードだけでは
+    # FK制約違反でdelete_shop()が失敗するケースがあることが判明したため追加）。
+    outbound_call_jobs = relationship("OutboundCallJob", back_populates="shop", cascade="all, delete-orphan")
+    outbound_call_logs = relationship("OutboundCallLog", back_populates="shop", cascade="all, delete-orphan")
+
     # インデックス
     __table_args__ = (
         Index("ix_shops_tenant", "tenant_id"),

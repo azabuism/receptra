@@ -99,6 +99,12 @@ class Reservation(Base):
     service = relationship("Service", foreign_keys=[service_id])
     coupon = relationship("Coupon", foreign_keys=[coupon_id])
 
+    # Outbound AI Phase 1: 予約削除（店舗削除の間接カスケード含む）時に、
+    # 紐づくOutboundCallJob/Logも一緒に削除する（app/models/shop.pyの
+    # outbound_call_jobs/outbound_call_logsと対になるrelationship）。
+    outbound_call_jobs = relationship("OutboundCallJob", back_populates="reservation", cascade="all, delete-orphan")
+    outbound_call_logs = relationship("OutboundCallLog", back_populates="reservation", cascade="all, delete-orphan")
+
     # インデックス
     __table_args__ = (
         Index("ix_reservations_shop", "shop_id"),

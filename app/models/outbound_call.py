@@ -34,6 +34,7 @@ from datetime import datetime
 import enum
 
 from sqlalchemy import Column, String, DateTime, ForeignKey, Index, Text, Integer
+from sqlalchemy.orm import relationship
 from app.database import Base
 
 
@@ -101,6 +102,15 @@ class OutboundCallJob(Base):
         Index("ix_outbound_call_jobs_status_next_attempt", "status", "next_attempt_at"),
     )
 
+    # Production E2E検証で発見: Shop.reservations は cascade="all, delete-orphan"
+    # で店舗削除時に予約ごと削除される設計（Phase3H Workstream D）だが、この
+    # OutboundCallJob/OutboundCallLogがreservation_id/shop_idの単純なFKで
+    # 参照しているだけでは、その削除の際にFK制約違反でdelete_shop()自体が
+    # 失敗してしまう（app/models/shop.py・app/models/reservation.py側の
+    # 対応するrelationship定義とセットで、この2つのrelationshipが必要）。
+    shop = relationship("Shop", back_populates="outbound_call_jobs")
+    reservation = relationship("Reservation", back_populates="outbound_call_jobs")
+
     def __repr__(self):
         return f"<OutboundCallJob(id={self.id}, shop_id={self.shop_id}, status={self.status})>"
 
@@ -144,6 +154,10 @@ class OutboundCallLog(Base):
     __table_args__ = (
         Index("ix_outbound_call_logs_shop_created", "shop_id", "created_at"),
     )
+
+    # OutboundCallJobと同じ理由（店舗削除時のカスケード安全性）でrelationshipを定義する。
+    shop = relationship("Shop", back_populates="outbound_call_logs")
+    reservation = relationship("Reservation", back_populates="outbound_call_logs")
 
     def __repr__(self):
         return f"<OutboundCallLog(id={self.id}, shop_id={self.shop_id}, result_status={self.result_status})>"
