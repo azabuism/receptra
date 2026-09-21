@@ -24,15 +24,13 @@ get_customer_context Tool自体のレスポンスとして直接観測できる�
 別途覗く一時エンドポイントを追加する必要が無い（むしろ追加しないことで、
 一時デバッグルーターの攻撃面・削除し忘れリスクを最小化する）。
 
-追記（E2E実行中にブラウザのJS実行コンテキストが失われ、直前に作成した
-E2E-TEMPテナント/店舗のログイン認証情報を復元できなくなったことへの対応）:
-通常のforce-enable-reservations/tenants/self（自テナントのみ操作可能・要ログイン）
-に加えて、「孤立したE2E-TEMPテナントの一覧・強制削除」を行う2エンドポイントを
-追加する。これらはログイン不要だが、対象をテナント名が E2E_MARKER
-（"【E2E-TEMP】"）で始まるものだけに構造的に限定しており、実テナントの名前は
-この形式を持たないため、実データには一切到達し得ない（本ファイル冒頭の
-安全設計と同じ「名前プレフィックスを最終防衛線とする」方針をそのまま踏襲）。
-検証完了後、本ファイルごと削除する。
+追記: 一時的に「孤立したE2E-TEMPテナントの一覧・強制削除」用の認証不要
+エンドポイント（/orphaned-tenants, /orphaned-tenants/{tenant_id}）を、
+ブラウザ側の状態喪失に対する復旧策として追加したことがあったが、
+本番環境に認証なしで到達する削除系エンドポイントを常設することは
+セキュリティ上望ましくないため、ユーザーの明示許可のもとその場で
+1回だけ使用した直後に完全に削除済み（本ファイルはこの2エンドポイントを
+含まない状態が正）。
 
 安全設計（重要・Phase 1/1.5/4Aと同じ二重防御をそのまま踏襲）:
 - 全エンドポイントが「呼び出し元ユーザー自身のtenant」にのみ作用する。
@@ -149,79 +147,6 @@ async def delete_own_e2e_tenant(
             status_code=400,
             detail="先に本番の DELETE /api/v1/shops/{shop_id} でこのテナントの店舗を削除してください",
         )
-
-    await db.delete(tenant)
-    await db.commit()
-
-
-class OrphanedTenantSummary(BaseModel):
-    tenant_id: str
-    tenant_name: str
-    shop_ids: list[str]
-    shop_names: list[str]
-
-
-@router.get(
-    "/orphaned-tenants",
-    response_model=list[OrphanedTenantSummary],
-    summary="【一時】孤立したE2E-TEMPテナント一覧（認証情報を失った場合のクリーンアップ復旧用）",
-)
-async def list_orphaned_e2e_tenants(
-    db: AsyncSession = Depends(get_db),
-) -> list[OrphanedTenantSummary]:
-    result = await db.execute(
-        select(Tenant).filter(Tenant.name.startswith(E2E_MARKER))
-    )
-    tenants = result.scalars().all()
-
-    summaries: list[OrphanedTenantSummary] = []
-    for tenant in tenants:
-        shops_result = await db.execute(
-            select(Shop).filter(Shop.tenant_id == tenant.id)
-        )
-        shops = shops_result.scalars().all()
-        summaries.append(
-            OrphanedTenantSummary(
-                tenant_id=tenant.id,
-                tenant_name=tenant.name,
-                shop_ids=[s.id for s in shops],
-                shop_names=[s.name for s in shops],
-            )
-        )
-    return summaries
-
-
-@router.delete(
-    "/orphaned-tenants/{tenant_id}",
-    status_code=204,
-    summary="【一時】孤立したE2E-TEMPテナントを強制削除（テナント名がE2E_MARKERで始まる場合のみ動作）",
-)
-async def delete_orphaned_e2e_tenant(
-    tenant_id: str,
-    db: AsyncSession = Depends(get_db),
-) -> None:
-    tenant = await db.get(Tenant, tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="テナントが見つかりません")
-    if not tenant.name.startswith(E2E_MARKER):
-        raise HTTPException(
-            status_code=403,
-            detail=f"このエンドポイントはテナント名が{E2E_MARKER}で始まる一時テストテナントにのみ使用できます",
-        )
-
-    shops_result = await db.execute(select(Shop).filter(Shop.tenant_id == tenant.id))
-    shops = shops_result.scalars().all()
-    for shop in shops:
-        if not shop.name.startswith(E2E_MARKER):
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"テナント配下に{E2E_MARKER}で始まらない店舗（{shop.name}）が"
-                    "存在するため、安全のため削除を中止しました"
-                ),
-            )
-        await db.delete(shop)
-    await db.commit()
 
     await db.delete(tenant)
     await db.commit()
