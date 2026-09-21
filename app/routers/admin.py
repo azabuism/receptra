@@ -81,6 +81,7 @@ async def get_shops_inventory(
             "is_active": shop.is_active,
             "created_at": shop.created_at.isoformat() if shop.created_at else None,
             "reservation_count": await _count(Reservation, shop.id),
+            "coupon_count": await _count(Coupon, shop.id),
             "staff_count": await _count(Staff, shop.id),
             "service_count": await _count(Service, shop.id),
             "faq_count": await _count(ShopFAQ, shop.id),

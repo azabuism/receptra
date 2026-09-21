@@ -604,9 +604,29 @@ async def _resolve_coupon_for_booking(
     予約時に入力されたクーポンコードを検証し、割引後の合計金額を計算する。
     戻り値: (Coupon, discounted_total(円), discount_amount(円))
     無効なクーポンの場合は HTTPException(400) を送出する。
+
+    Phase3G Workstream2追記（Coupon Reservation Integrity）:
+    - このSELECTに .with_for_update() を追加し、このCouponの行ロックを
+      create_reservation()のトランザクション終了(commit/rollback)まで保持する。
+      理由: usage_limit判定→usage_count加算が「読んで＋1して書く」という
+      非atomicな処理のため、ロックなしでは usage_limit=1 のクーポンに
+      ほぼ同時に2件の予約が来た場合、両方が「まだ上限に達していない」と
+      判定してしまい、上限を超えて成立してしまう（Phase3F監査で発覚した
+      不整合の根本原因の一つ）。同一coupon_idに対する同時リクエストは
+      このロックにより直列化される（スタッフ／テーブルの
+      _find_and_lock_available_* と同じ考え方）。
+    - usage_limit判定に使うのは、この後の cancel_reservation / update_reservation
+      側の変更（Phase3G参照）により「キャンセルされた予約分は差し引かれた
+      現在有効な利用数」を表すよう保守される coupon.usage_count 自体。
+      予約作成時に coupon_code を追加・変更・解除する手段は現状のAPIに
+      存在しないため（ReservationUpdateRequestにcoupon関連フィールドは無い）、
+      予約作成時と予約キャンセル時の2箇所だけを正しく保守すれば
+      ライフサイクル全体が正しくなる。
     """
     result = await db.execute(
-        select(Coupon).filter(Coupon.shop_id == shop_id, Coupon.code == code)
+        select(Coupon)
+        .filter(Coupon.shop_id == shop_id, Coupon.code == code)
+        .with_for_update()
     )
     coupon = result.scalar_one_or_none()
     if not coupon:
@@ -630,6 +650,44 @@ async def _resolve_coupon_for_booking(
     discount_amount = int(round(max(0.0, min(raw_discount, base_amount))))
     discounted_total = int(round(base_amount)) - discount_amount
     return coupon, discounted_total, discount_amount
+
+
+async def _release_coupon_usage_if_any(db: AsyncSession, reservation: Reservation) -> None:
+    """
+    Phase3G Workstream2: 予約がキャンセルされる際、その予約がクーポンを
+    使用していた場合、Coupon.usage_count / total_discount_given を
+    「現在有効な利用数」に戻す（減算する）。
+
+    設計方針（重要）:
+    - 対象は status が「これまでcancelledではなかった」→「cancelledになる」
+      という遷移が実際に起きる場合のみ（呼び出し側で判定済みであることを
+      前提とする）。同じ予約を誤って二重にキャンセル操作しても、この関数
+      自体は「まだcancelledではない予約」に対してのみ呼ばれるため二重減算
+      にはならない。
+    - no_show・completedへの遷移では呼ばない（予約枠自体は実際に確保され、
+      店舗側の受け入れコストが発生しているため、クーポンは「使用済み」の
+      ままとする。この解釈はPhase3G調査時点の判断であり、将来的にビジネス
+      要件として明示的に変わる可能性がある）。
+    - Coupon行を .with_for_update() でロックしてから減算する
+      （_resolve_coupon_for_bookingと同じ行を対象にした排他制御）。
+    - usage_count は 0 未満にはしない（既存データの手動修正や、本関数が
+      導入される前に作られたキャンセル済み予約など、想定外の状態からでも
+      安全側に倒す）。
+    """
+    if not reservation.coupon_id:
+        return
+    result = await db.execute(
+        select(Coupon).filter(Coupon.id == reservation.coupon_id).with_for_update()
+    )
+    coupon = result.scalar_one_or_none()
+    if not coupon:
+        return
+    coupon.usage_count = max(0, (coupon.usage_count or 0) - 1)
+    if reservation.discount_amount:
+        coupon.total_discount_given = max(
+            0.0, (coupon.total_discount_given or 0.0) - reservation.discount_amount
+        )
+    coupon.updated_at = datetime.utcnow()
 
 
 @router.get(
@@ -1001,8 +1059,14 @@ async def update_reservation(
     db: AsyncSession = Depends(get_db)
 ) -> ReservationResponse:
     try:
+        # Phase3G Workstream2: cancel_reservationと同様、同一予約への同時更新
+        # (特にstatus=cancelledへの同時呼び出し)によるクーポン利用数の
+        # 二重解放を防ぐため、予約行をFOR UPDATEでロックする。
         result = await db.execute(
-            select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon)).filter(Reservation.id == reservation_id)
+            select(Reservation)
+            .options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon))
+            .filter(Reservation.id == reservation_id)
+            .with_for_update()
         )
         reservation = result.scalar_one_or_none()
         if not reservation:
@@ -1018,6 +1082,11 @@ async def update_reservation(
                 raise HTTPException(status_code=400, detail=f"不正なステータスです（{', '.join(sorted(VALID_STATUSES))}）")
             if new_status != reservation.status:
                 if new_status == "cancelled":
+                    # Phase3G Workstream2: cancelledへの遷移が実際に起きる
+                    # 場合のみクーポン利用数を解放する（旧ステータスが既に
+                    # cancelledだった場合はこのif自体に入らないため、
+                    # 二重減算にはならない）。
+                    await _release_coupon_usage_if_any(db, reservation)
                     reservation.cancelled_at = datetime.utcnow()
                     reservation.cancellation_reason = request.cancellation_reason
                 elif new_status == "completed":
@@ -1058,9 +1127,21 @@ async def cancel_reservation(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        reservation = await db.get(Reservation, reservation_id)
+        # Phase3G Workstream2: 同一reservation_idへの同時キャンセル呼び出し
+        # (二重クリック・リトライ等)が、両方とも「まだcancelledではない」と
+        # 読んでしまいクーポン利用数を二重解放することを防ぐため、
+        # 予約行自体もFOR UPDATEでロックする。
+        result = await db.execute(
+            select(Reservation).filter(Reservation.id == reservation_id).with_for_update()
+        )
+        reservation = result.scalar_one_or_none()
         if not reservation:
             raise HTTPException(status_code=404, detail="予約が見つかりません")
+
+        # 既に取り消し済みの予約への重複呼び出しでは、クーポン利用数を
+        # 二重解放しない。
+        if reservation.status != ReservationStatus.CANCELLED.value:
+            await _release_coupon_usage_if_any(db, reservation)
 
         reservation.status = ReservationStatus.CANCELLED.value
         reservation.cancelled_at = datetime.utcnow()
