@@ -230,6 +230,33 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ ai_staff_settings のGreeting音声キャッシュ用カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # Phase3H Workstream B: shop_knowledge テーブルへ、支払い方法の
+            # ブランド単位詳細カラムを追加。既存の大分類カラム（payment_cash等）
+            # は一切変更しない。全て nullable のため、既存行はNULL（未設定）で
+            # 埋まり、後方互換性に影響しない。
+            try:
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_credit_visa VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_credit_mastercard VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_credit_jcb VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_credit_amex VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_credit_diners VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_credit_other VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_qr_paypay VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_qr_au_pay VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_qr_d_barai VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_qr_rakuten_pay VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_qr_merpay VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_qr_other VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_emoney_transit_ic VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_emoney_id VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_emoney_quicpay VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_emoney_rakuten_edy VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_emoney_waon VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_emoney_nanaco VARCHAR(15)"))
+                await conn.execute(text("ALTER TABLE shop_knowledge ADD COLUMN IF NOT EXISTS payment_emoney_other VARCHAR(15)"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ shop_knowledge の支払いブランド詳細カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 

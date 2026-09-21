@@ -39,6 +39,27 @@ class ShopKnowledgeUpdateRequest(BaseModel):
     payment_emoney: Optional[str] = Field(None, description="yes/no/None")
     payment_notes: Optional[str] = Field(None, max_length=1000)
 
+    # 支払い方法（Phase3H: ブランド単位の詳細。yes/no/conditional/None）
+    payment_credit_visa: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_credit_mastercard: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_credit_jcb: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_credit_amex: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_credit_diners: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_credit_other: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_qr_paypay: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_qr_au_pay: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_qr_d_barai: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_qr_rakuten_pay: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_qr_merpay: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_qr_other: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_emoney_transit_ic: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_emoney_id: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_emoney_quicpay: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_emoney_rakuten_edy: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_emoney_waon: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_emoney_nanaco: Optional[str] = Field(None, description="yes/no/conditional/None")
+    payment_emoney_other: Optional[str] = Field(None, description="yes/no/conditional/None")
+
     # 設備・利用条件
     wifi_available: Optional[str] = Field(None, description="yes/no/conditional/None")
     private_room_available: Optional[str] = Field(None, description="yes/no/conditional/None")
@@ -74,6 +95,13 @@ class ShopKnowledgeUpdateRequest(BaseModel):
     @field_validator(
         "wifi_available", "private_room_available", "wheelchair_accessible",
         "children_allowed", "smoking_policy", "pets_allowed", "elevator_available",
+        "payment_credit_visa", "payment_credit_mastercard", "payment_credit_jcb",
+        "payment_credit_amex", "payment_credit_diners", "payment_credit_other",
+        "payment_qr_paypay", "payment_qr_au_pay", "payment_qr_d_barai",
+        "payment_qr_rakuten_pay", "payment_qr_merpay", "payment_qr_other",
+        "payment_emoney_transit_ic", "payment_emoney_id", "payment_emoney_quicpay",
+        "payment_emoney_rakuten_edy", "payment_emoney_waon", "payment_emoney_nanaco",
+        "payment_emoney_other",
         mode="before",
     )
     @classmethod
@@ -117,6 +145,26 @@ class ShopKnowledgeResponse(BaseModel):
     payment_qr_code: Optional[str] = None
     payment_emoney: Optional[str] = None
     payment_notes: Optional[str] = None
+
+    payment_credit_visa: Optional[str] = None
+    payment_credit_mastercard: Optional[str] = None
+    payment_credit_jcb: Optional[str] = None
+    payment_credit_amex: Optional[str] = None
+    payment_credit_diners: Optional[str] = None
+    payment_credit_other: Optional[str] = None
+    payment_qr_paypay: Optional[str] = None
+    payment_qr_au_pay: Optional[str] = None
+    payment_qr_d_barai: Optional[str] = None
+    payment_qr_rakuten_pay: Optional[str] = None
+    payment_qr_merpay: Optional[str] = None
+    payment_qr_other: Optional[str] = None
+    payment_emoney_transit_ic: Optional[str] = None
+    payment_emoney_id: Optional[str] = None
+    payment_emoney_quicpay: Optional[str] = None
+    payment_emoney_rakuten_edy: Optional[str] = None
+    payment_emoney_waon: Optional[str] = None
+    payment_emoney_nanaco: Optional[str] = None
+    payment_emoney_other: Optional[str] = None
 
     wifi_available: Optional[str] = None
     private_room_available: Optional[str] = None

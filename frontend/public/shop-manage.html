@@ -68,6 +68,18 @@
         @media (max-width: 560px) { .row-3, .row-2 { grid-template-columns: 1fr; } }
         .subheading { font-size: 14px; margin: 22px 0 10px; padding-top: 14px; border-top: 1px solid #eee; color: #555; }
         .subheading:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+        /* Phase3H: 支払いブランド詳細などの折りたたみ（アコーディオン）UI。
+           スマホでも見やすいよう、初期状態は閉じておき、必要な人だけ開く。 */
+        .accordion { border: 2px solid #eee; border-radius: 8px; margin-bottom: 14px; overflow: hidden; }
+        .accordion-toggle {
+            width: 100%; display: flex; align-items: center; justify-content: space-between;
+            padding: 12px 14px; background: #fafafa; border: none; cursor: pointer;
+            font-size: 14px; font-weight: 700; color: #444; font-family: inherit; text-align: left;
+        }
+        .accordion-toggle .accordion-caret { color: var(--primary); font-size: 12px; transition: transform 0.15s ease; }
+        .accordion-toggle[aria-expanded="true"] .accordion-caret { transform: rotate(180deg); }
+        .accordion-body { padding: 14px; border-top: 2px solid #eee; }
+        .accordion-body[hidden] { display: none; }
         .faq-item { padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
         .faq-item:last-child { border-bottom: none; }
         .faq-item .faq-question { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
@@ -683,6 +695,56 @@
                         </select>
                     </div>
                 </div>
+
+                <div class="accordion">
+                    <button type="button" class="accordion-toggle" data-accordion-target="pb-credit-brands" aria-expanded="false">
+                        クレジットカード（ブランド別に設定する）<span class="accordion-caret">▼</span>
+                    </button>
+                    <div class="accordion-body" id="pb-credit-brands" hidden>
+                        <p class="hint" style="margin-bottom: 12px;">対応しているブランドだけ「対応」にしてください。わからない場合は「未設定」のままで構いません。</p>
+                        <div class="row-3">
+                            <div class="field">
+                                <label for="sk-payment-credit-visa">Visa</label>
+                                <select id="sk-payment-credit-visa">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-credit-mastercard">Mastercard</label>
+                                <select id="sk-payment-credit-mastercard">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-credit-jcb">JCB</label>
+                                <select id="sk-payment-credit-jcb">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row-3">
+                            <div class="field">
+                                <label for="sk-payment-credit-amex">American Express</label>
+                                <select id="sk-payment-credit-amex">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-credit-diners">Diners Club</label>
+                                <select id="sk-payment-credit-diners">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-credit-other">その他のブランド</label>
+                                <select id="sk-payment-credit-other">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="row-3">
                     <div class="field">
                         <label for="sk-payment-qr-code">QRコード決済</label>
@@ -701,9 +763,116 @@
                         </select>
                     </div>
                 </div>
+
+                <div class="accordion">
+                    <button type="button" class="accordion-toggle" data-accordion-target="pb-qr-brands" aria-expanded="false">
+                        QRコード決済（ブランド別に設定する）<span class="accordion-caret">▼</span>
+                    </button>
+                    <div class="accordion-body" id="pb-qr-brands" hidden>
+                        <p class="hint" style="margin-bottom: 12px;">対応しているものだけ「対応」にしてください。わからない場合は「未設定」のままで構いません。</p>
+                        <div class="row-3">
+                            <div class="field">
+                                <label for="sk-payment-qr-paypay">PayPay</label>
+                                <select id="sk-payment-qr-paypay">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-qr-au-pay">au PAY</label>
+                                <select id="sk-payment-qr-au-pay">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-qr-d-barai">d払い</label>
+                                <select id="sk-payment-qr-d-barai">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row-3">
+                            <div class="field">
+                                <label for="sk-payment-qr-rakuten-pay">楽天ペイ</label>
+                                <select id="sk-payment-qr-rakuten-pay">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-qr-merpay">メルペイ</label>
+                                <select id="sk-payment-qr-merpay">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-qr-other">その他のQR決済</label>
+                                <select id="sk-payment-qr-other">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion">
+                    <button type="button" class="accordion-toggle" data-accordion-target="pb-emoney-brands" aria-expanded="false">
+                        電子マネー（ブランド別に設定する）<span class="accordion-caret">▼</span>
+                    </button>
+                    <div class="accordion-body" id="pb-emoney-brands" hidden>
+                        <p class="hint" style="margin-bottom: 12px;">対応しているものだけ「対応」にしてください。わからない場合は「未設定」のままで構いません。</p>
+                        <div class="row-3">
+                            <div class="field">
+                                <label for="sk-payment-emoney-transit-ic">交通系IC（Suica/PASMO等）</label>
+                                <select id="sk-payment-emoney-transit-ic">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-emoney-id">iD</label>
+                                <select id="sk-payment-emoney-id">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-emoney-quicpay">QUICPay</label>
+                                <select id="sk-payment-emoney-quicpay">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row-3">
+                            <div class="field">
+                                <label for="sk-payment-emoney-rakuten-edy">楽天Edy</label>
+                                <select id="sk-payment-emoney-rakuten-edy">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-emoney-waon">WAON</label>
+                                <select id="sk-payment-emoney-waon">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="sk-payment-emoney-nanaco">nanaco</label>
+                                <select id="sk-payment-emoney-nanaco">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row-3">
+                            <div class="field">
+                                <label for="sk-payment-emoney-other">その他の電子マネー</label>
+                                <select id="sk-payment-emoney-other">
+                                    <option value="">未設定</option><option value="yes">対応</option><option value="no">非対応</option><option value="conditional">条件付き</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="field">
                     <label for="sk-payment-notes">お支払いの補足</label>
-                    <textarea id="sk-payment-notes" maxlength="1000" placeholder="例：VISA/Mastercard/JCB/PayPay対応"></textarea>
+                    <textarea id="sk-payment-notes" maxlength="1000" placeholder="例：3,000円未満は現金のみ、その他のブランドはVISA提携カードのみ対応 など"></textarea>
                 </div>
 
                 <h3 class="subheading">設備・利用条件</h3>
@@ -2592,6 +2761,13 @@
             'parking-location', 'partner-parking', 'parking-full-guidance', 'parking-notes',
             'payment-cash', 'payment-credit-card', 'payment-debit-card', 'payment-qr-code',
             'payment-emoney', 'payment-notes',
+            'payment-credit-visa', 'payment-credit-mastercard', 'payment-credit-jcb',
+            'payment-credit-amex', 'payment-credit-diners', 'payment-credit-other',
+            'payment-qr-paypay', 'payment-qr-au-pay', 'payment-qr-d-barai',
+            'payment-qr-rakuten-pay', 'payment-qr-merpay', 'payment-qr-other',
+            'payment-emoney-transit-ic', 'payment-emoney-id', 'payment-emoney-quicpay',
+            'payment-emoney-rakuten-edy', 'payment-emoney-waon', 'payment-emoney-nanaco',
+            'payment-emoney-other',
             'wifi-available', 'private-room-available', 'wheelchair-accessible',
             'children-allowed', 'smoking-policy', 'pets-allowed', 'elevator-available',
             'facilities-notes',
@@ -2603,6 +2779,20 @@
             return id.replace(/-/g, '_');
         }
 
+        // Phase3H: 支払いブランド詳細などのアコーディオン（折りたたみ）UI共通処理。
+        // クリックのたびに aria-expanded とhidden属性を切り替えるだけの、
+        // 他に依存しないシンプルな実装（新しいライブラリは導入しない）。
+        document.querySelectorAll('.accordion-toggle').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const targetId = btn.getAttribute('data-accordion-target');
+                const body = document.getElementById(targetId);
+                if (!body) return;
+                const isOpen = btn.getAttribute('aria-expanded') === 'true';
+                btn.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+                body.hidden = isOpen;
+            });
+        });
+
         async function loadShopKnowledge() {
             try {
                 const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/knowledge');
@@ -2613,6 +2803,18 @@
                     if (!el) return;
                     const value = data[skFieldKey(id)];
                     el.value = (value === null || value === undefined) ? '' : value;
+                });
+                // Phase3H: 既にブランド別の設定が入っているアコーディオンは、
+                // オーナーが「設定したはずなのに見当たらない」と迷わないよう
+                // 開いた状態で表示する（保存済みかどうかが一目でわかるように）。
+                document.querySelectorAll('.accordion-body').forEach(function (body) {
+                    const hasValue = Array.from(body.querySelectorAll('select, textarea, input'))
+                        .some(function (el) { return el.value !== ''; });
+                    if (hasValue) {
+                        body.hidden = false;
+                        const toggle = document.querySelector('[data-accordion-target="' + body.id + '"]');
+                        if (toggle) toggle.setAttribute('aria-expanded', 'true');
+                    }
                 });
             } catch (e) {
                 // 未保存（レコード自体が無い）場合も404等にはならない設計だが、

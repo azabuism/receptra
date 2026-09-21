@@ -220,6 +220,7 @@ def _parking_info(k: ShopKnowledge) -> tuple[bool, Optional[dict]]:
 
 
 def _payment_info(k: ShopKnowledge) -> tuple[bool, Optional[dict]]:
+    # 大分類（既存・後方互換。Phase3D以前からの店舗もこの5項目のみで動作する）。
     fields = {
         "cash": k.payment_cash,
         "credit_card": k.payment_credit_card,
@@ -227,10 +228,50 @@ def _payment_info(k: ShopKnowledge) -> tuple[bool, Optional[dict]]:
         "qr_code": k.payment_qr_code,
         "emoney": k.payment_emoney,
     }
-    known = any(v is not None for v in fields.values())
+    # ブランド単位の詳細（Phase3H追加）。大分類とは独立して設定され得るため、
+    # 「known」の判定にも大分類・ブランド詳細の両方を含める
+    # （大分類が空でもブランド詳細だけ登録されているケースを見落とさないため）。
+    credit_brands = {
+        "visa": k.payment_credit_visa,
+        "mastercard": k.payment_credit_mastercard,
+        "jcb": k.payment_credit_jcb,
+        "amex": k.payment_credit_amex,
+        "diners": k.payment_credit_diners,
+        "other": k.payment_credit_other,
+    }
+    qr_brands = {
+        "paypay": k.payment_qr_paypay,
+        "au_pay": k.payment_qr_au_pay,
+        "d_barai": k.payment_qr_d_barai,
+        "rakuten_pay": k.payment_qr_rakuten_pay,
+        "merpay": k.payment_qr_merpay,
+        "other": k.payment_qr_other,
+    }
+    emoney_brands = {
+        "transit_ic": k.payment_emoney_transit_ic,
+        "id": k.payment_emoney_id,
+        "quicpay": k.payment_emoney_quicpay,
+        "rakuten_edy": k.payment_emoney_rakuten_edy,
+        "waon": k.payment_emoney_waon,
+        "nanaco": k.payment_emoney_nanaco,
+        "other": k.payment_emoney_other,
+    }
+    all_values = (
+        list(fields.values()) + list(credit_brands.values())
+        + list(qr_brands.values()) + list(emoney_brands.values())
+    )
+    known = any(v is not None for v in all_values)
     if not known:
         return False, None
     data = dict(fields)
+    # ブランド単位の詳細は、そのカテゴリで1件でも登録があれば辞書ごと含める。
+    # 辞書内の個々の値がNone（未登録）のブランドも、あえてキーとして残す
+    # （「dataに含まれない項目は未設定」という既存ルールを辞書の外側だけで
+    # なく内側にも適用できるよう、Noneのまま明示する設計。値がyes/no/
+    # conditionalのいずれでもない=未登録という解釈をAI側の指示で徹底する）。
+    data["credit_brands"] = credit_brands if any(v is not None for v in credit_brands.values()) else None
+    data["qr_brands"] = qr_brands if any(v is not None for v in qr_brands.values()) else None
+    data["emoney_brands"] = emoney_brands if any(v is not None for v in emoney_brands.values()) else None
     data["notes"] = k.payment_notes
     return True, data
 

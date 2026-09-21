@@ -19,9 +19,12 @@ RECEPTRAのAI受付が「駐車場はありますか？」「カードは使え�
   「未設定」と「なし」を区別できず、AIがハルシネーションで
   「駐車場はありません」と断定してしまう事故につながるため、これは
   安全上重要な設計判断（Phase3D仕様書 section12 参照）。
-- parking_available / payment_* は yes/no/未設定の3値のみで十分と判断
-  （仕様書のUI例が3択のため）。facilities系の各項目のみ
-  yes/no/conditional/未設定の4値を許容する。
+- parking_available / payment_cash / payment_credit_card / payment_debit_card /
+  payment_qr_code / payment_emoney（大分類）は yes/no/未設定の3値のみで
+  十分と判断（仕様書のUI例が3択のため）。facilities系の各項目、および
+  Phase3Hで追加したブランド単位の支払い方法（payment_credit_visa等）は
+  yes/no/conditional/未設定の4値を許容する
+  （ブランドによっては「一部対応」等の条件付きケースがあり得るため）。
 - alembicは運用していないため、app/main.py の lifespan() 内
   Base.metadata.create_all() により自動作成される新規テーブルとする
   （既存テーブルへのカラム追加ではないため、手動ALTERは不要）。
@@ -79,6 +82,38 @@ class ShopKnowledge(Base):
     payment_emoney = Column(String(10), nullable=True)  # 電子マネー
     # 対応ブランド等の自由記述補足（例: "VISA/Mastercard/JCB/PayPay対応"）
     payment_notes = Column(Text, nullable=True)
+
+    # ===== 支払い方法（Phase3H: ブランド単位の詳細） =====
+    # 上記の payment_credit_card / payment_qr_code / payment_emoney（大分類）は
+    # 後方互換のためそのまま維持し、意味も変更しない。既存店舗のデータ・既存の
+    # get_shop_info(payment)の大分類回答はこれまで通り動作する。
+    # 以下はオーナーがブランド単位で対応状況を登録できるようにするための追加の
+    # 詳細カラムであり、大分類とは独立して保持する（大分類が空でもブランド単位
+    # だけ設定されているケース、その逆のケースの両方をサポートする）。
+    # 各 None=未設定 / "yes"=対応 / "no"=非対応 / "conditional"=条件付き
+    # （例:一部ブランドのみ・上限あり等。詳細は既存payment_notesで補足する想定）。
+    # クレジットカード（ブランド別）
+    payment_credit_visa = Column(String(15), nullable=True)
+    payment_credit_mastercard = Column(String(15), nullable=True)
+    payment_credit_jcb = Column(String(15), nullable=True)
+    payment_credit_amex = Column(String(15), nullable=True)  # American Express
+    payment_credit_diners = Column(String(15), nullable=True)  # Diners Club
+    payment_credit_other = Column(String(15), nullable=True)  # その他ブランド（詳細はpayment_notesへ）
+    # QRコード決済（ブランド別）
+    payment_qr_paypay = Column(String(15), nullable=True)
+    payment_qr_au_pay = Column(String(15), nullable=True)
+    payment_qr_d_barai = Column(String(15), nullable=True)  # d払い
+    payment_qr_rakuten_pay = Column(String(15), nullable=True)  # 楽天ペイ
+    payment_qr_merpay = Column(String(15), nullable=True)  # メルペイ
+    payment_qr_other = Column(String(15), nullable=True)  # その他QR決済（詳細はpayment_notesへ）
+    # 電子マネー（ブランド別）
+    payment_emoney_transit_ic = Column(String(15), nullable=True)  # 交通系IC（Suica/PASMO等）
+    payment_emoney_id = Column(String(15), nullable=True)  # iD
+    payment_emoney_quicpay = Column(String(15), nullable=True)  # QUICPay
+    payment_emoney_rakuten_edy = Column(String(15), nullable=True)  # 楽天Edy
+    payment_emoney_waon = Column(String(15), nullable=True)  # WAON
+    payment_emoney_nanaco = Column(String(15), nullable=True)  # nanaco
+    payment_emoney_other = Column(String(15), nullable=True)  # その他電子マネー（詳細はpayment_notesへ）
 
     # ===== 設備・利用条件 =====
     # 各 None=未設定 / "yes" / "no" / "conditional"（条件付き。詳細はfacilities_notesへ）
