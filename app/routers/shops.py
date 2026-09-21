@@ -3,6 +3,7 @@ Shop (店舗) エンドポイント
 店舗の登録、検索、管理機能
 """
 
+import logging
 import uuid
 from datetime import datetime
 from typing import Optional, List
@@ -16,7 +17,8 @@ from app.models.shop import Shop, ShopHours
 from app.schemas.shop import (
     ShopRegisterRequest, ShopResponse, ShopRegisterResponse,
     ShopSearchQuery, ShopListResponse, ErrorResponse, ShopHoursResponse,
-    ShopUpdateRequest, ShopHoursBulkUpdateRequest
+    ShopUpdateRequest, ShopHoursBulkUpdateRequest,
+    ShopNotificationSettingsResponse, ShopNotificationSettingsUpdateRequest,
 )
 from app.deps import get_current_user, get_current_tenant
 from app.schemas.user import CurrentUser
@@ -24,6 +26,7 @@ from app.models.user import Tenant
 from app.taxonomy import resolve_business_type
 
 router = APIRouter(prefix="/api/v1/shops", tags=["shops"])
+logger = logging.getLogger("receptra.shops")
 
 
 def _build_shop_response(shop: Shop) -> ShopResponse:
@@ -204,6 +207,102 @@ async def update_shop(
     )
     shop = result.scalar_one()
     return _build_shop_response(shop)
+
+
+@router.get(
+    "/{shop_id}/notification-settings",
+    response_model=ShopNotificationSettingsResponse,
+    summary="予約通知の連絡先設定を取得（オーナー専用）",
+    description=(
+        "新しい予約が入ったときにAIスタッフが電話で知らせる先の設定を取得する。"
+        "オーナー認証必須・Customer向けAPIには一切含まれない非公開情報。"
+    ),
+)
+async def get_shop_notification_settings(
+    shop_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ShopNotificationSettingsResponse:
+    shop = await db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店舗が見つかりません")
+    if shop.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="この店舗を編集する権限がありません")
+
+    return ShopNotificationSettingsResponse(
+        shop_id=shop.id,
+        reservation_notification_phone=shop.reservation_notification_phone,
+        reservation_phone_notification_enabled=bool(shop.reservation_phone_notification_enabled),
+    )
+
+
+@router.put(
+    "/{shop_id}/notification-settings",
+    response_model=ShopNotificationSettingsResponse,
+    summary="予約通知の連絡先設定を保存（オーナー専用）",
+    description=(
+        "新しい予約が入ったときにAIスタッフが電話で知らせる先の番号とON/OFFを保存する。"
+        "本フェーズでは実際の架電機能は実装せず、設定の保存のみを行う（Phase3H）。"
+    ),
+)
+async def update_shop_notification_settings(
+    shop_id: str,
+    request: ShopNotificationSettingsUpdateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ShopNotificationSettingsResponse:
+    shop = await db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店舗が見つかりません")
+    if shop.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="この店舗を編集する権限がありません")
+
+    update_data = request.dict(exclude_unset=True)
+
+    # 送られなかったフィールドは既存値を維持した上で、更新後の状態を先に計算する
+    # （ON/OFFの整合性チェックを、単体のリクエスト値だけでなく実際に保存される
+    # 状態に対して行うため）。
+    new_phone = (
+        update_data["reservation_notification_phone"]
+        if "reservation_notification_phone" in update_data
+        else shop.reservation_notification_phone
+    )
+    new_enabled = (
+        update_data["reservation_phone_notification_enabled"]
+        if "reservation_phone_notification_enabled" in update_data
+        else shop.reservation_phone_notification_enabled
+    )
+
+    if new_enabled and not new_phone:
+        raise HTTPException(
+            status_code=400,
+            detail="通知をONにするには、先に電話番号を登録してください。",
+        )
+    # 電話番号が空になった（またはそもそも無い）のにONのまま、という矛盾した
+    # 状態を絶対に作らない。番号を消す操作自体は常に成功させ、その代わり
+    # ONは安全側で自動的にOFFへ戻す。
+    if not new_phone:
+        new_enabled = False
+
+    shop.reservation_notification_phone = new_phone
+    shop.reservation_phone_notification_enabled = bool(new_enabled)
+    shop.updated_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(shop)
+
+    # 電話番号は個人情報のため、フルでログに残さない（末尾4桁のみのマスク表示）。
+    masked = ("****" + shop.reservation_notification_phone[-4:]) if shop.reservation_notification_phone else None
+    logger.info(
+        "予約通知連絡先を更新 shop_id=%s enabled=%s phone_masked=%s",
+        shop_id, shop.reservation_phone_notification_enabled, masked,
+    )
+
+    return ShopNotificationSettingsResponse(
+        shop_id=shop.id,
+        reservation_notification_phone=shop.reservation_notification_phone,
+        reservation_phone_notification_enabled=shop.reservation_phone_notification_enabled,
+    )
 
 
 @router.put(

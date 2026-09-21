@@ -1057,6 +1057,24 @@
         </div>
 
         <div class="card">
+            <h2>予約が入ったときの連絡先</h2>
+            <p class="hint">新しい予約が入ったとき、RECEPTRAのAIスタッフがこの番号へ予約内容をお知らせします。お店のオーナーご本人でなくても、店長や受付担当の方の番号でも構いません。この番号がお客様に公開されることはありません。</p>
+            <form id="notification-settings-form">
+                <div class="field">
+                    <label for="notification-phone">連絡先の電話番号</label>
+                    <input type="tel" id="notification-phone" placeholder="例：090-1234-5678" maxlength="20">
+                </div>
+                <div class="field" style="display: flex; align-items: center; gap: 8px; margin-bottom: 0;">
+                    <input type="checkbox" id="notification-enabled" style="width: auto;">
+                    <label for="notification-enabled" style="margin-bottom: 0; font-weight: 400; color: #333;">新しい予約が入ったらAIから電話で知らせる</label>
+                </div>
+                <p class="hint" id="notification-enabled-hint" style="margin-top: 8px; margin-bottom: 0;">※ 電話番号を登録すると、この機能をONにできるようになります。</p>
+                <button type="submit" class="btn" id="notification-settings-save-btn" style="margin-top: 14px;">保存する</button>
+                <div class="msg" id="notification-settings-msg"></div>
+            </form>
+        </div>
+
+        <div class="card">
             <h2>店舗・事業所の削除</h2>
             <p class="hint">この店舗・事業所と、登録されている写真・メニュー・営業時間などをすべて削除します。この操作は取り消せません。</p>
             <button type="button" class="btn-outline btn-danger" id="delete-shop-btn">この店舗・事業所を削除する</button>
@@ -1224,6 +1242,7 @@
             loadAiStaffSettings();
             loadShopKnowledge();
             loadFaqs();
+            loadNotificationSettings();
         }
 
         // ---------- 画像設定（ロゴ・サムネイル・カバー） ----------
@@ -2850,6 +2869,60 @@
                     throw new Error(errData.detail || '保存に失敗しました');
                 }
                 showMsg(msg, '保存しました。次回の通話から反映されます。', 'success');
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // ---------- Phase3H Workstream C: 予約通知の連絡先 ----------
+        async function loadNotificationSettings() {
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/notification-settings');
+                if (!res.ok) throw new Error('取得に失敗しました');
+                const data = await res.json();
+                document.getElementById('notification-phone').value = data.reservation_notification_phone || '';
+                document.getElementById('notification-enabled').checked = !!data.reservation_phone_notification_enabled;
+            } catch (e) {
+                // 未保存の場合も含め、取得に失敗してもフォームは空の状態で使えるようにする。
+            }
+        }
+
+        document.getElementById('notification-settings-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('notification-settings-msg');
+            const btn = document.getElementById('notification-settings-save-btn');
+            const phoneEl = document.getElementById('notification-phone');
+            const enabledEl = document.getElementById('notification-enabled');
+            const phone = phoneEl.value.trim();
+
+            // サーバー側でも同じチェックを行うが、往復せずすぐ気づけるよう
+            // クライアント側でも先に案内する（「保存できたのかわからない」を防ぐ）。
+            if (enabledEl.checked && !phone) {
+                showMsg(msg, '通知をONにするには、先に電話番号を入力してください。', 'error');
+                return;
+            }
+
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/notification-settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        reservation_notification_phone: phone === '' ? null : phone,
+                        reservation_phone_notification_enabled: enabledEl.checked
+                    })
+                });
+                const data = await res.json().catch(function () { return {}; });
+                if (!res.ok) {
+                    throw new Error(data.detail || '保存に失敗しました');
+                }
+                // 保存後の実際の状態（サーバー側でONが自動的にOFFへ戻された場合等）を
+                // フォームに反映し、画面の表示と保存済みデータが必ず一致するようにする。
+                phoneEl.value = data.reservation_notification_phone || '';
+                enabledEl.checked = !!data.reservation_phone_notification_enabled;
+                showMsg(msg, '保存しました。', 'success');
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
             } finally {

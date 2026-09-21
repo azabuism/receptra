@@ -3,9 +3,11 @@ Shop (店舗) スキーマ定義
 リクエスト/レスポンスのPydantic モデル
 """
 
+import re
+import unicodedata
 from datetime import datetime, time
 from typing import Optional, List
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class ShopHoursCreate(BaseModel):
@@ -77,6 +79,71 @@ class ShopUpdateRequest(BaseModel):
 class ShopHoursBulkUpdateRequest(BaseModel):
     """営業時間の一括更新スキーマ（送信された曜日分だけ置き換え）"""
     hours: List[ShopHoursCreate] = Field(..., description="曜日ごとの営業時間リスト")
+
+
+# 日本国内の電話番号として妥当と判断する最低限のパターン。
+# 「0」から始まり、残り9〜10桁の数字（合計10桁または11桁）。
+# 携帯電話(090/080/070)・IP電話(050)は11桁、固定電話・フリーダイヤル(0120/0800等)は
+# 10桁が一般的だが、市外局番の桁数までは厳密に検証しない
+# （仕様書の「厳しすぎて正しい番号を弾かないこと」という要件を優先する）。
+_JP_PHONE_DIGITS_RE = re.compile(r"^0\d{9,10}$")
+
+
+def normalize_jp_phone_digits(raw: str) -> str:
+    """
+    電話番号の入力文字列を、数字のみの正規化された文字列に変換する。
+
+    - 全角数字・全角ハイフン等はNFKC正規化でまず半角に変換する。
+    - ハイフン・スペース・括弧など数字以外の文字は全て除去する。
+    - 戻り値は例えば "09012345678" のような数字のみの文字列
+      （将来Outbound AIが発信する際の正規化済みの発信先として利用する想定）。
+    """
+    normalized = unicodedata.normalize("NFKC", raw)
+    return re.sub(r"\D", "", normalized)
+
+
+class ShopNotificationSettingsResponse(BaseModel):
+    """
+    予約通知の連絡先設定レスポンス（Phase3H Workstream C・オーナー専用）。
+
+    重要: このスキーマはShopResponseとは完全に独立しており、
+    Customer向けAPI（検索・詳細等）では絶対に使用しない。
+    """
+    shop_id: str
+    reservation_notification_phone: Optional[str] = None
+    reservation_phone_notification_enabled: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class ShopNotificationSettingsUpdateRequest(BaseModel):
+    """
+    予約通知の連絡先設定 更新リクエスト（送られたフィールドのみ更新）。
+
+    ON/OFFの整合性チェック（電話番号が無い状態でONにできない、番号を消したら
+    自動でOFFに戻す等）は、既存データとのマージが必要なためこのスキーマ単体では
+    完結できず、app/routers/shops.py の update_shop_notification_settings() で
+    行う。
+    """
+    reservation_notification_phone: Optional[str] = Field(
+        None, max_length=20, description="090-1234-5678のような自然な形式で入力可能"
+    )
+    reservation_phone_notification_enabled: Optional[bool] = None
+
+    @field_validator("reservation_notification_phone", mode="before")
+    @classmethod
+    def _validate_and_normalize_phone(cls, v):
+        if v is None:
+            return None
+        if not isinstance(v, str) or v.strip() == "":
+            return None
+        digits = normalize_jp_phone_digits(v)
+        if not _JP_PHONE_DIGITS_RE.match(digits):
+            raise ValueError(
+                "電話番号の形式が正しくありません（例：090-1234-5678、または市外局番付きの固定電話番号）"
+            )
+        return digits
 
 
 class ShopResponse(BaseModel):

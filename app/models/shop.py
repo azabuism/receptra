@@ -69,10 +69,27 @@ class Shop(Base):
     latitude = Column(Float, nullable=True)  # GPS緯度
     longitude = Column(Float, nullable=True)  # GPS経度
     
-    # 連絡先
+    # 連絡先（お客様にも公開される、店舗の一般連絡先）
     phone = Column(String(20), nullable=True)
     email = Column(String(255), nullable=True)
     website = Column(String(500), nullable=True)
+
+    # Phase3H Workstream C: 予約通知の連絡先（オーナー専用・非公開）。
+    # 上記の phone とは全く別の目的のフィールドであることに注意。
+    # phone は「お客様がお店に電話する」ための番号（ShopResponse等で
+    # 公開されている）。こちらは逆に「新しい予約が入ったときに、AIスタッフ
+    # から電話で知らせる先」の番号で、店舗のオーナー本人とは限らず、店長・
+    # 受付担当・事務所などの場合もある。ShopResponse・ShopUpdateRequest・
+    # 検索/詳細などのCustomer向けAPIには絶対に含めず、専用のオーナー認証
+    # 付きエンドポイント（GET/PUT /api/v1/shops/{shop_id}/notification-settings）
+    # からのみ読み書きする（app/routers/shops.py参照）。
+    # 保存形式は数字のみに正規化した文字列（例："09012345678"）。
+    reservation_notification_phone = Column(String(20), nullable=True)
+    # このフラグがTrueの場合のみ、将来のOutbound AI機能が実際に電話をかける
+    # （本フェーズでは架電処理自体は未実装。設定の土台のみ）。
+    # 電話番号が未登録のままTrueにはできない、電話番号を削除したらFalseに
+    # 戻す、という整合性はAPI層（update_shop_notification_settings）で保証する。
+    reservation_phone_notification_enabled = Column(Boolean, nullable=False, default=False)
     
     # 画像
     thumbnail_url = Column(String(500), nullable=True)

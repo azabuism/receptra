@@ -257,6 +257,15 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ shop_knowledge の支払いブランド詳細カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # Phase3H Workstream C: 予約通知の連絡先（オーナー専用・非公開）用カラム。
+            # ShopResponse等の公開スキーマには一切含めない設計のため、この2列自体は
+            # 追加してもCustomer向けAPIの応答には影響しない。
+            try:
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS reservation_notification_phone VARCHAR(20)"))
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS reservation_phone_notification_enabled BOOLEAN NOT NULL DEFAULT false"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ shops の予約通知連絡先用カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 
