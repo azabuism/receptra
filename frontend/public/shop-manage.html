@@ -438,10 +438,13 @@
                     スタッフのシフト（週次シフト・休み・時間変更）を予約可否判定に反映する
                 </label>
                 <p class="hint" style="margin-top: 4px;">
-                    ONにすると、下の「シフトを管理」で設定した勤務時間・休みが、お客様の予約可否に反映されます。
-                    シフトが1件も登録されていないスタッフは、従来通り常に予約可能なままです。
+                    <strong>ON:</strong> 下の「シフトを管理」で設定した週次シフト・休み・時間変更が、お客様の予約可否にそのまま反映されます。
+                    ただし、<strong>シフトを一度も登録していないスタッフは「勤務時間未設定」として予約を受け付けられなくなります</strong>（安全のため。うっかりシフト未設定のまま予約が入り続けることを防ぎます）。
+                    <br>
+                    <strong>OFF（既定）:</strong> シフトの登録有無に関わらず、従来通りスタッフの既存予約の空き状況だけで予約可否を判定します（このアプリを初めて使う場合の動作と完全に同じです）。
                 </p>
                 <div class="msg" id="staff-schedule-enabled-msg"></div>
+                <div class="msg error" id="staff-schedule-warning" style="display: none; margin-top: 8px;"></div>
             </div>
 
             <h3 class="subsection-title">サービスメニュー</h3>
@@ -1428,6 +1431,36 @@
             } catch (e) {
                 container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
             }
+            checkStaffScheduleWarnings();
+        }
+
+        // Phase3E-3: staff_schedule_enabledがONの間、シフトを一度も登録していない
+        // （＝Fail Closedによりこのままでは予約を受け付けられない）担当スタッフを
+        // オーナーに警告する。OFFの間は判定結果に影響しないため表示しない。
+        async function checkStaffScheduleWarnings() {
+            const box = document.getElementById('staff-schedule-warning');
+            const toggle = document.getElementById('staff-schedule-enabled-toggle');
+            if (!box || !toggle) return;
+            if (!toggle.checked) {
+                box.style.display = 'none';
+                box.textContent = '';
+                return;
+            }
+            try {
+                const res = await authFetch('/api/v1/staff/schedule-warnings?shop_id=' + encodeURIComponent(shopId));
+                if (!res.ok) { box.style.display = 'none'; return; }
+                const data = await res.json();
+                const names = (data.staff_without_shift || []).map(function (s) { return s.display_name; });
+                if (names.length) {
+                    box.style.display = 'block';
+                    box.textContent = '⚠ シフト未設定のスタッフがいます（' + names.join('、') + '）。このままでは該当スタッフは予約を受け付けられません。「シフトを管理」から週次シフトを登録してください。';
+                } else {
+                    box.style.display = 'none';
+                    box.textContent = '';
+                }
+            } catch (e) {
+                box.style.display = 'none';
+            }
         }
 
         function renderStaffList() {
@@ -1539,6 +1572,7 @@
                     throw new Error(errData.detail || '設定の保存に失敗しました');
                 }
                 showMsg(msg, nextValue ? 'シフトによる予約可否判定を有効にしました' : '無効にしました', 'success');
+                checkStaffScheduleWarnings();
             } catch (err) {
                 checkbox.checked = !nextValue;
                 showMsg(msg, typeof err.message === 'string' ? err.message : '設定の保存に失敗しました', 'error');

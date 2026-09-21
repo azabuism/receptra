@@ -16,6 +16,7 @@ from app.deps import get_current_user
 from app.schemas.user import CurrentUser
 from app.models import Staff, Shop, Service, StaffService
 from app.models.reservation import Reservation
+from app.models.staff_shift import StaffWeeklyShift, StaffShiftOverride
 from app.schemas.staff import (
     StaffCreateRequest, StaffUpdateRequest, StaffResponse, StaffPublicResponse,
     StaffServiceAssignmentResponse
@@ -83,6 +84,59 @@ async def _get_owned_staff(staff_id: str, current_user: CurrentUser, db: AsyncSe
         raise HTTPException(status_code=404, detail="スタッフが見つかりません")
     await _get_owned_shop(staff.shop_id, current_user, db)
     return staff
+
+
+# 注意: このルートは "/{staff_id}" より前に定義すること（FastAPIはルートを
+# 登録順に評価するため、後ろに定義すると "/schedule-warnings" が
+# staff_id="schedule-warnings" として誤って/{staff_id}にマッチしてしまう）。
+@router.get("/schedule-warnings", summary="シフト未設定スタッフの警告一覧を取得（Phase3E-3・オーナー認証必須）")
+async def get_staff_schedule_warnings(
+    shop_id: str = Query(..., description="店舗ID"),
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Phase3E-3: staff_schedule_enabledをONにする（または既にONである）際、
+    オーナーに気づかせるための軽量な警告専用エンドポイント。
+    予約可否判定そのものには一切関与しない（判定ロジックは従来通り
+    app/routers/reservations.pyの_is_staff_scheduled()が単独のSSOTとして担う。
+    このエンドポイントはあくまでUI向けの参考情報を返すだけ）。
+
+    対象: is_active な担当スタッフのうち、何らかのサービスに割り当てられている
+    （StaffService経由）にもかかわらず、週次シフト・日付調整のいずれも
+    1件も登録していないスタッフ。Phase3E-3でstaff_schedule_enabled=True時の
+    フォールバックがFail Closed（シフト未設定＝予約不可）に変更されたため、
+    このようなスタッフはONの間、事実上「一切予約を受けられない」状態になる。
+
+    過剰な作り込みを避けるため、判定は「シフトが1件も登録されていないか」の
+    シンプルな二値のみで行い、部分的な設定漏れ（例: 一部の曜日だけ未設定）までは
+    検知しない。
+    """
+    await _get_owned_shop(shop_id, current_user, db)
+
+    result = await db.execute(
+        select(Staff)
+        .join(StaffService, StaffService.staff_id == Staff.id)
+        .filter(Staff.shop_id == shop_id, Staff.is_active == "active")
+        .distinct()
+    )
+    assigned_staff = list(result.scalars().all())
+
+    warnings = []
+    for staff in assigned_staff:
+        has_weekly = (await db.execute(
+            select(StaffWeeklyShift.id).filter(StaffWeeklyShift.staff_id == staff.id).limit(1)
+        )).scalar_one_or_none() is not None
+        if has_weekly:
+            continue
+        has_override = (await db.execute(
+            select(StaffShiftOverride.id).filter(StaffShiftOverride.staff_id == staff.id).limit(1)
+        )).scalar_one_or_none() is not None
+        if has_override:
+            continue
+        warnings.append({"staff_id": staff.id, "display_name": staff.display_name or staff.name})
+
+    return {"shop_id": shop_id, "staff_without_shift": warnings}
 
 
 @router.get("", response_model=List[StaffPublicResponse], summary="スタッフ一覧を取得")

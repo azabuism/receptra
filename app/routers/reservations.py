@@ -5,7 +5,7 @@ Reservation (予約) エンドポイント
 
 import logging
 import uuid
-from datetime import datetime, date as date_type, timedelta
+from datetime import datetime, date as date_type, timedelta, timezone
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -35,6 +35,62 @@ router = APIRouter(prefix="/api/v1/reservations", tags=["reservations"])
 
 VALID_STATUSES = {s.value for s in ReservationStatus}
 SLOT_INTERVAL_MINUTES = 30
+
+# ===== Phase3E-3: reservation_dateの基準（JST-local-naive）と揃えた「現在時刻」 =====
+#
+# 調査で確認した事実（推測ではない）:
+# - Web予約(frontend/public/shop.html)は date+time を単純な文字列結合
+#   ("YYYY-MM-DDTHH:MM:SS") で送信しており、タイムゾーン変換は一切行っていない。
+# - チャット予約(app/routers/shop_booking_ai.py の_parse_ai_datetime)は、
+#   「店舗のローカル時刻を表すnaive datetimeとして解釈する」と明記されており、
+#   AIが仮にtzinfo付きの値を返してもtzinfoを剥がすだけで数値変換はしない。
+# - Realtime Voice予約(app/routers/realtime_voice.py)は
+#   datetime.combine(date, time) で、AIが聞き取った日本語の日時（お客様の
+#   発話＝日本時間の壁時計時刻）をそのままnaive datetimeにしている。
+# つまり3経路すべてが一貫して「reservation_dateはJST(日本時間)のnaive datetime」
+# として送信・保存されている（経路間の不整合ではなく、単一の一貫した設計）。
+#
+# 一方、従来コードは「過去日時かどうか」の判定にdatetime.utcnow()（真のUTC時刻）を
+# 使っていたため、JST-naive値とUTC-naive値を比較する誤り（最大9時間、実際には
+# 既に過去の日時を「まだ未来」と誤判定しうる）があった。これは本フェーズで
+# 修正すべき対象として調査で特定した。
+#
+# 修正方針（最小限）: reservation_date系の値と比較する「現在時刻」だけを、
+# 同じ基準（JST-naive）に揃える。DBスキーマは一切変更せず、Reservationを
+# timezone-awareにもしない。created_at/updated_at等の純粋な記録用タイムスタンプは
+# 対象外（従来通りdatetime.utcnow()のままでよい。これらはreservation_dateとは
+# 比較されない）。将来shop.timezoneのような店舗別タイムゾーン設定を追加する
+# 余地を残すため、あえて「日本時間固定」の関数名にはせず、
+# 「reservation_dateの基準に揃えた現在時刻」という位置づけのヘルパーにする。
+_JST = timezone(timedelta(hours=9))
+
+
+def _reservation_basis_now() -> datetime:
+    """
+    reservation_date（JST-local-naive）と同じ基準の「現在時刻」を返す。
+    reservation_date系の値の過去/未来判定にはこの関数を必ず使うこと。
+    datetime.utcnow()を直接使うと、JST-naiveな値と比較する際に最大9時間の
+    ズレが生じる（Phase3E-3で修正した既知の不具合。詳細は上のコメント参照）。
+    """
+    return datetime.now(_JST).replace(tzinfo=None)
+
+
+def _resolve_reservation_duration(service: Optional[Service], shop: Shop) -> int:
+    """
+    Phase3E-3: 予約時間（分）の解決ロジックを1箇所に統合する。
+    優先順位: Service.duration_minutes → shop.reservation_duration_minutes → 90分。
+    以前はcheck_single_slot_availability / get_availability / create_reservationの
+    3箇所に全く同じ式が重複していた。ここに統合しただけで、優先順位・意味・
+    デフォルト値は一切変更していない。
+    """
+    return (service.duration_minutes if service and service.duration_minutes else None) or shop.reservation_duration_minutes or 90
+
+
+# Phase3E-3: 同時多重予約防止のためのロック再試行の上限。auto-assign（指名なし）で
+# 複数のスタッフ/テーブル候補がロック後に競合と判明した場合、この回数まで
+# 次点候補を試す。実際のスタッフ/テーブル数はこれよりずっと少ないのが通常のため、
+# 十分に大きい値にして「候補を全部試し切れない」ケースを実質なくす。
+_MAX_LOCK_RETRY = 50
 
 
 def _to_response(reservation: Reservation) -> ReservationResponse:
@@ -108,12 +164,22 @@ async def _get_closure_for_date(db: AsyncSession, shop_id: str, target_date: dat
 
 
 async def _find_available_table(
-    db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int
+    db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int,
+    excluded_table_ids: Optional[set] = None,
 ) -> tuple[Optional[str], bool]:
     """
     条件に合う空きテーブルを探す。
     戻り値: (table_id または None, テーブルが1件も登録されていないか)
     テーブルが1件も登録されていない場合は容量チェックを行わず None を返して常に予約可能とする。
+
+    excluded_table_ids: Phase3E-3で追加。_find_and_lock_available_table()が
+    ロック後の再チェックで競合と判明した候補を除外して次点を探すために使う。
+    通常の呼び出し（check_availability等）では指定しない＝従来と完全に同じ挙動。
+    候補の並び順は (capacity, id) の昇順に固定する（Phase3E-3で追加。同時多重
+    予約防止のロック取得順序を、同時に走る複数リクエスト間で一致させるため。
+    以前は明示的な順序がなかったため、複数の空きテーブルがある場合の自動選択が
+    DBの返却順という不定なものだったが、これは元々ドキュメント化された仕様
+    ではなく、この決定的な順序への変更は安全側の改善として扱う）。
     """
     tables_result = await db.execute(
         select(ShopTable).filter(ShopTable.shop_id == shop_id, ShopTable.is_active == True)
@@ -122,7 +188,11 @@ async def _find_available_table(
     if not tables:
         return None, True
 
-    candidates = sorted([t for t in tables if t.capacity >= party_size], key=lambda t: t.capacity)
+    excluded = excluded_table_ids or set()
+    candidates = sorted(
+        [t for t in tables if t.capacity >= party_size and t.id not in excluded],
+        key=lambda t: (t.capacity, t.id),
+    )
     if not candidates:
         return None, False
 
@@ -148,6 +218,62 @@ async def _find_available_table(
     return None, False
 
 
+async def _lock_and_verify_table_slot(
+    db: AsyncSession, table_id: str, start: datetime, duration_minutes: int
+) -> bool:
+    """
+    Phase3E-3: 同時多重予約防止。対象テーブルの行をSELECT ... FOR UPDATEで
+    ロックしたうえで、ロック取得後に改めて予約重複を再チェックする。
+    create_reservation()のトランザクション内でのみ呼び出すこと
+    （check_availability/check_single_slot_availability側は高速・ロックフリーの
+    ままにするため、絶対にここからは呼ばない）。
+    """
+    await db.execute(select(ShopTable.id).filter(ShopTable.id == table_id).with_for_update())
+    end = start + timedelta(minutes=duration_minutes)
+    overlap_result = await db.execute(
+        select(Reservation).filter(
+            Reservation.table_id == table_id,
+            Reservation.status.in_(["pending", "confirmed"]),
+        )
+    )
+    for existing in overlap_result.scalars().all():
+        existing_start = existing.reservation_date
+        existing_end = existing_start + timedelta(minutes=duration_minutes)
+        if existing_start < end and existing_end > start:
+            return False
+    return True
+
+
+async def _find_and_lock_available_table(
+    db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int
+) -> tuple[Optional[str], bool]:
+    """
+    Phase3E-3: create_reservation()専用。_find_available_table()で候補を探した
+    直後、実際にINSERTする前に候補のテーブル行をFOR UPDATEでロックし、ロック
+    取得後に予約重複を再チェックしてから確定する。check_availability時点の
+    チェックとcreate_reservation実行時点の間に別のリクエストが割り込んでも、
+    同じテーブル×重複時間帯へ二重に予約が確定することを防ぐ。
+
+    ロック後に競合が判明した場合（＝別のリクエストが先にそのテーブルを
+    確保した）は、その候補を除外して次点のテーブル候補を再検索する
+    （_MAX_LOCK_RETRY回まで）。テーブルが1件も登録されていない
+    （unmanaged=True）店舗では、ロック対象がないため従来通り常に予約可能。
+    """
+    excluded: set = set()
+    for _ in range(_MAX_LOCK_RETRY):
+        table_id, unmanaged = await _find_available_table(
+            db, shop_id, party_size, start, duration_minutes, excluded_table_ids=excluded
+        )
+        if unmanaged:
+            return table_id, True
+        if table_id is None:
+            return None, False
+        if await _lock_and_verify_table_slot(db, table_id, start, duration_minutes):
+            return table_id, False
+        excluded.add(table_id)
+    return None, False
+
+
 async def _is_staff_scheduled(
     db: AsyncSession, staff_id: str, start_dt: datetime, duration_minutes: int
 ) -> bool:
@@ -157,19 +283,30 @@ async def _is_staff_scheduled(
     からenforce_schedule=Trueの場合にのみ呼ばれ、shop.staff_schedule_enabledが
     Falseの店舗（デフォルト・既存の全店舗）では一切呼ばれない。
 
-    判定ロジック:
-    1. スタッフに週次シフト・日付調整のいずれも一度も登録されていない場合は
-       「シフト未設定」として常にTrue（勤務可能）を返す。staff_schedule_enabledを
-       ONにしただけで、シフト未登録の全スタッフが一律予約不可になる事故を防ぐための
-       安全側フォールバック（_find_available_table/_find_available_staff_for_serviceの
-       「管理対象データが0件なら常に空き扱い」という既存の設計思想と一貫させている）。
-    2. 対象日にoverride_type="day_off"が1件でもあれば終日不可。
-    3. 対象日にoverride_type="hours"があれば、その時間帯を週次シフトの代わりに使う
-       （無ければ週次シフトのその曜日の時間帯を使う。どちらも無ければ「その日は
-       勤務日として登録されていない」として不可）。
-    4. 予約したい時間帯が上記の勤務時間帯に完全に収まっているかを確認する。
-    5. 対象日にoverride_type="unavailable"があれば、その時間帯と重なっていないかを
-       確認する（重なっていれば不可。重ならない部分は通常どおり勤務扱いのまま）。
+    判定ロジック（優先順位。Phase3E-3で確定・明文化。以後この関数がSSOTとする）:
+    0. staff_schedule_enabledがFalseの店舗ではこの関数自体が一切呼ばれない
+       （呼び出し元_find_available_staff_for_serviceのenforce_schedule引数を参照）。
+       staff_schedule_enabled=Trueの場合のみ、以下の判定が適用される。
+    1. 対象日にDate Override（StaffShiftOverride）があれば、その日はWeekly Shiftを
+       完全に無視し、Override側だけでその日の勤務時間帯を決める：
+       - override_type="day_off" が1件でもあれば、その日は終日不可（勤務時間帯なし）。
+       - override_type="hours" があれば、その時間帯（複数行の分割も可）だけが
+         その日の勤務時間帯になる（Weekly Shiftは一切参照しない）。
+       Date Overrideが無い日は、Weekly Shiftのその曜日の時間帯がそのまま
+       勤務時間帯になる。
+    2. 予約したい時間帯が、1で決まった勤務時間帯（複数コマの場合はそのいずれか）に
+       完全に収まっているかを確認する。収まっていなければ不可。
+    3. 対象日にoverride_type="unavailable"があれば、その時間帯を2の勤務時間帯から
+       差し引く（勤務時間帯を置き換えるのではなく、重なる部分だけを不可にする）。
+       予約したい時間帯がこの不在時間と重なっていれば不可。
+    4. Phase3E-3で確定: スタッフに週次シフト・日付調整のいずれも一度も
+       登録されていない場合は「シフト未設定」として常にFalse（勤務不可＝
+       Fail Closed）を返す。Phase3E-2では逆に常にTrue（安全側フォールバックとして
+       常に予約可能扱い）としていたが、これはオーナーが意図せずシフト未設定の
+       スタッフに予約が入り続けてしまう危険があったため、本フェーズで明示的に
+       反転した（ユーザー承認済みの仕様変更）。この状態を放置しないよう、
+       shop-manage.html側にシフト未設定スタッフの警告UIを追加している
+       （app/routers/staff.py の get_staff_schedule_warnings()を参照）。
     """
     target_date = start_dt.date()
     end_dt = start_dt + timedelta(minutes=duration_minutes)
@@ -184,7 +321,8 @@ async def _is_staff_scheduled(
     )
     has_any_override = any_override_ever.scalar_one_or_none() is not None
     if not has_any_weekly and not has_any_override:
-        return True
+        # Phase3E-3: Fail Closed（Phase3E-2からの明示的な反転。上記docstring参照）
+        return False
 
     overrides_result = await db.execute(
         select(StaffShiftOverride).filter(
@@ -233,7 +371,8 @@ async def _is_staff_scheduled(
 
 async def _find_available_staff_for_service(
     db: AsyncSession, shop_id: str, service_id: str, start: datetime, duration_minutes: int,
-    preferred_staff_id: Optional[str] = None, enforce_schedule: bool = False
+    preferred_staff_id: Optional[str] = None, enforce_schedule: bool = False,
+    excluded_staff_ids: Optional[set] = None,
 ) -> tuple[Optional[str], bool]:
     """
     指定したサービスを提供できる、かつその時間帯が空いているスタッフを探す。
@@ -245,6 +384,16 @@ async def _find_available_staff_for_service(
     シフトチェックを予約重複チェックに加えて行う。呼び出し元は必ず
     shop.staff_schedule_enabledの値をそのまま渡すこと。この引数はデフォルトFalseで、
     Falseの間は_is_staff_scheduled()を一切呼ばない＝Phase3E-1までと完全に同じ挙動になる。
+
+    excluded_staff_ids: Phase3E-3で追加。_find_and_lock_available_staff_for_service()が
+    ロック後の再チェックで競合と判明した候補を除外して次点を探すために使う。
+    通常の呼び出し（check_availability等）では指定しない＝従来と完全に同じ挙動。
+
+    候補の並び順はstaff.idの昇順に固定する（Phase3E-3で追加。同時多重予約防止の
+    ロック取得順序を、同時に走る複数リクエスト間で一致させるため。以前は
+    明示的な順序がなかったため、複数の空きスタッフがいる場合の自動選択が
+    DBの返却順という不定なものだったが、ドキュメント化された仕様ではなく、
+    この決定的な順序への変更は安全側の改善として扱う）。
     """
     staff_result = await db.execute(
         select(Staff)
@@ -254,6 +403,7 @@ async def _find_available_staff_for_service(
             Staff.shop_id == shop_id,
             Staff.is_active == "active",
         )
+        .order_by(Staff.id)
     )
     eligible_staff = list(staff_result.scalars().all())
     if not eligible_staff:
@@ -263,6 +413,9 @@ async def _find_available_staff_for_service(
         eligible_staff = [s for s in eligible_staff if s.id == preferred_staff_id]
         if not eligible_staff:
             return None, False
+
+    excluded = excluded_staff_ids or set()
+    eligible_staff = [s for s in eligible_staff if s.id not in excluded]
 
     end = start + timedelta(minutes=duration_minutes)
 
@@ -288,6 +441,74 @@ async def _find_available_staff_for_service(
         if not conflicting:
             return staff.id, False
 
+    return None, False
+
+
+async def _lock_and_verify_staff_slot(
+    db: AsyncSession, staff_id: str, start: datetime, duration_minutes: int
+) -> bool:
+    """
+    Phase3E-3: 同時多重予約防止。対象スタッフの行をSELECT ... FOR UPDATEで
+    ロックしたうえで、ロック取得後に改めて予約重複を再チェックする。
+    create_reservation()のトランザクション内でのみ呼び出すこと
+    （check_availability/check_single_slot_availability側は高速・ロックフリーの
+    ままにするため、絶対にここからは呼ばない。シフトの再チェックはここでは
+    行わない＝シフトはロック対象ではなく、_find_available_staff_for_service側の
+    通常ロジックで既に確認済みのため）。
+    """
+    await db.execute(select(Staff.id).filter(Staff.id == staff_id).with_for_update())
+    end = start + timedelta(minutes=duration_minutes)
+    overlap_result = await db.execute(
+        select(Reservation).filter(
+            Reservation.staff_id == staff_id,
+            Reservation.status.in_(["pending", "confirmed"]),
+        )
+    )
+    for existing in overlap_result.scalars().all():
+        existing_start = existing.reservation_date
+        existing_end = existing_start + timedelta(minutes=duration_minutes)
+        if existing_start < end and existing_end > start:
+            return False
+    return True
+
+
+async def _find_and_lock_available_staff_for_service(
+    db: AsyncSession, shop_id: str, service_id: str, start: datetime, duration_minutes: int,
+    preferred_staff_id: Optional[str] = None, enforce_schedule: bool = False,
+) -> tuple[Optional[str], bool]:
+    """
+    Phase3E-3: create_reservation()専用。_find_available_staff_for_service()で
+    候補を探した直後、実際にINSERTする前に候補のスタッフ行をFOR UPDATEでロックし、
+    ロック取得後に予約重複を再チェックしてから確定する。check_availability時点の
+    チェックとcreate_reservation実行時点の間に別のリクエストが割り込んでも、
+    同じスタッフ×重複時間帯へ二重に予約が確定することを防ぐ。
+
+    ロック後に競合が判明した場合（＝別のリクエストが先にそのスタッフを確保した）:
+    - 指名予約（preferred_staff_id指定あり）の場合は代替候補を探さず不可として返す
+      （お客様が指名していないスタッフを勝手に割り当てるべきではないため）。
+    - 指名なし（auto-assign）の場合は、その候補を除外して次点のスタッフ候補を
+      再検索する（_MAX_LOCK_RETRY回まで）。
+
+    このサービスにスタッフが1人も割り当てられていない（unmanaged=True）場合は
+    従来通りロック対象がなく常に予約可能（このパスの二重予約チェックは
+    Phase3E-3のスコープ外。Phase3D以前からの「管理対象データが0件なら常に
+    空き扱い」という既存設計をそのまま維持する）。
+    """
+    excluded: set = set()
+    for _ in range(_MAX_LOCK_RETRY):
+        candidate_id, unmanaged = await _find_available_staff_for_service(
+            db, shop_id, service_id, start, duration_minutes,
+            preferred_staff_id, enforce_schedule, excluded_staff_ids=excluded,
+        )
+        if unmanaged:
+            return candidate_id, True
+        if candidate_id is None:
+            return None, False
+        if await _lock_and_verify_staff_slot(db, candidate_id, start, duration_minutes):
+            return candidate_id, False
+        if preferred_staff_id:
+            return None, False
+        excluded.add(candidate_id)
     return None, False
 
 
@@ -345,7 +566,7 @@ async def check_single_slot_availability(
         if not service or service.shop_id != shop.id or service.is_active != "active":
             return False, "service_unavailable"
 
-    duration = (service.duration_minutes if service and service.duration_minutes else None) or shop.reservation_duration_minutes or 90
+    duration = _resolve_reservation_duration(service, shop)
     latest_start_time = hours.last_order_time or (
         (datetime.combine(target_date, hours.closing_time) - timedelta(minutes=duration)).time()
     )
@@ -354,9 +575,11 @@ async def check_single_slot_availability(
         return False, "outside_business_hours"
 
     start_dt = datetime.combine(target_date, target_time)
-    # create_reservation / get_availability と同じ比較方法（既存の挙動に
-    # 合わせる。タイムゾーンの厳密な扱いはPhase3Aのスコープ外）。
-    if start_dt <= datetime.utcnow():
+    # create_reservation / get_availability と同じ比較方法。Phase3E-3で
+    # datetime.utcnow()からreservation_dateと同じ基準(JST-naive)の
+    # _reservation_basis_now()に修正した（調査で確認した実際のタイムゾーン
+    # 不整合バグの修正。詳細は_reservation_basis_now()のdocstring参照）。
+    if start_dt <= _reservation_basis_now():
         return False, "invalid_request"
 
     if service:
@@ -457,7 +680,7 @@ async def get_availability(
     if hours.is_closed:
         return AvailabilityResponse(**common, is_open=False, message="定休日です", slots=[])
 
-    duration = (service.duration_minutes if service and service.duration_minutes else None) or shop.reservation_duration_minutes or 90
+    duration = _resolve_reservation_duration(service, shop)
     latest_start_time = hours.last_order_time or (
         (datetime.combine(target_date, hours.closing_time) - timedelta(minutes=duration)).time()
     )
@@ -468,7 +691,9 @@ async def get_availability(
     if latest_start_dt < opening_dt:
         return AvailabilityResponse(**common, is_open=True, message="本日は予約可能な時間枠がありません", slots=[])
 
-    now = datetime.utcnow()
+    # Phase3E-3: reservation_dateと同じ基準(JST-naive)の「現在時刻」に統一
+    # （datetime.utcnow()との比較は最大9時間ズレるバグだった。上部コメント参照）。
+    now = _reservation_basis_now()
     slots: List[AvailabilitySlot] = []
     cursor = opening_dt
     while cursor <= latest_start_dt:
@@ -523,7 +748,10 @@ async def create_reservation(
         if not shop.reservations_enabled:
             raise _http_error(400, "この店舗は現在予約を受け付けていません", reason_code="reservation_not_enabled")
 
-        if request.reservation_date <= datetime.utcnow():
+        # Phase3E-3: reservation_dateと同じ基準(JST-naive)の「現在時刻」に統一
+        # （datetime.utcnow()との比較は最大9時間ズレるバグだった。ファイル上部の
+        # _reservation_basis_now()のdocstring参照）。
+        if request.reservation_date <= _reservation_basis_now():
             raise _http_error(400, "過去の日時で予約することはできません", reason_code="invalid_request")
 
         closure = await _get_closure_for_date(db, request.shop_id, request.reservation_date.date())
@@ -565,7 +793,7 @@ async def create_reservation(
         if req_time < hours.opening_time or req_time > latest_start_time:
             raise _http_error(400, "ご指定の時間は営業時間外です", reason_code="outside_business_hours")
 
-        duration = (service.duration_minutes if service and service.duration_minutes else None) or shop.reservation_duration_minutes or 90
+        duration = _resolve_reservation_duration(service, shop)
 
         table_id = None
         final_staff_id = None
@@ -582,7 +810,12 @@ async def create_reservation(
                 if not staff_check.scalars().first():
                     raise _http_error(400, "指定されたスタッフはこのサービスを提供していません", reason_code="staff_unavailable")
 
-            found_staff_id, unmanaged = await _find_available_staff_for_service(
+            # Phase3E-3: check_availability時点の空きチェックだけに頼らず、
+            # ここ（実際にINSERTする直前）でFOR UPDATEロック＋再チェックを行う
+            # ことで、ほぼ同時に届いた2件のリクエストが同じスタッフ×時間帯を
+            # 二重に確保することを防ぐ（_find_and_lock_available_staff_for_service
+            # のdocstring参照）。
+            found_staff_id, unmanaged = await _find_and_lock_available_staff_for_service(
                 db, request.shop_id, service.id, request.reservation_date, duration, request.staff_id,
                 enforce_schedule=bool(shop.staff_schedule_enabled),
             )
@@ -595,7 +828,9 @@ async def create_reservation(
                 raise _http_error(400, detail, reason_code="staff_unavailable")
             final_staff_id = found_staff_id if not unmanaged else request.staff_id
         else:
-            table_id, unmanaged = await _find_available_table(
+            # Phase3E-3: テーブル予約も同様にFOR UPDATEロック＋再チェックで
+            # 同時多重予約を防ぐ（_find_and_lock_available_tableのdocstring参照）。
+            table_id, unmanaged = await _find_and_lock_available_table(
                 db, request.shop_id, request.number_of_people, request.reservation_date, duration
             )
             if not unmanaged and table_id is None:
@@ -794,7 +1029,8 @@ async def update_reservation(
         if request.special_requests is not None:
             reservation.special_requests = request.special_requests
         if request.reservation_date is not None:
-            if request.reservation_date <= datetime.utcnow():
+            # Phase3E-3: reservation_dateと同じ基準(JST-naive)の「現在時刻」に統一
+            if request.reservation_date <= _reservation_basis_now():
                 raise HTTPException(status_code=400, detail="過去の日時には変更できません")
             reservation.reservation_date = request.reservation_date
 

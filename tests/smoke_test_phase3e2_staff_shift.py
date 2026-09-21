@@ -146,14 +146,23 @@ async def main():
             assert r.status_code == 200, f"enable staff_schedule failed: {r.status_code} {r.text}"
             assert r.json()["staff_schedule_enabled"] is True, r.json()
 
-            # シフト未設定スタッフ(staff2)だけを対象にした空き状況確認 → 常に空き扱い
+            # シフト未設定スタッフ(staff2)だけを対象にした空き状況確認。
+            # Phase3E-3で仕様変更（ユーザー承認済み）: このフォールバックは
+            # 「常に予約可能」から「Fail Closed（予約不可）」へ明示的に反転された。
+            # このテストファイルはPhase3E-2時点の挙動記録として残しつつ、
+            # 現行の実際の挙動（Phase3E-3以降）に合わせてアサーションを更新する。
+            # 詳細・意図的な反転の理由はtests/smoke_test_phase3e3_availability_safety.py
+            # と app/routers/reservations.py の _is_staff_scheduled() docstring参照。
             r = await client.get(
                 f"/api/v1/reservations/shop/{shop_a}/availability",
                 params={"date": target_date_str, "service_id": service_id, "staff_id": staff2_id},
             )
             assert r.status_code == 200, f"availability(staff2, unset schedule) failed: {r.status_code} {r.text}"
             slots_staff2 = {s["time"]: s["available"] for s in r.json()["slots"]}
-            assert slots_staff2.get("10:00") is True, f"expected fallback-available for unset schedule: {slots_staff2}"
+            assert slots_staff2.get("10:00") is False, (
+                f"Phase3E-3でFail Closedに変更されたため、シフト未設定スタッフは"
+                f"予約不可であるべき: {slots_staff2}"
+            )
 
             # 4. staff（シフト設定済み）: 月曜09:00-12:00, 13:00-18:00のみ勤務
             r = await client.get(
