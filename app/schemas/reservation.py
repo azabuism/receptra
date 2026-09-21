@@ -203,3 +203,31 @@ class CreateReservationToolResponse(BaseModel):
     # 必ずその場でテーブル/スタッフの空き状況を再判定するため、Phase3Aの結果を
     # キャッシュして使い回すことはない）。
     reason_code: Optional[str] = None
+
+
+# ===== Outbound AI Phase 4A: find_customer Tool Calling用 =====
+#
+# 設計方針（重要・必ず守ること）:
+# - shop_idはcheck_availability/create_reservationと同じくURLパス由来のみを使い、
+#   引数(parameters)には含めない。
+# - レスポンスは意図的に最小限にする。内部Customer MemoryのID・来店回数・
+#   前回利用日・過去の予約内容等は一切含めない（本人確認前にAIへ渡してよいのは
+#   「候補の氏名」だけ、というPrivacy Gateの設計をスキーマレベルでも強制する）。
+#   本人確認後の詳細利用に関するtool（get_customer_context等）はPhase 4Aの
+#   スコープ外（MVPでは「以前利用した可能性がある」と分かるだけで十分という
+#   仕様書section15の判断に基づく）。
+class FindCustomerToolRequest(BaseModel):
+    """Realtime AIのfind_customer Toolからの引数"""
+    phone: str = Field(..., min_length=1, max_length=20, description="お客様から伺った電話番号")
+
+
+class FindCustomerToolResponse(BaseModel):
+    """Realtime AIへ返す最小レスポンス（Privacy Gate: 本人確認前に渡してよい情報のみ）"""
+    success: bool = True
+    # "not_found"（該当なし） / "candidate_found"（候補が見つかった。本人確認が必要）
+    status: str = "not_found"
+    # status="candidate_found"の場合のみ設定。候補の氏名（表示用）のみで、
+    # 内部ID・電話番号そのもの・来店回数・過去の予約内容は一切含めない。
+    candidate_display_name: Optional[str] = None
+    # success=Falseの場合のみ設定（invalid_request / temporarily_unavailable）。
+    reason_code: Optional[str] = None

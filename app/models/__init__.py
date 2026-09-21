@@ -50,6 +50,10 @@ from app.models.shop_knowledge import ShopKnowledge, ShopFAQ
 # 他のPhase3系モデルと同様、alembicは使わずBase.metadata.create_all()で自動作成される）
 from app.models.outbound_call import OutboundCallJob, OutboundCallLog, OutboundCallCategory, OutboundCallJobStatus
 
+# Outbound AI Phase 4A: Customer Memory Foundation（新規テーブル。他のPhase3系
+# モデルと同様、alembicは使わずBase.metadata.create_all()で自動作成される）
+from app.models.customer_memory import CustomerMemory
+
 __all__ = [
     # User/Tenant
     "Tenant",
@@ -108,4 +112,7 @@ __all__ = [
     "OutboundCallLog",
     "OutboundCallCategory",
     "OutboundCallJobStatus",
+
+    # Outbound AI Phase 4A: Customer Memory Foundation
+    "CustomerMemory",
 ]

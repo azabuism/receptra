@@ -1114,6 +1114,46 @@
             }
         }
 
+        // ===== Outbound AI Phase 4A: find_customer =====
+        //
+        // 設計方針（重要）:
+        // - check_availability/create_reservation/get_shop_infoと同じく、shop_idは
+        //   AIの引数に含めない。常にこのページのshopId（通話中の店舗）を使う。
+        // - Tool結果はFastAPI（Customer Memory DB）を唯一の正とする。fetch失敗・
+        //   タイムアウト・不正レスポンス等、どんな失敗であってもcandidate_foundを
+        //   合成してはならない。必ずnot_found相当（status:'not_found'）で返し、
+        //   AIには「初めてのお客様として通常どおり受付」を続けさせる
+        //   （存在しない候補をでっち上げるより、常連認識を1回見逃す方が安全）。
+        async function callFindCustomerTool(args) {
+            const body = {
+                phone: args && args.phone,
+            };
+
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/find-customer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || typeof data.success !== 'boolean') {
+                    // 他のToolと同じ方針: HTTP 422（引数自体が不正）はinvalid_request、
+                    // それ以外（429レート制限・5xx・ネットワーク断）はtemporarily_unavailable。
+                    return {
+                        success: false,
+                        status: 'not_found',
+                        reason_code: (res.status === 422) ? 'invalid_request' : 'temporarily_unavailable',
+                    };
+                }
+                return data;
+            } catch (e) {
+                // fetch自体が例外を投げるのはネットワーク断等のみのため、
+                // 入力の誤りではなくtemporarily_unavailable。
+                logEvent('find_customer Tool呼び出しに失敗: ' + e.message);
+                return { success: false, status: 'not_found', reason_code: 'temporarily_unavailable' };
+            }
+        }
+
         async function handleFunctionCallItem(item) {
             const callId = item.call_id;
             if (!callId) return;
@@ -1140,13 +1180,16 @@
             } else if (item.name === 'get_shop_info') {
                 logEvent('Tool呼び出し受信: get_shop_info ' + JSON.stringify(args));
                 output = await callGetShopInfoTool(args || {});
+            } else if (item.name === 'find_customer') {
+                logEvent('Tool呼び出し受信: find_customer ' + JSON.stringify(args));
+                output = await callFindCustomerTool(args || {});
             } else {
-                // Phase3Dまでで宣言しているToolはcheck_availability /
-                // create_reservation / get_shop_infoの3つのみ。未知の関数名が
-                // 来た場合も、応答せずに放置するとAIが待ち続けてしまうため、
-                // 安全側の失敗として返す。
+                // Phase4Aまでで宣言しているToolはcheck_availability /
+                // create_reservation / get_shop_info / find_customerの4つのみ。
+                // 未知の関数名が来た場合も、応答せずに放置するとAIが待ち続けて
+                // しまうため、安全側の失敗として返す。
                 logEvent('未知のTool呼び出し: ' + item.name);
-                output = { available: false, success: false, reason_code: 'invalid_request' };
+                output = { available: false, success: false, status: 'not_found', reason_code: 'invalid_request' };
             }
 
             logEvent('Tool結果送信: ' + JSON.stringify(output));

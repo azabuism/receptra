@@ -159,6 +159,13 @@ class Shop(Base):
     outbound_call_jobs = relationship("OutboundCallJob", back_populates="shop", cascade="all, delete-orphan")
     outbound_call_logs = relationship("OutboundCallLog", back_populates="shop", cascade="all, delete-orphan")
 
+    # Outbound AI Phase 4A: Customer Memory Foundation。店舗削除時に、その店舗の
+    # 顧客記憶も一緒に削除する（他店舗・他tenantとは元々共有していないデータの
+    # ため、Shopが無くなれば意味を持たない）。FK自体もondelete="CASCADE"にして
+    # あるため、ORM cascadeとDB制約の二重の防御になっている
+    # （app/models/customer_memory.pyのdocstring参照）。
+    customer_memories = relationship("CustomerMemory", back_populates="shop", cascade="all, delete-orphan")
+
     # インデックス
     __table_args__ = (
         Index("ix_shops_tenant", "tenant_id"),

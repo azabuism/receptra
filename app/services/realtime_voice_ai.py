@@ -306,6 +306,50 @@ _REALTIME_TOOLS = [
             "required": ["topic"],
         },
     },
+    # ===== Outbound AI Phase 4A: find_customer =====
+    #
+    # 設計方針（重要・必ず守ること）:
+    # - shop_idはこの関数の引数に含めない。check_availability等と同じく、
+    #   実際にどの店舗かはRECEPTRAサーバー側（セッションを発行した店舗）で決まる。
+    # - この関数の結果に含まれるのは「候補の氏名」だけ（見つからない場合は
+    #   その旨のみ）。来店回数・前回利用日・過去の予約内容等は一切含まれない
+    #   （FastAPI側のPrivacy Gate設計。app.schemas.reservation.
+    #   FindCustomerToolResponseのdocstring参照）。この関数の説明文自体が、
+    #   AIに「見つかった＝本人確定」と誤解させないための役割を持つ。
+    {
+        "type": "function",
+        "name": "find_customer",
+        "description": (
+            "お客様から電話番号を伺ったら、予約の受付を進める前に必ずこの関数を"
+            "呼び出してください（来店予約の会話で電話番号を伺うタイミングであれば"
+            "いつでも構いません）。\n"
+            "戻り値のstatusがnot_foundの場合は、初めてのお客様として通常どおり"
+            "受付を続けてください（何も案内しなくてよい）。\n"
+            "戻り値のstatusがcandidate_foundの場合、以前ご利用いただいた可能性が"
+            "あるお客様が見つかっています。ただし電話番号の一致だけでは本人確定"
+            "ではありません（家族共用の電話等の可能性があるため）。candidate_display_name"
+            "を使って「以前ご利用いただいた可能性があります。○○様でよろしいですか？」"
+            "のように、必ず一度確認してください。お客様が肯定した場合のみ、"
+            "「ありがとうございます」「またのご利用ありがとうございます」のように"
+            "自然にお伝えして構いません。お客様が否定した場合や、別の名前を"
+            "名乗った場合は、その候補の情報を一切使わず、新規のお客様として"
+            "通常どおり受付を続けてください。\n"
+            "重要: この関数の結果には、以前の来店日・利用内容・来店回数等の"
+            "詳細情報は一切含まれていません。本人確認が済む前はもちろん、"
+            "済んだ後であっても、この関数の結果に含まれていない情報を"
+            "推測して話すことは絶対にしないでください。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "phone": {
+                    "type": "string",
+                    "description": "お客様から実際に伺った電話番号（推測は絶対にしないこと）",
+                },
+            },
+            "required": ["phone"],
+        },
+    },
 ]
 
 _client: Optional[AsyncOpenAI] = None
@@ -547,6 +591,31 @@ _SHOP_KNOWLEDGE_RULES_TEMPLATE = """\
   絶対に推測で補わないでください。\
 """
 
+# Outbound AI Phase 4A: Customer Memory（常連認識）に関する運用ルール。常に固定
+# （店舗独自のcustom_instructionsによって上書き・無効化されない）。
+# get_shop_infoと同様、find_customerツール固有の振る舞いをここで補強する。
+# 重要: ここには顧客の実データ（氏名・電話番号・来店履歴等）は一切書き込まない。
+# あくまで「find_customerというツールをどう使うか」という一般的な行動指針のみ
+# （仕様書Phase 4A section5「巨大なRealtime instructionsへ顧客履歴を埋め込む
+# 設計は禁止」を踏まえた設計）。
+_CUSTOMER_MEMORY_RULES_TEMPLATE = """\
+# 常連のお客様の認識に関するルール（重要・必ず守ってください）
+- お客様から電話番号を伺ったタイミングで find_customer ツールを呼び出し、
+  その結果を見るまで、そのお客様が以前利用したことがあるかどうかを自分で
+  判断・発言しないでください。
+- find_customer の結果が candidate_found の場合でも、電話番号の一致だけを
+  根拠に「常連ですね」「いつもありがとうございます」のように断定的・機械的に
+  発言しないでください。必ず候補の氏名を挙げて「○○様でよろしいですか？」と
+  一度確認し、お客様が肯定した場合にのみ、自然な範囲で「またのご利用
+  ありがとうございます」等とお伝えください。
+- find_customer の結果に含まれていない情報（前回の来店日・利用内容・来店回数・
+  住所等）を、本人確認の前後を問わず、推測や既知の情報であるかのように
+  話すことは絶対にしないでください。
+- お客様が候補の氏名を否定した場合や、find_customer の結果がnot_foundの場合は、
+  以前の利用について一切触れず、初めてのお客様として通常どおり受付を
+  続けてください。\
+"""
+
 # Phase3B: 予約成立の宣言に関する安全ルール。常に最後に配置する固定文言
 # （店舗独自のcustom_instructionsによって上書き・無効化されない）。
 #
@@ -749,6 +818,7 @@ async def build_realtime_instructions(
       6. Shop Custom Instructions（店舗独自の補助指示）      … 明示的に下位と位置づけ
       7. Constraints（現時点での制約）                       … 常に固定
       7b. Shop Knowledge Rules（Phase3D: get_shop_info運用ルール） … 常に固定
+      7c. Customer Memory Rules（Phase4A: find_customer運用ルール） … 常に固定
       8. Booking Safety（Phase3B: 予約成立宣言の絶対ルール） … 常に固定・最後
 
     staff_settingsがNone、またはPhase2で追加されたフィールドが全て未設定の
@@ -803,6 +873,7 @@ async def build_realtime_instructions(
 
     sections.append(_CONSTRAINTS_TEMPLATE)
     sections.append(_SHOP_KNOWLEDGE_RULES_TEMPLATE)
+    sections.append(_CUSTOMER_MEMORY_RULES_TEMPLATE)
     sections.append(_BOOKING_SAFETY_TEMPLATE)
 
     return "\n\n".join(sections)

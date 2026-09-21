@@ -32,11 +32,13 @@ from app.services import realtime_voice_ai
 from app.schemas.reservation import (
     CheckAvailabilityRequest, CheckAvailabilityResponse,
     CreateReservationToolRequest, CreateReservationToolResponse,
+    FindCustomerToolRequest, FindCustomerToolResponse,
     ReservationCreateRequest,
 )
 from app.schemas.shop_knowledge import GetShopInfoToolRequest
 from app.routers.reservations import check_single_slot_availability, create_reservation
 from app.routers.shop_knowledge import get_shop_info_for_ai
+from app.services.customer_memory import find_customer_candidate, upsert_customer_memory_for_reservation
 
 logger = logging.getLogger("receptra.realtime_voice")
 
@@ -117,6 +119,26 @@ def _check_shop_info_rate_limit(shop_id: str) -> None:
     bucket = _recent_shop_info_tool_requests.setdefault(shop_id, [])
     bucket[:] = [t for t in bucket if now - t < _SHOP_INFO_TOOL_RATE_LIMIT_WINDOW_SECONDS]
     if len(bucket) >= _SHOP_INFO_TOOL_RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
+
+
+# Outbound AI Phase 4A: find_customer Tool Calling用の別バケット。DB書き込みを
+# 伴わない読み取り専用の問い合わせであり、get_shop_infoと同程度の緩めの制限にする
+# （他のToolのクォータとは完全に独立させる）。
+_CUSTOMER_LOOKUP_RATE_LIMIT_WINDOW_SECONDS = 60
+_CUSTOMER_LOOKUP_RATE_LIMIT_MAX_REQUESTS = 30
+_recent_customer_lookup_requests: dict[str, list] = {}
+
+
+def _check_customer_lookup_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _recent_customer_lookup_requests.setdefault(shop_id, [])
+    bucket[:] = [t for t in bucket if now - t < _CUSTOMER_LOOKUP_RATE_LIMIT_WINDOW_SECONDS]
+    if len(bucket) >= _CUSTOMER_LOOKUP_RATE_LIMIT_MAX_REQUESTS:
         raise HTTPException(
             status_code=429,
             detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
@@ -611,6 +633,24 @@ async def create_reservation_tool(
             return _safe_failure(reason_code)
 
         reservation = booking_response.reservation
+
+        # Outbound AI Phase 4A: 予約成立後にのみ、Customer Memoryへ安全に
+        # upsertする（Web予約・チャット予約・管理画面予約には一切影響しない、
+        # このRealtime Voice専用エンドポイント内だけの処理。Phase3B.1の
+        # Layer2重複検知と同じ「専用エンドポイント内にのみ実装し、共通の
+        # create_reservation()本体には一切組み込まない」という方針を踏襲）。
+        # 冪等性・失敗分離はapp.services.customer_memory側で保証されており、
+        # ここでの呼び出しが例外を投げることは無い（予約成立レスポンスに
+        # 一切影響しない）。同じreservationに対する2回目以降の呼び出し
+        # （Layer2重複検知で既存予約を返す場合を含む）は内部で自動的に
+        # 無視される。
+        await upsert_customer_memory_for_reservation(
+            shop_id=shop_id,
+            reservation_id=reservation.id,
+            guest_name=reservation.guest_name,
+            guest_phone=reservation.guest_phone,
+        )
+
         return CreateReservationToolResponse(
             success=True,
             reservation_id=booking_response.reservation_id,
@@ -625,6 +665,56 @@ async def create_reservation_tool(
         # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(success=False)で返す。
         logger.error("create_reservation Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
         return _safe_failure("temporarily_unavailable")
+
+
+@router.post("/tools/find-customer", response_model=FindCustomerToolResponse)
+async def find_customer_tool(
+    shop_id: str,
+    request: FindCustomerToolRequest,
+    db: AsyncSession = Depends(get_db),
+) -> FindCustomerToolResponse:
+    """
+    Outbound AI Phase 4A: find_customer Tool Calling専用エンドポイント（認証不要）。
+
+    設計方針（重要・必ず守ること）:
+    - shop_idはcheck_availability/create_reservation/get_shop_infoと同じく
+      URLパスの値のみを使い、リクエストボディには含めない。Realtime AI（LLM側）に
+      他店舗のshop_idを自由に指定させる余地を作らない。Customer Memoryのlookupは
+      必ずこのshop_id内だけで完結させる（他店舗・他tenantのデータには一切触れない）。
+    - Privacy Gate: 本人確認前にAIへ渡してよいのは「候補の表示名」だけ。来店回数・
+      前回利用日・過去の予約内容・内部Customer MemoryのIDは一切返さない
+      （FindCustomerToolResponseのdocstring参照。スキーマレベルでも
+      これらのフィールド自体が存在しない設計にしている）。
+    - 実際のlookupロジックは一切ここで再実装せず、必ず
+      app.services.customer_memory.find_customer_candidate()をそのまま呼び出す
+      （電話番号正規化・「電話番号=本人確定」としない設計・DB障害時の安全な
+      フォールバックは全てそちら側の責務）。
+    - 該当なし・DB障害等どの場合であってもnot_foundとして安全側に倒す
+      （見つかったはずの候補を見失うことはあっても、存在しない候補を
+      でっち上げることは絶対にしない）。
+    """
+    _check_customer_lookup_rate_limit(shop_id)
+
+    try:
+        shop = await db.get(Shop, shop_id)
+        if not shop or not shop.is_active:
+            return FindCustomerToolResponse(success=False, reason_code="temporarily_unavailable")
+
+        candidate_display_name = await find_customer_candidate(shop_id, request.phone)
+        if candidate_display_name is None:
+            return FindCustomerToolResponse(success=True, status="not_found")
+
+        return FindCustomerToolResponse(
+            success=True,
+            status="candidate_found",
+            candidate_display_name=candidate_display_name,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(not_found相当)で返す。
+        logger.error("find_customer Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
+        return FindCustomerToolResponse(success=False, reason_code="temporarily_unavailable")
 
 
 @router.post("/tools/get-shop-info")

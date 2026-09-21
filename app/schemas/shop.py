@@ -102,6 +102,39 @@ def normalize_jp_phone_digits(raw: str) -> str:
     return re.sub(r"\D", "", normalized)
 
 
+# Outbound AI Phase 4A: Customer Memory Foundationの電話番号lookup専用の正規化。
+#
+# 既存のnormalize_jp_phone_digits()を土台として再利用し（乱立させない）、
+# それだけでは吸収できない「国番号付き表記」のケースのみをこの関数で追加処理する:
+# - 09012345678 のような国内形式はそのまま。
+# - +819012345678 / 819012345678 / 81-90-1234-5678 のような国番号(81)付き表記は、
+#   先頭の"81"を取り除いた上で"0"を補い、国内形式に変換する
+#   （090-1234-5678と+81-90-1234-5678が同一の顧客記憶として扱われるようにするため。
+#   仕様書Phase 4A section4-Dで明示的に要求されている）。
+# 欠落桁の補完や、市外局番の推測などは一切行わない。変換後も
+# _JP_PHONE_DIGITS_RE（0始まり・合計10〜11桁）に一致しない場合はNoneを返し、
+# 呼び出し側（app.services.customer_memory）はCustomer Memoryの作成/検索を
+# 安全にスキップする（不正確な正規化で別人を同一人物として扱うより、
+# 「今回は認識できなかった」として通常の予約受付を継続する方を優先する）。
+def normalize_jp_phone_national(raw: Optional[str]) -> Optional[str]:
+    """
+    Customer Memoryのlookup/upsert専用: 電話番号を日本の国内形式
+    （0始まり・数字のみ）に正規化する。認識できない形式はNoneを返す。
+    """
+    if not raw:
+        return None
+    digits = normalize_jp_phone_digits(raw)
+    if digits.startswith("81") and not digits.startswith("810"):
+        # "81" (国番号) + "0"を除いた市外局番以下、という国際表記の可能性。
+        # 先頭の"81"を"0"に置き換える（例: "819012345678" -> "09012345678"）。
+        candidate = "0" + digits[2:]
+    else:
+        candidate = digits
+    if _JP_PHONE_DIGITS_RE.match(candidate):
+        return candidate
+    return None
+
+
 class ShopNotificationSettingsResponse(BaseModel):
     """
     予約通知の連絡先設定レスポンス（Phase3H Workstream C・オーナー専用）。
