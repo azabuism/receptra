@@ -259,25 +259,27 @@ async def update_shop_notification_settings(
 
     update_data = request.dict(exclude_unset=True)
 
-    # 送られなかったフィールドは既存値を維持した上で、更新後の状態を先に計算する
-    # （ON/OFFの整合性チェックを、単体のリクエスト値だけでなく実際に保存される
-    # 状態に対して行うため）。
+    # 送られなかったフィールドは既存値を維持した上で、更新後の電話番号を先に計算する。
     new_phone = (
         update_data["reservation_notification_phone"]
         if "reservation_notification_phone" in update_data
         else shop.reservation_notification_phone
     )
-    new_enabled = (
-        update_data["reservation_phone_notification_enabled"]
-        if "reservation_phone_notification_enabled" in update_data
-        else shop.reservation_phone_notification_enabled
-    )
+    # このリクエストで実際にenabledを指定したかどうかを区別する（重要）。
+    # 「番号を消すだけ」のリクエスト（enabledは触っていない）と、
+    # 「このリクエストで明示的にONにしようとしている」リクエストを区別しないと、
+    # 既にON状態だった店舗の電話番号を消そうとしただけで、意図しない
+    # 「ONにするには番号が必要です」エラーになってしまう
+    # （番号を消す操作自体は常に成功すべきで、その代わりONは自動でOFFへ戻す）。
+    requested_enabled = update_data.get("reservation_phone_notification_enabled")
 
-    if new_enabled and not new_phone:
+    if requested_enabled is True and not new_phone:
         raise HTTPException(
             status_code=400,
             detail="通知をONにするには、先に電話番号を登録してください。",
         )
+
+    new_enabled = requested_enabled if requested_enabled is not None else shop.reservation_phone_notification_enabled
     # 電話番号が空になった（またはそもそも無い）のにONのまま、という矛盾した
     # 状態を絶対に作らない。番号を消す操作自体は常に成功させ、その代わり
     # ONは安全側で自動的にOFFへ戻す。
