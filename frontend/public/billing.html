@@ -101,6 +101,10 @@
             background: #fee; color: var(--error); padding: 12px 14px; border-radius: 8px;
             font-size: 13px; margin-bottom: 16px; display: none;
         }
+        .success-box {
+            background: #e6f7ec; color: #1a8a4a; padding: 12px 14px; border-radius: 8px;
+            font-size: 13px; margin-bottom: 16px; display: none;
+        }
         .status-badge {
             display: inline-block; font-size: 12px; font-weight: 700; padding: 4px 12px;
             border-radius: 12px; margin-bottom: 14px;
@@ -126,6 +130,7 @@
             <p class="subtitle">予約受付機能をご利用いただくには、お支払い設定が必要です。</p>
 
             <div id="error-box" class="error-box"></div>
+            <div id="success-box" class="success-box"></div>
 
             <!-- すでに有効な場合 -->
             <div id="active-view" class="card" style="display:none;">
@@ -201,6 +206,13 @@
             document.getElementById('error-box').style.display = 'none';
         }
 
+        function showSuccessAndRedirect(message, redirectUrl) {
+            const box = document.getElementById('success-box');
+            box.textContent = message;
+            box.style.display = 'block';
+            setTimeout(function () { window.location.href = redirectUrl; }, 1200);
+        }
+
         async function activateShopReservations() {
             // カード決済成功後、対象店舗があれば予約受付をONにする
             if (!shopId) return;
@@ -258,8 +270,7 @@
                                 const err = await res.json();
                                 throw new Error(err.detail || '解約に失敗しました');
                             }
-                            alert('解約しました。');
-                            window.location.href = 'owner.html';
+                            showSuccessAndRedirect('解約しました。', 'owner.html');
                         } catch (err) {
                             showError(err.message);
                         }
@@ -317,8 +328,10 @@
                             await activateShopReservations();
                         }
 
-                        alert('お支払い設定が完了しました。予約受付が有効になりました。');
-                        window.location.href = shopId ? ('shop-manage.html?id=' + encodeURIComponent(shopId)) : 'owner.html';
+                        showSuccessAndRedirect(
+                            'お支払い設定が完了しました。予約受付が有効になりました。',
+                            shopId ? ('shop-manage.html?id=' + encodeURIComponent(shopId)) : 'owner.html'
+                        );
                     } catch (err) {
                         showError(err.message);
                         submitBtn.disabled = false;

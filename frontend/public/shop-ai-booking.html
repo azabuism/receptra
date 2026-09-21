@@ -240,7 +240,10 @@
     </header>
 
     <div id="loading" class="container">読み込み中…</div>
-    <div id="not-found" class="container" style="display:none;">店舗が見つかりませんでした。</div>
+    <div id="not-found" class="container" style="display:none;">
+        <p>店舗が見つかりませんでした。</p>
+        <p style="margin-top:12px;"><a href="/">ホームに戻る</a></p>
+    </div>
 
     <div class="container" id="startCallScreen" style="display:none;">
         <div class="voice-hero">
@@ -536,7 +539,7 @@
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                throw new Error(data.detail || ('HTTPエラー: ' + res.status));
+                throw new Error(data.detail || 'ただいま混み合っております。しばらくしてからもう一度お試しください。');
             }
             return data;
         }
@@ -551,9 +554,17 @@
                 bigMicBtn.disabled = true;
                 const banner = document.createElement('div');
                 banner.className = 'ended-banner';
-                banner.textContent = booked
-                    ? '🎉 ご予約が完了しました。このページは閉じていただいて構いません。'
-                    : 'AI予約受付はここで終了しました。もう一度やり直す場合はページを再読み込みしてください。';
+                if (booked) {
+                    banner.textContent = '🎉 ご予約が完了しました。このページは閉じていただいて構いません。';
+                } else {
+                    banner.textContent = 'AI予約受付はここで終了しました。';
+                    const retryBtn = document.createElement('button');
+                    retryBtn.type = 'button';
+                    retryBtn.textContent = 'もう一度試す';
+                    retryBtn.style.cssText = 'margin-top:8px; display:block;';
+                    retryBtn.addEventListener('click', () => window.location.reload());
+                    banner.appendChild(retryBtn);
+                }
                 chatWindow.appendChild(banner);
                 chatWindow.scrollTop = chatWindow.scrollHeight;
             }
@@ -582,7 +593,9 @@
                 loadingEl.style.display = 'none';
                 startCallScreenEl.style.display = 'none';
                 notFoundEl.style.display = 'block';
-                notFoundEl.textContent = 'ご案内の準備に失敗しました: ' + e.message;
+                notFoundEl.innerHTML =
+                    '<p>ご案内の準備に失敗しました。しばらくしてからもう一度お試しください。</p>' +
+                    '<p style="margin-top:12px;"><a href="/">ホームに戻る</a></p>';
             }
         }
 
@@ -600,7 +613,7 @@
                 const data = await api('/chat', { session_id: sessionId, message: text });
                 onAiReply(data.reply, { end: data.end_call, booked: data.booked });
             } catch (e) {
-                addBubble('エラー: ' + e.message, 'system');
+                addBubble(e.message, 'system');
             } finally {
                 if (!ended) {
                     sendBtn.disabled = false;

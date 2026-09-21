@@ -189,14 +189,16 @@
     </header>
 
     <div id="loading" class="container">読み込み中…</div>
-    <div id="not-found" class="container" style="display:none;">店舗が見つかりませんでした。</div>
+    <div id="not-found" class="container" style="display:none;">
+        <p>店舗が見つかりませんでした。</p>
+        <p style="margin-top:12px;"><a href="/">ホームに戻る</a></p>
+    </div>
 
     <div class="container" id="content" style="display:none;">
         <div class="notice">
-            AIがお電話のように音声でご要望をお伺いします。まだこの場での
-            空き状況確認・ご予約の確定・メニューや料金のご案内はできないため、
-            お伺いした内容をもとに、後ほど担当よりご連絡いたします。今すぐ
-            確実にご予約を確定したい場合は、店舗ページの「チャットで予約」も
+            AIがお電話のように音声でご要望をお伺いし、その場で空き状況の確認・
+            ご予約の確定まで行います。うまく聞き取れない場合や、より確実に
+            ご予約を確定したい場合は、店舗ページの「チャットで予約」も
             ご利用いただけます。
         </div>
 
@@ -276,7 +278,7 @@
         </div>
     </div>
 
-    <footer>RECEPTRA AI音声受付（ブラウザ⇔OpenAI Realtime API）</footer>
+    <footer>RECEPTRA AI音声受付</footer>
 
     <script>
         const params = new URLSearchParams(window.location.search);
@@ -1204,7 +1206,7 @@
                 });
             } else if (type === 'error') {
                 logEvent('サーバーエラー: ' + JSON.stringify(msg.error || msg));
-                showErrorBanner('OpenAI側からエラーが返されました: ' + JSON.stringify(msg.error || msg));
+                showErrorBanner('通話中にエラーが発生しました。お手数ですが、もう一度おかけ直しください。');
             }
         }
 
@@ -1390,7 +1392,7 @@
                         }
                     } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
                         setStatus(stWebrtcEl, pc.connectionState, 'bad');
-                        if (!ended) endCall('接続が切断されました（' + pc.connectionState + '）');
+                        if (!ended) endCall('通話が切断されました。電波状況の良い場所でもう一度おかけ直しください。');
                     }
                 };
                 pc.oniceconnectionstatechange = () => logEvent('iceConnectionState: ' + pc.iceConnectionState);
@@ -1409,20 +1411,21 @@
                     },
                 });
                 if (!sdpResponse.ok) {
-                    throw new Error('OpenAIとの接続確立に失敗しました (HTTP ' + sdpResponse.status + ')');
+                    logEvent('接続確立エラー (HTTP ' + sdpResponse.status + ')');
+                    throw new Error('接続の確立に失敗しました');
                 }
                 const answerSdp = await sdpResponse.text();
                 await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
                 greetingTiming.sdpAnswerSet = performance.now();
 
                 maxDurationTimer = setTimeout(() => {
-                    endCall('テスト用の最大通話時間（30分）に達したため終了しました');
+                    endCall('通話時間が上限（30分）に達したため終了しました');
                 }, MAX_CALL_DURATION_MS);
             } catch (e) {
                 logEvent('エラー: ' + e.message);
-                showErrorBanner('接続に失敗しました: ' + e.message);
+                showErrorBanner('接続に失敗しました。しばらくしてからもう一度お試しいただくか、お電話でお問い合わせください。');
                 statusText.textContent = '接続に失敗しました';
-                subStatusText.textContent = e.message;
+                subStatusText.textContent = 'もう一度お試しください。';
                 bigMic.classList.remove('connecting');
                 bigMic.classList.add('error');
                 startBtn.disabled = false;

@@ -438,10 +438,10 @@
                     スタッフのシフト（週次シフト・休み・時間変更）を予約可否判定に反映する
                 </label>
                 <p class="hint" style="margin-top: 4px;">
-                    <strong>ON:</strong> 下の「シフトを管理」で設定した週次シフト・休み・時間変更が、お客様の予約可否にそのまま反映されます。
-                    ただし、<strong>シフトを一度も登録していないスタッフは「勤務時間未設定」として予約を受け付けられなくなります</strong>（安全のため。うっかりシフト未設定のまま予約が入り続けることを防ぎます）。
+                    <strong>ON:</strong> 下の「シフトを管理」で設定した勤務時間・休み・時間変更どおりに、お客様は空いている時間だけ予約できるようになります。
+                    ただし、<strong>まだシフトを一度も登録していないスタッフは、安全のため「予約を受け付けない」扱いになります</strong>（シフトの設定を忘れたまま予約が入り続けるのを防ぐためです）。ONにする前に、対象スタッフのシフトを登録しておいてください。
                     <br>
-                    <strong>OFF（既定）:</strong> シフトの登録有無に関わらず、従来通りスタッフの既存予約の空き状況だけで予約可否を判定します（このアプリを初めて使う場合の動作と完全に同じです）。
+                    <strong>OFF（既定）:</strong> シフトの登録有無に関わらず、既存の予約状況だけで空き時間を判定します（シフト機能を使わない場合はこのままで構いません）。
                 </p>
                 <div class="msg" id="staff-schedule-enabled-msg"></div>
                 <div class="msg error" id="staff-schedule-warning" style="display: none; margin-top: 8px;"></div>
@@ -539,10 +539,13 @@
                         <input type="text" id="ai-staff-name" placeholder="例：さくら（未入力の場合は名乗りません）" maxlength="100">
                     </div>
                     <div class="field">
-                        <label for="ai-staff-voice">声（voice）</label>
+                        <label for="ai-staff-voice">声のタイプ</label>
                         <div style="display:flex; gap:8px; align-items:center;">
                             <select id="ai-staff-voice" style="flex:1;"></select>
                             <button type="button" class="btn-outline" id="ai-staff-voice-preview-btn" style="white-space:nowrap;">試聴</button>
+                        </div>
+                        <div class="hint" style="font-size:12px; color:#888; margin-top:4px;">
+                            声の名前だけでは違いが分かりにくいため、「試聴」ボタンで実際に聴き比べてお選びください。
                         </div>
                     </div>
                 </div>
@@ -1395,7 +1398,9 @@
                     body: JSON.stringify({ is_active: nextActive })
                 });
                 loadServices();
-            } catch (e) {}
+            } catch (e) {
+                showMsg(document.getElementById('service-msg'), '変更を保存できませんでした。もう一度お試しください。', 'error');
+            }
         }
 
         async function deleteService(serviceId) {
@@ -1589,7 +1594,9 @@
                     body: JSON.stringify({ is_active: nextActive })
                 });
                 loadStaff();
-            } catch (e) {}
+            } catch (e) {
+                showMsg(document.getElementById('staff-msg'), '変更を保存できませんでした。もう一度お試しください。', 'error');
+            }
         }
 
         async function deleteStaff(staffId) {
@@ -1619,7 +1626,9 @@
                     });
                 }
                 loadStaff();
-            } catch (e) {}
+            } catch (e) {
+                showMsg(document.getElementById('staff-msg'), '変更を保存できませんでした。もう一度お試しください。', 'error');
+            }
         }
 
         // ---------- Phase3E-2: スタッフシフト管理（週次シフト・日付単位の調整） ----------
@@ -1783,7 +1792,11 @@
             try {
                 await authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/weekly-shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' });
                 loadStaffShiftPanel(staffId);
-            } catch (e) {}
+            } catch (e) {
+                const panel = document.getElementById('staff-shift-panel-' + staffId);
+                const msg = panel && panel.querySelector('.shift-panel-msg');
+                if (msg) showMsg(msg, '削除できませんでした。もう一度お試しください。', 'error');
+            }
         }
 
         async function addShiftOverride(staffId) {
@@ -1827,7 +1840,11 @@
             try {
                 await authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/shift-overrides/' + encodeURIComponent(overrideId), { method: 'DELETE' });
                 loadStaffShiftPanel(staffId);
-            } catch (e) {}
+            } catch (e) {
+                const panel = document.getElementById('staff-shift-panel-' + staffId);
+                const msg = panel && panel.querySelector('.shift-panel-msg');
+                if (msg) showMsg(msg, '削除できませんでした。もう一度お試しください。', 'error');
+            }
         }
 
         // ---------- 予約管理 ----------
@@ -2448,9 +2465,11 @@
                 if (!res.ok) throw new Error('voice一覧の取得に失敗しました');
                 const data = await res.json();
                 const voices = data.voices || [];
+                var recommendedVoices = { marin: true, cedar: true };
                 select.innerHTML = '<option value="">未設定（標準の声を使用）</option>' +
                     voices.map(function (v) {
-                        return '<option value="' + v + '">' + v + '</option>';
+                        var label = v + (recommendedVoices[v] ? '（音質・推奨）' : '');
+                        return '<option value="' + v + '">' + label + '</option>';
                     }).join('');
                 if (selectedVoice) select.value = selectedVoice;
             } catch (e) {
@@ -2807,7 +2826,7 @@
                     }
                 });
                 if (!sdpResponse.ok) {
-                    throw new Error('OpenAIとの接続確立に失敗しました');
+                    throw new Error('試聴の接続に失敗しました');
                 }
                 const answerSdp = await sdpResponse.text();
                 await previewPc.setRemoteDescription({ type: 'answer', sdp: answerSdp });

@@ -280,16 +280,6 @@
                         <input type="url" id="shop-website" placeholder="https://">
                     </div>
                 </div>
-                <div class="row-2">
-                    <div class="field">
-                        <label for="shop-thumbnail">サムネイル画像URL</label>
-                        <input type="url" id="shop-thumbnail" placeholder="https://">
-                    </div>
-                    <div class="field">
-                        <label for="shop-cover">カバー画像URL</label>
-                        <input type="url" id="shop-cover" placeholder="https://">
-                    </div>
-                </div>
                 <div class="field">
                     <label for="shop-description">お店の紹介文</label>
                     <textarea id="shop-description" placeholder="お店の魅力やこだわりを紹介しましょう"></textarea>
@@ -456,8 +446,6 @@
                 phone: document.getElementById('shop-phone').value || null,
                 email: document.getElementById('shop-email').value || null,
                 website: document.getElementById('shop-website').value || null,
-                thumbnail_url: document.getElementById('shop-thumbnail').value || null,
-                cover_image_url: document.getElementById('shop-cover').value || null,
                 description: document.getElementById('shop-description').value || null,
                 features: document.getElementById('shop-features').value
                     .split(',')
@@ -480,7 +468,9 @@
                 }
                 msg.className = 'msg success';
                 msg.style.display = 'block';
-                msg.innerHTML = '店舗を登録しました。<a href="shop.html?id=' + encodeURIComponent(data.shop_id) + '">紹介ページを見る →</a>';
+                msg.innerHTML = '店舗を登録しました。続けて、写真の追加やAIスタッフの設定を行いましょう。'
+                    + '<br><a href="shop-manage.html?id=' + encodeURIComponent(data.shop_id) + '">お店の情報を編集する →</a>'
+                    + ' ／ <a href="shop.html?id=' + encodeURIComponent(data.shop_id) + '">紹介ページを見る →</a>';
                 document.getElementById('shop-form').reset();
                 loadShops();
             } catch (err) {
