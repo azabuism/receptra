@@ -146,6 +146,12 @@ class Shop(Base):
     # ★★★ マイページ機能: 店舗削除時にいいね・行きたい店・クーポンも一緒に削除する
     user_shop_relations = relationship("UserShopRelation", back_populates="shop", cascade="all, delete-orphan")
     coupons = relationship("Coupon", back_populates="shop", cascade="all, delete-orphan", foreign_keys="Coupon.shop_id")
+    # Phase3H Workstream D: 店舗削除時にAIStaffSettings/ShopKnowledge/ShopFAQも
+    # 一緒に削除されるようにする（従来これらの3つだけリレーション未定義のため、
+    # 削除しようとするとFK制約違反で500エラーになっていた不具合の修正）。
+    ai_staff_settings = relationship("AIStaffSettings", back_populates="shop", cascade="all, delete-orphan", uselist=False)
+    shop_knowledge = relationship("ShopKnowledge", back_populates="shop", cascade="all, delete-orphan", uselist=False)
+    shop_faqs = relationship("ShopFAQ", back_populates="shop", cascade="all, delete-orphan")
 
     # インデックス
     __table_args__ = (

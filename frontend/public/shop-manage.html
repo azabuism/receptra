@@ -1150,6 +1150,7 @@
             el.style.display = 'block';
         }
 
+
         async function authFetch(url, options) {
             options = options || {};
             options.headers = Object.assign({}, options.headers, { 'Authorization': 'Bearer ' + token });
@@ -1428,7 +1429,7 @@
                 });
                 if (!res.ok) {
                     const errData = await res.json().catch(function () { return {}; });
-                    throw new Error(errData.detail || '保存に失敗しました');
+                    throw new Error(_extractErrorMessage(errData, '保存に失敗しました'));
                 }
                 const durationRes = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId), {
                     method: 'PATCH',
@@ -1437,7 +1438,7 @@
                 });
                 if (!durationRes.ok) {
                     const errData = await durationRes.json().catch(function () { return {}; });
-                    throw new Error(errData.detail || '保存に失敗しました');
+                    throw new Error(_extractErrorMessage(errData, '保存に失敗しました'));
                 }
                 showMsg(msg, '保存しました', 'success');
             } catch (err) {
@@ -1907,7 +1908,9 @@
 
         function _extractErrorMessage(errData, fallback) {
             if (errData && Array.isArray(errData.detail) && errData.detail[0] && errData.detail[0].msg) {
-                return errData.detail[0].msg;
+                // Pydanticの検証エラーは "Value error, ○○" という定型文で始まるため、
+                // Ownerに見せる際はその技術的な接頭辞を取り除く。
+                return errData.detail[0].msg.replace(/^Value error,\s*/, '');
             }
             if (errData && typeof errData.detail === 'string') return errData.detail;
             return fallback;
@@ -2263,7 +2266,7 @@
                 });
                 if (!res.ok) {
                     const errData = await res.json().catch(function () { return {}; });
-                    throw new Error(errData.detail || '保存に失敗しました');
+                    throw new Error(_extractErrorMessage(errData, '保存に失敗しました'));
                 }
                 const shop = await res.json();
                 document.getElementById('shop-name-title').textContent = shop.name + ' の管理';
@@ -2660,7 +2663,7 @@
             const msg = document.getElementById('delete-msg');
             const nameEl = document.getElementById('shop-name-title');
             const shopName = (nameEl.textContent || '').replace(/ の管理$/, '');
-            if (!confirm('「' + shopName + '」を削除します。写真・メニューなどもすべて削除され、元に戻せません。よろしいですか？')) {
+            if (!confirm('「' + shopName + '」を削除します。\n\n写真・メニュー・サービス・スタッフ・予約履歴・口コミ・クーポンなど、この店舗・事業所に登録されているデータがすべて削除され、元に戻せません。\n\n本当に削除しますか？')) {
                 return;
             }
             const btn = document.getElementById('delete-shop-btn');
@@ -2761,7 +2764,7 @@
                 });
                 if (!res.ok) {
                     const errData = await res.json().catch(function () { return {}; });
-                    throw new Error(errData.detail || '保存に失敗しました');
+                    throw new Error(_extractErrorMessage(errData, '保存に失敗しました'));
                 }
                 showMsg(msg, '保存しました。次回の通話から反映されます。', 'success');
             } catch (err) {
@@ -2866,7 +2869,7 @@
                 });
                 if (!res.ok) {
                     const errData = await res.json().catch(function () { return {}; });
-                    throw new Error(errData.detail || '保存に失敗しました');
+                    throw new Error(_extractErrorMessage(errData, '保存に失敗しました'));
                 }
                 showMsg(msg, '保存しました。次回の通話から反映されます。', 'success');
             } catch (err) {
@@ -2916,7 +2919,7 @@
                 });
                 const data = await res.json().catch(function () { return {}; });
                 if (!res.ok) {
-                    throw new Error(data.detail || '保存に失敗しました');
+                    throw new Error(_extractErrorMessage(data, '保存に失敗しました'));
                 }
                 // 保存後の実際の状態（サーバー側でONが自動的にOFFへ戻された場合等）を
                 // フォームに反映し、画面の表示と保存済みデータが必ず一致するようにする。

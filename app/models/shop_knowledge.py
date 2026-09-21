@@ -139,7 +139,7 @@ class ShopKnowledge(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
-    shop = relationship("Shop", foreign_keys=[shop_id])
+    shop = relationship("Shop", foreign_keys=[shop_id], back_populates="shop_knowledge")
 
     def __repr__(self):
         return f"<ShopKnowledge(shop_id={self.shop_id})>"
@@ -167,7 +167,7 @@ class ShopFAQ(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
-    shop = relationship("Shop", foreign_keys=[shop_id])
+    shop = relationship("Shop", foreign_keys=[shop_id], back_populates="shop_faqs")
 
     def __repr__(self):
         return f"<ShopFAQ(id={self.id}, shop_id={self.shop_id})>"

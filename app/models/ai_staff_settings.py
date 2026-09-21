@@ -114,7 +114,7 @@ class AIStaffSettings(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
-    shop = relationship("Shop", foreign_keys=[shop_id])
+    shop = relationship("Shop", foreign_keys=[shop_id], back_populates="ai_staff_settings")
 
     def __repr__(self):
         return f"<AIStaffSettings(shop_id={self.shop_id}, staff_name={self.staff_name}, voice={self.voice})>"

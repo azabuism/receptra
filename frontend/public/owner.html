@@ -408,7 +408,7 @@
         }
 
         async function deleteShop(shopId, shopName) {
-            if (!confirm('「' + shopName + '」を削除します。写真やメニューもすべて削除され、元に戻せません。よろしいですか？')) {
+            if (!confirm('「' + shopName + '」を削除します。\n\n写真・メニュー・サービス・スタッフ・予約履歴・口コミ・クーポンなど、この店舗・事業所に登録されているデータがすべて削除され、元に戻せません。\n\n本当に削除しますか？')) {
                 return;
             }
             try {

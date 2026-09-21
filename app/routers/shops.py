@@ -370,8 +370,21 @@ async def delete_shop(
     if shop.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="この店舗を削除する権限がありません")
 
-    await db.delete(shop)
-    await db.commit()
+    try:
+        await db.delete(shop)
+        await db.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Phase3H Workstream D: 想定外の関連データ（将来追加されるテーブル等）が
+        # 残っていた場合でも、Ownerには生の技術的エラーではなく分かりやすい
+        # メッセージを返す（起きた場合は開発者側でログを確認して対応する）。
+        await db.rollback()
+        logger.error("店舗削除に失敗 shop_id=%s: %s", shop_id, e)
+        raise HTTPException(
+            status_code=500,
+            detail="店舗の削除に失敗しました。時間をおいて再度お試しいただくか、サポートまでご連絡ください。",
+        )
     return {"success": True}
 
 
