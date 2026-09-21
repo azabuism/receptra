@@ -111,6 +111,20 @@ class OutboundCallJob(Base):
     shop = relationship("Shop", back_populates="outbound_call_jobs")
     reservation = relationship("Reservation", back_populates="outbound_call_jobs")
 
+    # Production E2E検証で追加発見（上記2つのrelationshipを追加した後も
+    # delete_shop()が実際のPostgres上でFK制約違反により失敗した）:
+    # OutboundCallLog.job_id -> OutboundCallJob.id のFKに対応するORM
+    # relationshipが一切無かったため、SQLAlchemyのunit of workがこの依存関係を
+    # 認識できず、「OutboundCallLogより先にOutboundCallJobをDELETEしてしまう」
+    # 順序でSQLを発行し、job_idがまだ生きているLog行との外部キー制約に
+    # 違反していた（shop_id/reservation_id経由のcascadeパスだけでは、
+    # Job<->Log間の直接の依存順序までは解決されない）。back_populatesで
+    # 双方向に結び、Jobの削除より先にそのLogを処理させることで解決する
+    # （cascade="all, delete-orphan"にはしない: Logの実削除は既存どおり
+    # Shop.outbound_call_logs / Reservation.outbound_call_logs 経由のcascadeに
+    # 任せ、ここは依存順序をSQLAlchemyに教えるためだけの関連付け）。
+    logs = relationship("OutboundCallLog", back_populates="job")
+
     def __repr__(self):
         return f"<OutboundCallJob(id={self.id}, shop_id={self.shop_id}, status={self.status})>"
 
@@ -158,6 +172,9 @@ class OutboundCallLog(Base):
     # OutboundCallJobと同じ理由（店舗削除時のカスケード安全性）でrelationshipを定義する。
     shop = relationship("Shop", back_populates="outbound_call_logs")
     reservation = relationship("Reservation", back_populates="outbound_call_logs")
+    # job_id -> OutboundCallJob.id の依存順序をSQLAlchemyに教えるための
+    # relationship（OutboundCallJob.logsのdocstring参照）。
+    job = relationship("OutboundCallJob", back_populates="logs")
 
     def __repr__(self):
         return f"<OutboundCallLog(id={self.id}, shop_id={self.shop_id}, result_status={self.result_status})>"
