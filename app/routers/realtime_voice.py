@@ -15,6 +15,7 @@ shop.html は一切変更していない。
 
 import logging
 import re
+import secrets
 import time
 import unicodedata
 from datetime import datetime, date as date_type, timedelta
@@ -33,12 +34,17 @@ from app.schemas.reservation import (
     CheckAvailabilityRequest, CheckAvailabilityResponse,
     CreateReservationToolRequest, CreateReservationToolResponse,
     FindCustomerToolRequest, FindCustomerToolResponse,
+    ConfirmCustomerIdentityToolRequest, ConfirmCustomerIdentityToolResponse,
+    GetCustomerContextToolRequest, GetCustomerContextToolResponse,
     ReservationCreateRequest,
 )
 from app.schemas.shop_knowledge import GetShopInfoToolRequest
 from app.routers.reservations import check_single_slot_availability, create_reservation
 from app.routers.shop_knowledge import get_shop_info_for_ai
-from app.services.customer_memory import find_customer_candidate, upsert_customer_memory_for_reservation
+from app.services.customer_memory import (
+    find_customer_candidate_record, upsert_customer_memory_for_reservation,
+)
+from app.services import customer_context
 
 logger = logging.getLogger("receptra.realtime_voice")
 
@@ -139,6 +145,47 @@ def _check_customer_lookup_rate_limit(shop_id: str) -> None:
     bucket = _recent_customer_lookup_requests.setdefault(shop_id, [])
     bucket[:] = [t for t in bucket if now - t < _CUSTOMER_LOOKUP_RATE_LIMIT_WINDOW_SECONDS]
     if len(bucket) >= _CUSTOMER_LOOKUP_RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
+
+
+# Outbound AI Phase 4B: confirm_customer_identity Tool Calling用の別バケット。
+# DB書き込みを伴わない（in-memory状態の更新のみの）操作であり、find_customerと
+# 同程度だが、1通話中に何度も呼ばれる想定ではないためやや控えめに設定する
+# （他のToolのクォータとは完全に独立させる）。
+_CONFIRM_IDENTITY_RATE_LIMIT_WINDOW_SECONDS = 60
+_CONFIRM_IDENTITY_RATE_LIMIT_MAX_REQUESTS = 20
+_recent_confirm_identity_requests: dict[str, list] = {}
+
+
+def _check_confirm_identity_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _recent_confirm_identity_requests.setdefault(shop_id, [])
+    bucket[:] = [t for t in bucket if now - t < _CONFIRM_IDENTITY_RATE_LIMIT_WINDOW_SECONDS]
+    if len(bucket) >= _CONFIRM_IDENTITY_RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
+
+
+# Outbound AI Phase 4B: get_customer_context Tool Calling用の別バケット。
+# find_customerと同程度の読み取り専用の緩めの制限にする
+# （他のToolのクォータとは完全に独立させる）。
+_CUSTOMER_CONTEXT_RATE_LIMIT_WINDOW_SECONDS = 60
+_CUSTOMER_CONTEXT_RATE_LIMIT_MAX_REQUESTS = 30
+_recent_customer_context_requests: dict[str, list] = {}
+
+
+def _check_customer_context_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _recent_customer_context_requests.setdefault(shop_id, [])
+    bucket[:] = [t for t in bucket if now - t < _CUSTOMER_CONTEXT_RATE_LIMIT_WINDOW_SECONDS]
+    if len(bucket) >= _CUSTOMER_CONTEXT_RATE_LIMIT_MAX_REQUESTS:
         raise HTTPException(
             status_code=429,
             detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
@@ -437,9 +484,21 @@ async def create_realtime_voice_session(shop_id: str, db: AsyncSession = Depends
             detail="音声AIサービスへの接続準備に失敗しました。しばらくしてから再度お試しください。",
         )
 
+    # Outbound AI Phase 4B: この通話全体を識別するための、RECEPTRA独自の
+    # opaqueなsession識別子を発行する。OpenAI Realtime側のclient_secret/
+    # セッション概念とは完全に別物で、Customer Memory Phase4Bの本人確認状態
+    # （find_customerのpending candidate・confirm_customer_identityの
+    # verified状態）を「この通話」に安全に紐付けるためだけに使う
+    # （app.services.customer_context参照）。高エントロピー
+    # (secrets.token_urlsafe)のため、推測によるなりすましは現実的に不可能。
+    # DBへの保存やこの関数内での事前登録は不要（各Toolエンドポイントが
+    # 受け取った値をそのままdictのキーとして使うのみ）。
+    voice_session_id = secrets.token_urlsafe(24)
+
     return {
         "shop_id": shop_id,
         "shop_name": shop.name,
+        "voice_session_id": voice_session_id,
         **session_info,
     }
 
@@ -686,12 +745,29 @@ async def find_customer_tool(
       （FindCustomerToolResponseのdocstring参照。スキーマレベルでも
       これらのフィールド自体が存在しない設計にしている）。
     - 実際のlookupロジックは一切ここで再実装せず、必ず
-      app.services.customer_memory.find_customer_candidate()をそのまま呼び出す
-      （電話番号正規化・「電話番号=本人確定」としない設計・DB障害時の安全な
-      フォールバックは全てそちら側の責務）。
+      app.services.customer_memory.find_customer_candidate_record()をそのまま
+      呼び出す（電話番号正規化・「電話番号=本人確定」としない設計・DB障害時の
+      安全なフォールバックは全てそちら側の責務。返す内部id自体はAIへ渡さず、
+      Phase4Bのpending candidate登録にのみ使う）。
     - 該当なし・DB障害等どの場合であってもnot_foundとして安全側に倒す
       （見つかったはずの候補を見失うことはあっても、存在しない候補を
       でっち上げることは絶対にしない）。
+
+    Outbound AI Phase 4B追記:
+    - request.session_id（フロントエンドが自動付与。AIの引数ではない）が
+      指定されている場合、候補が見つかった時点でapp.services.customer_context.
+      issue_candidate()を呼び、この通話に対するpending candidateを登録した上で
+      candidate_referenceを発行する。session_id省略時（何らかの理由で
+      フロントエンドが未対応・未設定の場合）は、Phase4Aと全く同じ挙動
+      （候補の検索・表示名の返却のみ）にフォールバックし、pending candidateの
+      登録自体を行わない（この場合、後続のconfirm_customer_identityは
+      no_pending_candidateになるだけで、find_customer自体の安全性には
+      影響しない）。
+    - candidate_referenceはレスポンスのフィールドとしては存在するが、
+      フロントエンド側がAIへ渡すfunction_call_outputからは必ず取り除く
+      設計になっている（frontend/public/shop-ai-realtime-voice.html
+      callFindCustomerTool参照）。このエンドポイント自体はその除去を
+      行わない（HTTPレスポンスとしては値を返す）。
     """
     _check_customer_lookup_rate_limit(shop_id)
 
@@ -700,14 +776,24 @@ async def find_customer_tool(
         if not shop or not shop.is_active:
             return FindCustomerToolResponse(success=False, reason_code="temporarily_unavailable")
 
-        candidate_display_name = await find_customer_candidate(shop_id, request.phone)
-        if candidate_display_name is None:
+        record = await find_customer_candidate_record(shop_id, request.phone)
+        if record is None:
             return FindCustomerToolResponse(success=True, status="not_found")
+
+        candidate_reference: Optional[str] = None
+        if request.session_id:
+            candidate_reference = customer_context.issue_candidate(
+                shop_id=shop_id,
+                voice_session_id=request.session_id,
+                customer_memory_id=record["id"],
+                display_name=record["display_name"],
+            )
 
         return FindCustomerToolResponse(
             success=True,
             status="candidate_found",
-            candidate_display_name=candidate_display_name,
+            candidate_display_name=record["display_name"],
+            candidate_reference=candidate_reference,
         )
     except HTTPException:
         raise
@@ -715,6 +801,109 @@ async def find_customer_tool(
         # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(not_found相当)で返す。
         logger.error("find_customer Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
         return FindCustomerToolResponse(success=False, reason_code="temporarily_unavailable")
+
+
+@router.post("/tools/confirm-customer-identity", response_model=ConfirmCustomerIdentityToolResponse)
+async def confirm_customer_identity_tool(
+    shop_id: str,
+    request: ConfirmCustomerIdentityToolRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ConfirmCustomerIdentityToolResponse:
+    """
+    Outbound AI Phase 4B: confirm_customer_identity Tool Calling専用
+    エンドポイント（認証不要）。
+
+    設計方針（重要・必ず守ること。仕様書section5-8「AIだけを信用しない」）:
+    - shop_idはcheck_availability等と同じくURLパスの値のみを使う。
+    - session_id・candidate_referenceはAIの出力JSONには一切含まれず
+      （ConfirmCustomerIdentityToolRequestのdocstring参照）、フロントエンド
+      (shop-ai-realtime-voice.html)がfind_customer呼び出し時にサーバーから
+      受け取った値を、AIに一切見せずに自動転送する。AIが渡せるのは
+      confirmed(true/false)のみであり、「どのcandidateを確認するか」自体を
+      AIが選ぶ余地は構造的に存在しない。
+    - 実際の状態遷移ロジックは一切ここで再実装せず、必ず
+      app.services.customer_context.confirm_candidate()をそのまま呼び出す
+      （pending candidateの有無・shop一致・candidate_reference一致・
+      有効期限の判定は全てそちら側の責務）。
+    - session_id・candidate_referenceのいずれかが欠落している場合
+      （フロントエンドの不具合等）は、常にno_pending_candidateとして
+      安全側に倒す（verified状態を絶対に作らない）。
+    """
+    _check_confirm_identity_rate_limit(shop_id)
+
+    try:
+        shop = await db.get(Shop, shop_id)
+        if not shop or not shop.is_active:
+            return ConfirmCustomerIdentityToolResponse(success=False, status="temporarily_unavailable")
+
+        if not request.session_id or not request.candidate_reference:
+            return ConfirmCustomerIdentityToolResponse(success=True, status="no_pending_candidate")
+
+        status = customer_context.confirm_candidate(
+            shop_id=shop_id,
+            voice_session_id=request.session_id,
+            candidate_reference=request.candidate_reference,
+            confirmed=request.confirmed,
+        )
+        return ConfirmCustomerIdentityToolResponse(success=True, status=status)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(temporarily_unavailable)で返す。
+        logger.error("confirm_customer_identity Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
+        return ConfirmCustomerIdentityToolResponse(success=False, status="temporarily_unavailable")
+
+
+@router.post("/tools/get-customer-context", response_model=GetCustomerContextToolResponse)
+async def get_customer_context_tool(
+    shop_id: str,
+    request: GetCustomerContextToolRequest,
+    db: AsyncSession = Depends(get_db),
+) -> GetCustomerContextToolResponse:
+    """
+    Outbound AI Phase 4B: get_customer_context Tool Calling専用エンドポイント
+    （認証不要）。
+
+    設計方針（重要・必ず守ること。仕様書section7「AIだけを信用しない」）:
+    - このToolのparameters自体が空のobjectであり、AIから受け取る引数は
+      存在しない（app.services.realtime_voice_ai._REALTIME_TOOLS参照）。
+      session_idのみフロントエンドが自動転送する。
+    - このshop_id・session_idの組み合わせがconfirm_customer_identityにより
+      verified状態になっていない限り、絶対に詳細情報を返さない
+      （statusをnot_verifiedにする）。この判定は
+      app.services.customer_context.get_verified_customer_memory_id()の
+      戻り値のみで行い、AI側の自己申告に一切依存しない。
+    - 実際のContext構築（何を返してよいか・医療系業種の制限）は一切ここで
+      再実装せず、必ずapp.services.customer_context.build_customer_context()
+      をそのまま呼び出す。
+    """
+    _check_customer_context_rate_limit(shop_id)
+
+    try:
+        shop = await db.get(Shop, shop_id)
+        if not shop or not shop.is_active:
+            return GetCustomerContextToolResponse(success=False, status="temporarily_unavailable")
+
+        if not request.session_id:
+            return GetCustomerContextToolResponse(success=True, status="not_verified")
+
+        customer_memory_id = customer_context.get_verified_customer_memory_id(
+            shop_id=shop_id, voice_session_id=request.session_id,
+        )
+        if customer_memory_id is None:
+            return GetCustomerContextToolResponse(success=True, status="not_verified")
+
+        ctx = await customer_context.build_customer_context(shop, customer_memory_id)
+        if ctx is None:
+            return GetCustomerContextToolResponse(success=True, status="no_context")
+
+        return GetCustomerContextToolResponse(success=True, status="context_available", **ctx)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(temporarily_unavailable)で返す。
+        logger.error("get_customer_context Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
+        return GetCustomerContextToolResponse(success=False, status="temporarily_unavailable")
 
 
 @router.post("/tools/get-shop-info")

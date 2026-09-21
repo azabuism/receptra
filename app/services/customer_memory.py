@@ -104,6 +104,50 @@ async def find_customer_candidate(shop_id: str, phone: str) -> Optional[str]:
         return None
 
 
+async def find_customer_candidate_record(shop_id: str, phone: str) -> Optional[dict]:
+    """
+    Outbound AI Phase 4B追加: find_customer_candidate()と全く同じ検索ロジックだが、
+    display_nameだけでなく内部id（CustomerMemory.id）も返す。
+
+    重要: この関数の戻り値（id含む）はAIへ絶対に渡してはならない。呼び出し元
+    （app.routers.realtime_voice.find_customer_tool）は、このidを
+    app.services.customer_context.issue_candidate()へ渡してサーバー側の
+    本人確認状態（Phase4B）に紐付けるためだけに使い、レスポンススキーマ
+    （FindCustomerToolResponse）にはdisplay_nameしか含めない設計を維持する。
+
+    find_customer_candidate()自体は変更しない（Phase4Aで検証済みの挙動に
+    一切手を加えないため）。両関数は同じ検索条件を意図的に重複させている。
+
+    戻り値はORMオブジェクトではなく、必要な値だけを持つ軽量なdictにする
+    （DBセッションをasync withブロックの外へ持ち出さないため）。
+    """
+    normalized_phone = normalize_jp_phone_national(phone)
+    if normalized_phone is None:
+        return None
+
+    try:
+        async with db_module.AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(CustomerMemory)
+                .filter(
+                    CustomerMemory.shop_id == shop_id,
+                    CustomerMemory.normalized_phone == normalized_phone,
+                )
+                .order_by(CustomerMemory.last_seen_at.desc())
+                .limit(1)
+            )
+            row = result.scalars().first()
+            if row is None:
+                return None
+            return {"id": row.id, "display_name": row.display_name}
+    except Exception:
+        logger.exception(
+            "Customer Memory lookup(record)に失敗しました（安全側でnot_found扱いにします） shop_id=%s",
+            shop_id,
+        )
+        return None
+
+
 async def upsert_customer_memory_for_reservation(
     shop_id: str,
     reservation_id: str,

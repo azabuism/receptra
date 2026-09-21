@@ -451,6 +451,19 @@
         let maxDurationTimer = null;
         const MAX_CALL_DURATION_MS = 30 * 60 * 1000; // 30分（テスト中の暴走・コスト安全装置。恒久的な上限ではない）
 
+        // ===== Outbound AI Phase 4B: Customer Context用のsession状態 =====
+        // voiceSessionId: /session発行時にサーバーから受け取る、この通話を
+        // 識別するopaqueな値。find_customer/confirm_customer_identity/
+        // get_customer_contextの各リクエストに自動的に付与する（AIの引数には
+        // 一切含めない。常にこのページのJS変数からのみ読む）。
+        // currentCandidateRef: find_customerがcandidate_foundを返した際に
+        // サーバーから受け取るopaqueな一時参照値。confirm_customer_identity
+        // 呼び出し時に自動転送するためだけにJS側で保持し、AIへ渡す
+        // function_call_output（Realtimeモデルが実際に読む内容）には
+        // 絶対に含めない（下のcallFindCustomerTool参照）。
+        let voiceSessionId = null;
+        let currentCandidateRef = null;
+
         // ===== Phase3C: AI第一声の自動開始 =====
         //
         // 設計方針（重要）:
@@ -1127,6 +1140,9 @@
         async function callFindCustomerTool(args) {
             const body = {
                 phone: args && args.phone,
+                // Outbound AI Phase 4B: AIの引数には含まれない。このページの
+                // JS変数からのみ付与する（この通話を識別するopaqueな値）。
+                session_id: voiceSessionId,
             };
 
             try {
@@ -1139,18 +1155,97 @@
                 if (!res.ok || !data || typeof data.success !== 'boolean') {
                     // 他のToolと同じ方針: HTTP 422（引数自体が不正）はinvalid_request、
                     // それ以外（429レート制限・5xx・ネットワーク断）はtemporarily_unavailable。
+                    currentCandidateRef = null;
                     return {
                         success: false,
                         status: 'not_found',
                         reason_code: (res.status === 422) ? 'invalid_request' : 'temporarily_unavailable',
                     };
                 }
-                return data;
+                // Outbound AI Phase 4B（重要・Privacy Gate）: candidate_referenceは
+                // confirm_customer_identity呼び出し時にこのページが自動転送する
+                // ためだけのopaqueな値であり、AIへ渡すfunction_call_output
+                // （Realtimeモデルが実際に読む内容）には絶対に含めない。
+                // ここでJS変数へ保持した上で、モデルへ返すオブジェクトからは
+                // 取り除く（AIはこの値の存在自体を一切知らない）。
+                currentCandidateRef = data.candidate_reference || null;
+                const modelVisible = Object.assign({}, data);
+                delete modelVisible.candidate_reference;
+                return modelVisible;
             } catch (e) {
                 // fetch自体が例外を投げるのはネットワーク断等のみのため、
                 // 入力の誤りではなくtemporarily_unavailable。
                 logEvent('find_customer Tool呼び出しに失敗: ' + e.message);
+                currentCandidateRef = null;
                 return { success: false, status: 'not_found', reason_code: 'temporarily_unavailable' };
+            }
+        }
+
+        // ===== Outbound AI Phase 4B: confirm_customer_identity =====
+        //
+        // 設計方針（重要）:
+        // - session_id・candidate_referenceはAIの引数(args)には一切含まれない。
+        //   常にこのページのJS変数（voiceSessionId / currentCandidateRef）から
+        //   付与する。AIが渡せるのはargs.confirmed（お客様が肯定したかどうかの
+        //   意味判断）のみであり、「どのcandidateを確認するか」自体をAIが
+        //   選ぶ余地は無い。
+        // - Tool結果はFastAPI（app.services.customer_context）を唯一の正とする。
+        //   fetch失敗・タイムアウト・不正レスポンス等、どんな失敗であっても
+        //   verifiedを合成してはならない。必ずno_pending_candidate相当で返す。
+        async function callConfirmCustomerIdentityTool(args) {
+            const body = {
+                confirmed: !!(args && args.confirmed),
+                session_id: voiceSessionId,
+                candidate_reference: currentCandidateRef,
+            };
+
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/confirm-customer-identity', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || typeof data.success !== 'boolean') {
+                    return {
+                        success: false,
+                        status: 'no_pending_candidate',
+                    };
+                }
+                return data;
+            } catch (e) {
+                logEvent('confirm_customer_identity Tool呼び出しに失敗: ' + e.message);
+                return { success: false, status: 'no_pending_candidate' };
+            }
+        }
+
+        // ===== Outbound AI Phase 4B: get_customer_context =====
+        //
+        // 設計方針（重要）:
+        // - AIからの引数は無い（Tool定義のparametersが空のobject）。session_idの
+        //   みこのページのJS変数から付与する。
+        // - Tool結果はFastAPI（本人確認状態＋Reservation DB）を唯一の正とする。
+        //   fetch失敗・タイムアウト・不正レスポンス等、どんな失敗であっても
+        //   context_availableを合成してはならない。必ずnot_verified相当で返す。
+        async function callGetCustomerContextTool(args) {
+            const body = {
+                session_id: voiceSessionId,
+            };
+
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/get-customer-context', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || typeof data.success !== 'boolean') {
+                    return { success: false, status: 'not_verified' };
+                }
+                return data;
+            } catch (e) {
+                logEvent('get_customer_context Tool呼び出しに失敗: ' + e.message);
+                return { success: false, status: 'not_verified' };
             }
         }
 
@@ -1183,9 +1278,16 @@
             } else if (item.name === 'find_customer') {
                 logEvent('Tool呼び出し受信: find_customer ' + JSON.stringify(args));
                 output = await callFindCustomerTool(args || {});
+            } else if (item.name === 'confirm_customer_identity') {
+                logEvent('Tool呼び出し受信: confirm_customer_identity ' + JSON.stringify(args));
+                output = await callConfirmCustomerIdentityTool(args || {});
+            } else if (item.name === 'get_customer_context') {
+                logEvent('Tool呼び出し受信: get_customer_context ' + JSON.stringify(args));
+                output = await callGetCustomerContextTool(args || {});
             } else {
-                // Phase4Aまでで宣言しているToolはcheck_availability /
-                // create_reservation / get_shop_info / find_customerの4つのみ。
+                // Phase4Bまでで宣言しているToolはcheck_availability /
+                // create_reservation / get_shop_info / find_customer /
+                // confirm_customer_identity / get_customer_contextの6つのみ。
                 // 未知の関数名が来た場合も、応答せずに放置するとAIが待ち続けて
                 // しまうため、安全側の失敗として返す。
                 logEvent('未知のTool呼び出し: ' + item.name);
@@ -1357,6 +1459,11 @@
             if (elapsedTimerId) { clearInterval(elapsedTimerId); elapsedTimerId = null; }
             resetUsageObservation();
             resetToolCallState();
+            // Outbound AI Phase 4B: 新しい通話の開始にあたり、前回の通話の
+            // session状態を必ずクリアする（別通話への流用を防ぐ）。
+            // voiceSessionIdはこの直後のfetchSession()成功時に改めて設定する。
+            voiceSessionId = null;
+            currentCandidateRef = null;
 
             // 重要: クリック直後の「ユーザー操作」が有効なうちに、他の非同期処理
             // (トークン取得のfetch等)より先にgetUserMediaを呼び出す。
@@ -1409,6 +1516,8 @@
                 greetingTiming.tokenFetched = performance.now();
                 pageShopName.textContent = session.shop_name + ' - Realtime音声AI';
                 logEvent('トークン取得OK（model=' + session.model + '）');
+                // Outbound AI Phase 4B: この通話のCustomer Context用session識別子。
+                voiceSessionId = session.voice_session_id || null;
 
                 pc = new RTCPeerConnection();
 

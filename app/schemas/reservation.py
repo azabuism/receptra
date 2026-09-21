@@ -217,8 +217,20 @@ class CreateReservationToolResponse(BaseModel):
 #   スコープ外（MVPでは「以前利用した可能性がある」と分かるだけで十分という
 #   仕様書section15の判断に基づく）。
 class FindCustomerToolRequest(BaseModel):
-    """Realtime AIのfind_customer Toolからの引数"""
+    """Realtime AIのfind_customer Toolからの引数 + フロントエンドが付与するsession_id"""
     phone: str = Field(..., min_length=1, max_length=20, description="お客様から伺った電話番号")
+    # Outbound AI Phase4B追加。AIの出力JSONには一切含まれない
+    # （Tool定義のparametersにこの項目自体が存在しない）。フロントエンドが
+    # この通話を識別するために自動的に付与する値で、後続の
+    # confirm_customer_identity / get_customer_contextの本人確認状態を
+    # この通話に安全に紐付けるためだけに使う（app.services.customer_context
+    # 参照）。省略された場合（session_id無し）でも候補の検索・表示名の
+    # 返却自体はPhase4Aと全く同じ挙動のまま行うが、pending candidateの
+    # 登録は行わない（confirm_customer_identityが呼び出せなくなるだけで、
+    # find_customer自体の安全性・Privacy Gateには一切影響しない）。
+    session_id: Optional[str] = Field(
+        None, description="フロントエンドが付与する、この通話を識別するopaqueな値。AIの引数ではない"
+    )
 
 
 class FindCustomerToolResponse(BaseModel):
@@ -229,5 +241,71 @@ class FindCustomerToolResponse(BaseModel):
     # status="candidate_found"の場合のみ設定。候補の氏名（表示用）のみで、
     # 内部ID・電話番号そのもの・来店回数・過去の予約内容は一切含めない。
     candidate_display_name: Optional[str] = None
+    # Outbound AI Phase4B追加。confirm_customer_identity専用のopaqueな
+    # 一時参照値（app.services.customer_context.issue_candidate参照）。
+    # フロントエンドはこの値をJS変数として保持し、confirm_customer_identity
+    # 呼び出し時に自動転送するが、AIへ渡すfunction_call_output
+    # （Realtimeモデルが実際に読む内容）からは必ず取り除く。AIはこの値を
+    # 一切知らない・扱わない（仕様書section17「Candidate Reference」）。
+    candidate_reference: Optional[str] = None
     # success=Falseの場合のみ設定（invalid_request / temporarily_unavailable）。
     reason_code: Optional[str] = None
+
+
+# ===== Outbound AI Phase 4B: confirm_customer_identity Tool Calling用 =====
+#
+# 設計方針（重要・必ず守ること。仕様書Phase4B section5-8「AIだけを信用しない」）:
+# - AIの出力JSONに含まれるのはconfirmed(boolean)のみ。session_id・
+#   candidate_referenceはToolのparameters自体に存在せず、フロントエンドが
+#   find_customerの結果から保持していた値を、AIに一切見せずに自動転送する。
+#   これにより、AIが「どのcandidateを確認するか」自体を選ぶ余地を構造的に
+#   排除する（AIが担うのは「お客様が肯定したかどうか」という意味判断のみ）。
+class ConfirmCustomerIdentityToolRequest(BaseModel):
+    """Realtime AIのconfirm_customer_identity Toolからの引数(confirmed) + フロントエンドが自動転送する識別情報"""
+    confirmed: bool = Field(..., description="お客様が候補の氏名を明確に肯定した場合のみtrue。それ以外は必ずfalse")
+    session_id: Optional[str] = Field(
+        None, description="フロントエンドが付与する、この通話を識別するopaqueな値。AIの引数ではない"
+    )
+    candidate_reference: Optional[str] = Field(
+        None, description="フロントエンドがfind_customerの結果から保持し自動転送する値。AIの引数ではない"
+    )
+
+
+class ConfirmCustomerIdentityToolResponse(BaseModel):
+    """Realtime AIへ返す最小レスポンス"""
+    success: bool = True
+    # verified / rejected / no_pending_candidate / reference_mismatch / temporarily_unavailable
+    status: str = "no_pending_candidate"
+
+
+# ===== Outbound AI Phase 4B: get_customer_context Tool Calling用 =====
+#
+# 設計方針（重要・必ず守ること）:
+# - AIから受け取る引数は無い（parameters自体が空のobject）。session_idのみ
+#   フロントエンドが自動転送し、対象のCustomerMemoryはバックエンド側の
+#   本人確認状態(app.services.customer_context)からのみ特定する。AIが
+#   phone/shop_id/customer_id等を指定して任意の顧客情報を引き出せる設計を
+#   構造的に排除する（仕様書section7「AIだけを信用しない」）。
+# - レスポンスは仕様書section9-12の許可リストのみ。医療系業種では
+#   last_service_name/last_service_available_now/last_staff_nameは
+#   常にNone（app.services.customer_context.build_customer_context参照）。
+class GetCustomerContextToolRequest(BaseModel):
+    """Realtime AIのget_customer_context Toolからの引数は無し。session_idのみフロントエンドが自動転送する"""
+    session_id: Optional[str] = Field(
+        None, description="フロントエンドが付与する、この通話を識別するopaqueな値。AIの引数ではない"
+    )
+
+
+class GetCustomerContextToolResponse(BaseModel):
+    """Realtime AIへ返す最小レスポンス（本人確認済みの場合のみ意味のある値が入る）"""
+    success: bool = True
+    # not_verified / context_available / no_context / temporarily_unavailable
+    status: str = "not_verified"
+    display_name: Optional[str] = None
+    visit_count: Optional[int] = None
+    last_seen_at: Optional[datetime] = None
+    last_reservation_at: Optional[datetime] = None
+    # 以下2項目は医療系業種では常にNone（診療内容を示しうるため。section12）。
+    last_service_name: Optional[str] = None
+    last_service_available_now: Optional[bool] = None
+    last_staff_name: Optional[str] = None

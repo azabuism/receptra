@@ -350,6 +350,81 @@ _REALTIME_TOOLS = [
             "required": ["phone"],
         },
     },
+    # ===== Outbound AI Phase 4B: confirm_customer_identity =====
+    #
+    # 設計方針（重要・必ず守ること）:
+    # - AIが渡せる引数はconfirmed(boolean)のみ。「どの候補を確認するか」を
+    #   示すsession_id・candidate_referenceはこのparametersに一切含めない
+    #   （フロントエンドがfind_customerの結果から保持し、AIに見せずに
+    #   自動転送する。app.schemas.reservation.ConfirmCustomerIdentityToolRequest
+    #   のdocstring参照）。AIが担うのは「お客様が肯定したかどうか」という
+    #   意味判断のみであり、本人確認状態そのものの真偽はFastAPI側
+    #   （app.services.customer_context）が判定する。
+    {
+        "type": "function",
+        "name": "confirm_customer_identity",
+        "description": (
+            "find_customer の結果が candidate_found だった場合に、候補の氏名を"
+            "お客様に確認した結果を報告するために呼び出してください。\n"
+            "お客様が候補の氏名（例:「田中様でよろしいでしょうか？」）に対して"
+            "明確に肯定した場合は confirmed=true で呼び出してください。\n"
+            "お客様が否定した場合、別の名前を名乗った場合、または返事が曖昧・"
+            "無言の場合は confirmed=false で呼び出してください。\n"
+            "find_customer を呼んでいない場合、または結果が not_found だった"
+            "場合は、この関数を呼び出さないでください（呼び出しても成功"
+            "しません）。\n"
+            "戻り値のstatusがverifiedの場合のみ、get_customer_context ツールが"
+            "使えるようになります。verified以外（rejected/no_pending_candidate/"
+            "reference_mismatch/temporarily_unavailable）の場合は、以前の"
+            "利用について一切触れず、新規のお客様として通常どおり受付を"
+            "続けてください。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "お客様が候補の氏名を明確に肯定した場合のみtrue。それ以外は必ずfalse。",
+                },
+            },
+            "required": ["confirmed"],
+        },
+    },
+    # ===== Outbound AI Phase 4B: get_customer_context =====
+    #
+    # 設計方針（重要・必ず守ること）:
+    # - 引数は無し（parametersが空のobject）。対象の特定はバックエンド側の
+    #   本人確認状態(voice_session_id)のみで行い、AIがphone/shop_id/
+    #   customer_id等を指定して任意の顧客情報を引き出せる設計を構造的に
+    #   排除する（仕様書section7・14）。
+    # - 戻り値に含まれるのは仕様書section9-12で許可された最小限の項目のみ。
+    #   医療系業種ではサービス名・担当者名が意図的に含まれない
+    #   （app.services.customer_context.build_customer_context参照）。
+    {
+        "type": "function",
+        "name": "get_customer_context",
+        "description": (
+            "confirm_customer_identity の結果が verified になった場合にのみ、"
+            "必要であれば呼び出してください。引数は不要です。\n"
+            "本人確認が済んでいない状態でこの関数を呼び出しても、有効な情報は"
+            "返ってきません（statusがnot_verifiedになります）。\n"
+            "戻り値のstatusがcontext_availableの場合のみ、含まれている"
+            "フィールド（来店回数・前回のご利用日時・分かる場合は前回の"
+            "サービス内容や担当者名）を会話に使ってよく、含まれていない"
+            "フィールドは一切推測しないでください。医療系の店舗など、業種に"
+            "よっては前回のサービス内容・担当者名がそもそも含まれません"
+            "（意図的な仕様です。含まれていないことを不審に思わず、単に"
+            "「以前のご利用があります」程度の案内に留めてください）。\n"
+            "statusがno_contextの場合は、本人確認はできたものの参照できる"
+            "利用履歴が無いという意味です。新規のお客様と同様に通常どおり"
+            "受付を続けてください。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
 ]
 
 _client: Optional[AsyncOpenAI] = None
@@ -616,6 +691,44 @@ _CUSTOMER_MEMORY_RULES_TEMPLATE = """\
   続けてください。\
 """
 
+# Outbound AI Phase 4B: Customer Context（本人確認後の最小限の利用）に関する
+# 運用ルール。常に固定（店舗独自のcustom_instructionsによって上書き・
+# 無効化されない）。_CUSTOMER_MEMORY_RULES_TEMPLATE（Phase4A: find_customerの
+# 運用ルール）の直後に配置する。
+# 重要: ここにも顧客の実データは一切書き込まない。あくまで
+# confirm_customer_identity / get_customer_context という2つのツールを
+# どう使うかという一般的な行動指針のみ（仕様書Phase4B section18準拠。
+# 「既存instructionsを巨大化させない・短く明確に」という要求に従い、
+# 医療/非医療の分岐等は一切書かない＝バックエンド側の構造で保証されて
+# いるため、AIへは「含まれていない項目を推測しない」の一文だけで十分）。
+_CUSTOMER_CONTEXT_RULES_TEMPLATE = """\
+# 本人確認後のご利用情報（Customer Context）に関するルール（重要・必ず守ってください）
+- find_customer で候補が見つかり、お客様が候補の氏名を肯定したら、必ず
+  confirm_customer_identity ツールを confirmed=true で呼び出してください。
+  お客様が否定した場合や別の名前を名乗った場合は confirmed=false で呼び出し、
+  以降その候補の情報は一切使わないでください。
+- confirm_customer_identity の呼び出し結果がverifiedになるまで、
+  get_customer_context ツールを呼び出したり、以前のご利用内容を口にしたり
+  しないでください。
+- get_customer_context は引数なしで呼び出せます。戻り値に含まれている
+  フィールドだけを使ってください。含まれていない項目（前回のサービス内容・
+  担当者名など）は「情報が無い」という意味であり、絶対に推測や一般論で
+  補わないでください。
+- get_customer_context の結果は、会話上自然に必要な場合にのみ使ってください。
+  毎回「以前のご利用履歴があります」のように機械的に触れる必要はありません。
+  特に来店回数が1回だけの場合に「いつもありがとうございます」のような
+  複数回利用を前提にした表現は絶対に使わないでください。
+- 「前回と同じでお願いします」のようにお客様から言われた場合、
+  get_customer_context の結果に前回のサービス内容が含まれていれば、
+  それを候補として会話を進めて構いません。ただしその場合も、日時の空き
+  状況確認・予約全体の最終確認を経て create_reservation を呼び出すまでは
+  予約を確定しないでください（この手順を Customer Context によって
+  省略することはできません）。
+- get_customer_context の結果に含まれる前回の担当者について、その担当者を
+  自動的に今回の予約へ割り当てないでください。あくまで会話上の参考情報
+  としてのみ使い、実際の指名はお客様の意思を改めて確認してください。\
+"""
+
 # Phase3B: 予約成立の宣言に関する安全ルール。常に最後に配置する固定文言
 # （店舗独自のcustom_instructionsによって上書き・無効化されない）。
 #
@@ -819,6 +932,8 @@ async def build_realtime_instructions(
       7. Constraints（現時点での制約）                       … 常に固定
       7b. Shop Knowledge Rules（Phase3D: get_shop_info運用ルール） … 常に固定
       7c. Customer Memory Rules（Phase4A: find_customer運用ルール） … 常に固定
+      7d. Customer Context Rules（Phase4B: confirm_customer_identity /
+          get_customer_context運用ルール） … 常に固定
       8. Booking Safety（Phase3B: 予約成立宣言の絶対ルール） … 常に固定・最後
 
     staff_settingsがNone、またはPhase2で追加されたフィールドが全て未設定の
@@ -874,6 +989,7 @@ async def build_realtime_instructions(
     sections.append(_CONSTRAINTS_TEMPLATE)
     sections.append(_SHOP_KNOWLEDGE_RULES_TEMPLATE)
     sections.append(_CUSTOMER_MEMORY_RULES_TEMPLATE)
+    sections.append(_CUSTOMER_CONTEXT_RULES_TEMPLATE)
     sections.append(_BOOKING_SAFETY_TEMPLATE)
 
     return "\n\n".join(sections)
