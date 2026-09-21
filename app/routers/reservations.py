@@ -23,6 +23,7 @@ from app.models.service import Service
 from app.models.staff import Staff, StaffService
 from app.models.staff_shift import StaffWeeklyShift, StaffShiftOverride
 from app.models.promotion import Coupon
+from app.services.outbound_dispatch import enqueue_reservation_confirmed_call
 from app.schemas.reservation import (
     ReservationCreateRequest, ReservationResponse, ReservationCreateResponse,
     ReservationUpdateRequest, ReservationListResponse,
@@ -974,6 +975,19 @@ async def create_reservation(
             select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon)).filter(Reservation.id == reservation_id)
         )
         reservation = result.scalar_one()
+
+        # Outbound AI Phase 1: 予約が新規に成立した直後にのみ通知ジョブをenqueueする
+        # （idempotency_keyによる早期return・IntegrityError競合時の早期returnは
+        # 「新規成立」ではないためこの行を通らず、二重通知は起きない）。
+        # enqueue_reservation_confirmed_call()自身が非同期・失敗分離を保証しており、
+        # 専用のDBセッションで完結するため、ここでの例外送出やこのdbセッションへの
+        # 影響は一切発生しない設計（app.services.outbound_dispatchのdocstring参照）。
+        await enqueue_reservation_confirmed_call(
+            shop_id=shop.id,
+            reservation_id=reservation.id,
+            notification_enabled=bool(shop.reservation_phone_notification_enabled),
+            notification_phone=shop.reservation_notification_phone,
+        )
 
         return ReservationCreateResponse(
             success=True,

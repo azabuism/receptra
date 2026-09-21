@@ -3,6 +3,7 @@ BARIYON Receptra - FastAPI Main Application
 24時間対応のAI受付プラットフォーム
 """
 
+import asyncio
 import logging
 import os
 import pathlib
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.config import get_settings
 from app.database import init_db
 from app.models.user import Base
-from app.models import receptionist, visitor, voice_call_log
+from app.models import receptionist, visitor, voice_call_log, outbound_call
 from app.routers.users import router as users_router
 from app.routers.receptionists import router as receptionists_router
 from app.routers.auth import router as auth_router
@@ -41,6 +42,7 @@ from app.routers.services import router as services_router
 from app.routers.staff import router as staff_router
 from app.routers.staff_shift import router as staff_shift_router
 from app.routers.billing import router as billing_router, webhook_router as payjp_webhook_router
+from app.routers.outbound_calls import router as outbound_calls_router
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -276,9 +278,27 @@ async def lifespan(app: FastAPI):
         app.state.db_error = f"{type(e).__name__}: {e}"
         logger.error(f"❌ Database initialization failed: {e}")
 
+    # Outbound AI Phase 1: 予約確定通知の架電ジョブをポーリングするバックグラウンド
+    # ワーカー。Redis/Celery等の新規インフラは使わず、DB初期化が成功した場合にのみ
+    # 起動するasyncioタスクとして実装する（app.services.outbound_call_workerの
+    # docstring参照）。既存のRealtime Voice AI（Inbound、ブラウザ経由）とは完全に
+    # 独立した別タスクであり、この起動・停止が既存の受付フローに影響することはない。
+    # app.config.Settings.OUTBOUND_CALL_WORKER_ENABLED=Falseで無効化できる安全弁もある。
+    outbound_worker_task = None
+    if app.state.db_ready:
+        from app.services.outbound_call_worker import run_outbound_worker_loop
+        outbound_worker_task = asyncio.create_task(run_outbound_worker_loop())
+
     yield
 
     logger.info("🛑 BARIYON Receptra API shutting down...")
+
+    if outbound_worker_task is not None:
+        outbound_worker_task.cancel()
+        try:
+            await outbound_worker_task
+        except asyncio.CancelledError:
+            pass
 
 
 def create_app() -> FastAPI:
@@ -329,6 +349,7 @@ def create_app() -> FastAPI:
     app.include_router(shop_knowledge_router)
     app.include_router(billing_router)
     app.include_router(payjp_webhook_router)
+    app.include_router(outbound_calls_router)
 
     @app.get("/api/v1/debug/db-status", tags=["debug"])
     async def debug_db_status():

@@ -117,6 +117,18 @@ class Settings(BaseSettings):
     # ===== Slack通知設定 =====
     SLACK_WEBHOOK_URL: Optional[str] = None
 
+    # ===== Outbound AI Phase 1: 予約確定通知の架電設定 =====
+    # "fake" のみサポート（本フェーズではVonage審査待ちのため実発信は行わない）。
+    # 将来 "vonage" を追加する際も、この値を変更するだけで済むよう
+    # app.services.outbound_call_provider 側でアダプター化してある。
+    OUTBOUND_CALL_PROVIDER: str = "fake"
+    # バックグラウンドのジョブポーリングワーカー自体のON/OFF（安全弁）。
+    OUTBOUND_CALL_WORKER_ENABLED: bool = True
+    OUTBOUND_CALL_POLL_INTERVAL_SECONDS: int = 5
+    OUTBOUND_CALL_MAX_ATTEMPTS: int = 3
+    # リトライ時のバックオフ秒数（attempt_count回目の失敗後、この値 × attempt_count 秒待つ）。
+    OUTBOUND_CALL_RETRY_BACKOFF_SECONDS: int = 30
+
     # ===== 機能フラグ =====
     FEATURE_AI_RESPONSES: bool = True
     FEATURE_PAYMENT_PROCESSING: bool = True
