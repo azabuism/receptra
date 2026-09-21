@@ -26,8 +26,8 @@ AIスタッフ設定（Realtime Voice AI Phase2）
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, LargeBinary
+from sqlalchemy.orm import relationship, deferred
 
 from app.database import Base
 
@@ -85,6 +85,31 @@ class AIStaffSettings(Base):
     # 場合は常にシステムルール・言語ルールが優先される
     # （app.services.realtime_voice_ai の instructions 組み立て処理を参照）。
     custom_instructions = Column(Text, nullable=True)
+
+    # ===== Phase3E-3: Zero-Wait Greeting音声のDBキャッシュ =====
+    #
+    # Phase3C.1のPoCでは、事前生成した第一声音声(mp3)を開発者が手動で
+    # frontend/public/greeting_audio/{shop_id}.mp3 として配置・コミットする
+    # 運用だった。この方式には、staff_name・voice・greeting（このモデルの値）を
+    # 変更しても音声だけが古いまま残り続けるという既知の問題があった
+    # （app.services.realtime_voice_ai.generate_greeting_tts_audio()の
+    # docstring参照）。
+    #
+    # 対応方針（最小限。過剰なインフラを避ける）: 生成した音声バイト列そのものを
+    # このテーブルの行にキャッシュとして保持する（Railwayのコンテナ
+    # ローカルファイルシステムはデプロイ毎に消えるため不可。S3等の新規インフラは
+    # 導入しない。Shop.logo_data等、既存のLargeBinaryカラムと同じ考え方）。
+    # greeting_audio_fingerprintに、生成時点の(voice, 実際に話す第一声文言)から
+    # 計算したハッシュ値を保存しておき、読み出し時に現在の設定から計算した
+    # フィンガープリントと比較する。一致すればキャッシュを再利用し、
+    # 不一致（＝staff_name/voice/greetingのいずれかが変更された）なら
+    # その場で再生成してキャッシュを更新する。明示的な「変更を検知して
+    # invalidateする」処理を各設定更新箇所に追加する必要がなく、読み出し時の
+    # 比較だけで自己修復的にキャッシュが最新化される設計。
+    greeting_audio_data = deferred(Column(LargeBinary, nullable=True))
+    greeting_audio_content_type = Column(String(50), nullable=True)
+    greeting_audio_fingerprint = Column(String(64), nullable=True)
+    greeting_audio_generated_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

@@ -20,7 +20,7 @@ import unicodedata
 from datetime import datetime, date as date_type, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -291,6 +291,72 @@ async def get_realtime_voice_greeting_text(shop_id: str, db: AsyncSession = Depe
         )
 
     return {"shop_id": shop_id, "greeting_text": greeting_text}
+
+
+# Phase3E-3: Zero-Wait Greeting音声用の別バケット。ページ読み込み時に1回
+# フェッチされる想定の読み取り中心のリクエストのため、/greeting-textと同程度の
+# 緩めの制限にする（キャッシュミス時のみ内部でOpenAI TTSを呼ぶが、頻度は
+# 設定変更直後のみで、通常のリクエストの大半はDBキャッシュを読むだけ）。
+_GREETING_AUDIO_RATE_LIMIT_WINDOW_SECONDS = 60
+_GREETING_AUDIO_RATE_LIMIT_MAX_REQUESTS = 20
+_recent_greeting_audio_requests: dict[str, list] = {}
+
+
+def _check_greeting_audio_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _recent_greeting_audio_requests.setdefault(shop_id, [])
+    bucket[:] = [t for t in bucket if now - t < _GREETING_AUDIO_RATE_LIMIT_WINDOW_SECONDS]
+    if len(bucket) >= _GREETING_AUDIO_RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
+
+
+@router.get("/greeting-audio")
+async def get_realtime_voice_greeting_audio(shop_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Phase3E-3: Zero-Wait Greeting用の事前生成音声(mp3)を返す（会員登録不要・
+    認証不要。/greeting-textと同じ公開範囲の考え方）。
+
+    設計方針（重要）:
+    - Phase3C.1のPoC（frontend/public/greeting_audio/{shop_id}.mp3を開発者が
+      手動配置する運用）を置き換える。音声の生成・キャッシュ・
+      staff_name/voice/greeting変更時の自動再生成は、すべて
+      app.services.realtime_voice_ai.get_or_generate_greeting_audio()に
+      一元化されている（このエンドポイントは薄いラッパーに過ぎない）。
+    - このエンドポイントが失敗する場合（店舗未検出・非公開・生成エラー等）は
+      必ず404/502を返す。フロントエンド(shop-ai-realtime-voice.html)の
+      既存のZero-Wait失敗時フォールバック（Phase3Cの第一声にフォールバック）は
+      「音声URLのfetchが失敗する」ことだけを前提に作られており、静的ファイルが
+      404になる場合と全く同じ扱いになるため、フロント側の変更は不要。
+    - Cache-Control: no-store を明示する。このエンドポイントのURLはshop_id
+      固定で変わらないため、ブラウザやその手前の中間キャッシュに古い音声を
+      キャッシュされてしまうと、DB側でキャッシュを更新してもお客様には
+      古い音声が届き続けてしまう。キャッシュの正しさは常にこのエンドポイント
+      内部のフィンガープリント比較だけに依存させる。
+    """
+    _check_greeting_audio_rate_limit(shop_id)
+
+    shop = await db.get(Shop, shop_id)
+    if not shop or not shop.is_active:
+        raise HTTPException(status_code=404, detail="店舗が見つかりません")
+
+    try:
+        result = await realtime_voice_ai.get_or_generate_greeting_audio(db, shop)
+    except RuntimeError as e:
+        logger.error("greeting-audio生成に失敗（設定エラー） shop_id=%s: %s", shop_id, e)
+        raise HTTPException(status_code=502, detail="音声の準備に失敗しました。しばらくしてから再度お試しください。")
+    except Exception as e:
+        logger.error("greeting-audio取得に失敗 shop_id=%s: %s", shop_id, e)
+        raise HTTPException(status_code=502, detail="音声の準備に失敗しました。しばらくしてから再度お試しください。")
+
+    return Response(
+        content=result["audio_bytes"],
+        media_type=result.get("content_type") or "audio/mpeg",
+        headers={"Cache-Control": "no-store", "X-Greeting-Audio-Cache": result.get("cache", "unknown")},
+    )
 
 
 @router.post("/session")

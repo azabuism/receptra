@@ -17,12 +17,14 @@ OpenAI Realtime API（ブラウザ ⇔ WebRTC 直結）用のセッション構�
   `client.realtime.client_secrets.create()` の型定義を確認した上で実装している。
 """
 
+import hashlib
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from openai import AsyncOpenAI
 from sqlalchemy import select
+from sqlalchemy.orm import undefer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -618,17 +620,27 @@ def _resolve_greeting_text(s: Optional["AIStaffSettings"], shop_name: str) -> st
     事前生成TTS音声）の両方から共通で呼ばれる。両者が違う文言を使うと
     「事前生成音声とAIの認識している第一声が食い違う」事態になるため、
     第一声の実際の文言はこの関数の一箇所だけで決定する。
+
+    Phase3E-3追記（Zero-Wait Greeting「即名乗り」改善）: staff_nameが
+    設定されているにもかかわらず、店舗オーナーが入力したカスタムgreeting
+    文言にその名前が含まれていない場合、電話に出た瞬間（＝この文言の冒頭）
+    で名乗れていないことになる。これを防ぐため、カスタムgreetingが設定
+    されていても、staff_nameが設定済みかつその文言に名前が含まれていない
+    場合は、短い名乗りを文頭に補う。カスタムgreetingに既に名前が含まれて
+    いる場合は補わない（二重に名乗ることを避ける。単純な部分一致判定に
+    留め、過剰な自然言語処理は行わない）。
     """
     greeting = ""
     staff_name = None
     if s is not None:
         greeting = (s.greeting or "").strip()
-        staff_name = s.staff_name
+        staff_name = (s.staff_name or "").strip() or None
     if not greeting:
         if staff_name:
-            greeting = f"お電話ありがとうございます。{shop_name}、AI受付の{staff_name}です。"
-        else:
-            greeting = f"お電話ありがとうございます。{shop_name}でございます。"
+            return f"お電話ありがとうございます。{shop_name}、AI受付の{staff_name}です。"
+        return f"お電話ありがとうございます。{shop_name}でございます。"
+    if staff_name and staff_name not in greeting:
+        return f"{shop_name}、AI受付の{staff_name}です。{greeting}"
     return greeting
 
 
@@ -934,11 +946,18 @@ async def generate_greeting_tts_audio(shop: Shop, staff_settings: Optional["AISt
     - これは通話中の会話生成(Realtime API)とは完全に別物。第一声の文字列
       そのものは_resolve_greeting_text()で解決し、Realtime instructions側
       （_build_greeting_section）と完全に同じ文言を使う（食い違い防止）。
-    - この関数はバイト列を返すだけで、DBにもファイルシステムにも一切
-      保存しない（PoC段階では呼び出し側＝開発者が結果を受け取り、
-      frontend/public/配下の静的ファイルとして手動配置する運用。
-      Railwayのコンテナファイルシステムへ実行時に書き込むと、デプロイ
-      毎に消える可能性があるため、そのような永続化は行わない）。
+    - この関数自体はバイト列を返すだけで、DBにもファイルシステムにも一切
+      保存しない（Railwayのコンテナファイルシステムへ実行時に書き込むと、
+      デプロイ毎に消えるため、そのような永続化はしない）。呼び出し元が
+      保存を担う。
+      - お客様向けZero-Wait Greeting（get_or_generate_greeting_audio()）は
+        AIStaffSettings.greeting_audio_dataへDB保存し、以後はキャッシュを
+        再利用する（Phase3E-3）。
+      - app/routers/ai_staff_settings.py の POST /greeting-audio
+        （オーナー認証必須の試聴専用エンドポイント）は、その場で生成した
+        音声をそのまま返すだけで一切保存しない（オーナーが今の設定で
+        どう聞こえるかその場で確認するための機能であり、Zero-Wait用
+        キャッシュとは別物）。
     - voiceはRealtime API用のvoice設定(AIStaffSettings.voice)をそのまま
       流用する。2026年9月時点のopenai SDK(1.109.1)の型定義を確認したところ、
       /v1/audio/speech の voice パラメータは alloy/ash/ballad/coral/echo/
@@ -995,9 +1014,100 @@ async def get_effective_greeting_text(db: AsyncSession, shop: Shop) -> str:
     - Zero-Wait Greeting成功時にRealtimeの会話履歴へ
       「この文言は既に話した」と伝える(conversation.item.create)ためだけに
       使う。事前生成音声ファイル自体の内容と完全に一致している保証は、
-      両者が同じ_resolve_greeting_text()を経由していることに依存する
-      （事前生成音声は手動再生成のため、AIStaffSettings変更直後は音声だけが
-      一時的に古くなりうる。将来の自動再生成の設計は別途報告する）。
+      両者が同じ_resolve_greeting_text()を経由していることに依存する。
+      Phase3E-3以降、音声はget_or_generate_greeting_audio()経由でDBに
+      キャッシュ・自動再生成されるため（下記参照）、この文言との食い違いは
+      発生しない（両方とも同じ_resolve_greeting_text()の同時点の出力を使う）。
     """
     staff_settings = await _get_staff_settings(db, shop.id)
     return _resolve_greeting_text(staff_settings, shop.name)
+
+
+def _compute_greeting_audio_fingerprint(voice: str, greeting_text: str) -> str:
+    """
+    Phase3E-3: Zero-Wait Greeting音声のキャッシュキー。
+    実際にTTSへ渡す(voice, greeting_text)の組から一意のハッシュ値を計算する。
+    staff_name/voice/greetingのいずれかが変わればgreeting_text/voiceの
+    どちらかが変わり、結果としてこのフィンガープリントも変わるため、
+    3つの設定値を個別に追跡する必要がない（_resolve_greeting_text()の
+    出力さえ変われば自動的にキャッシュミスになる）。
+    """
+    raw = f"{voice}\x00{greeting_text}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def get_or_generate_greeting_audio(db: AsyncSession, shop: Shop) -> dict:
+    """
+    Phase3E-3: Zero-Wait Greeting音声のキャッシュ取得・必要なら自動再生成。
+
+    Phase3C.1のPoCでは、事前生成音声を開発者が手動でfrontend/public/配下に
+    配置する運用だったため、staff_name/voice/greetingを変更しても音声だけが
+    古いまま残り続ける既知の問題があった。この関数はその代替であり、
+    AIStaffSettings.greeting_audio_* カラム（DB。Railwayのコンテナローカル
+    ファイルシステムのように再デプロイで消えることはない）に生成済み音声を
+    キャッシュし、現在の設定から計算したフィンガープリントと保存済みの
+    フィンガープリントを比較することで、変更を検知して自動的に再生成する。
+
+    - 一致（キャッシュヒット）: DBに保存済みの音声バイト列をそのまま返す。
+      OpenAI TTSへのリクエストは発生しない（高速・低コスト）。
+    - 不一致 or 未生成（キャッシュミス）: generate_greeting_tts_audio()で
+      その場で生成し、AIStaffSettingsの行が存在する場合はそこへ保存してから
+      返す。AIStaffSettingsの行自体が存在しない店舗（一度もAIスタッフ設定を
+      保存したことがない店舗）は、キャッシュを保持する行が無いため毎回生成
+      する（対象はZero-Wait Greeting有効店舗のみで、通常は事前に設定済み
+      であるため実運用上は稀なケース）。ここで新規に行を作成することは
+      あえて行わない（未認証の公開エンドポイント経由でDB行を作成する
+      副作用を避けるため）。
+
+    キャッシュミス時のみOpenAI TTSの応答時間（数百ms〜数秒）がかかるが、
+    これはページ読み込み時のプリロード中に発生するため、通話開始クリックから
+    音声再生開始までのZero-Wait本来のレイテンシ（~15-40ms、キャッシュヒット
+    時のDB読み出しのみ）には影響しない。
+
+    実装メモ: greeting_audio_dataはdeferred（通常のinstructions組み立て等では
+    毎回この大きなバイト列を読み込まないようにするため）なので、_get_staff_settings
+    共通ヘルパーではなく、この関数専用にundefer()を指定したクエリを使う。
+    """
+    result = await db.execute(
+        select(AIStaffSettings)
+        .options(undefer(AIStaffSettings.greeting_audio_data))
+        .where(AIStaffSettings.shop_id == shop.id)
+    )
+    staff_settings = result.scalars().first()
+    greeting_text = _resolve_greeting_text(staff_settings, shop.name)
+    settings = get_settings()
+    voice = (staff_settings.voice if staff_settings and staff_settings.voice else settings.OPENAI_REALTIME_VOICE)
+    fingerprint = _compute_greeting_audio_fingerprint(voice, greeting_text)
+
+    if (
+        staff_settings is not None
+        and staff_settings.greeting_audio_fingerprint == fingerprint
+        and staff_settings.greeting_audio_data
+    ):
+        return {
+            "audio_bytes": staff_settings.greeting_audio_data,
+            "content_type": staff_settings.greeting_audio_content_type or "audio/mpeg",
+            "voice": voice,
+            "cache": "hit",
+        }
+
+    result = await generate_greeting_tts_audio(shop, staff_settings)
+    audio_bytes = result["audio_bytes"]
+
+    if staff_settings is not None:
+        staff_settings.greeting_audio_data = audio_bytes
+        staff_settings.greeting_audio_content_type = "audio/mpeg"
+        staff_settings.greeting_audio_fingerprint = fingerprint
+        staff_settings.greeting_audio_generated_at = datetime.utcnow()
+        await db.commit()
+        logger.info(
+            "Zero-Wait Greeting音声のキャッシュを更新 shop_id=%s fingerprint=%s",
+            shop.id, fingerprint[:12],
+        )
+
+    return {
+        "audio_bytes": audio_bytes,
+        "content_type": "audio/mpeg",
+        "voice": voice,
+        "cache": "miss",
+    }

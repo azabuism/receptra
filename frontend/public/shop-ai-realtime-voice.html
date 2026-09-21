@@ -560,7 +560,14 @@
         // 常にPhase3C(Realtime第一声)のみで動作する（既存動作を完全に保持）。
         const ZERO_WAIT_GREETING_SHOP_IDS = ['82dff3eb-7e99-49c6-828f-870b4a069e75'];
         const zeroWaitEnabled = ZERO_WAIT_GREETING_SHOP_IDS.includes(shopId);
-        const ZERO_WAIT_AUDIO_URL = '/greeting_audio/' + encodeURIComponent(shopId) + '.mp3';
+        // Phase3E-3: 静的ファイル(/greeting_audio/{shop_id}.mp3の手動配置運用)から、
+        // DBキャッシュ・staff_name/voice/greeting変更時に自動再生成される
+        // バックエンドエンドポイントへ切り替えた（app/routers/realtime_voice.pyの
+        // get_realtime_voice_greeting_audio参照）。フェッチしてBlob化してから
+        // 再生する既存の仕組み自体は変更していないため、レイテンシ特性
+        // （プリロードはページ読み込み時、再生はクリック時にキャッシュ済み
+        // Audioオブジェクトを再生するだけ）は変わらない。
+        const ZERO_WAIT_AUDIO_URL = '/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/greeting-audio';
         // 第一声response.create送信可否の判定を、Zero-Waitの結果確定まで待つ
         // 最大時間。Zero-Wait再生開始(KPI-1)は数百ms以内に確定する想定のため、
         // これより十分大きい値にしておけば通常は待たされない。

@@ -217,6 +217,19 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ shops.staff_schedule_enabled カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # Phase3E-3: Zero-Wait Greeting音声のDBキャッシュ列。
+            # 既存ai_staff_settingsテーブルへのカラム追加のみ。既存行はすべて
+            # NULLで埋まり、次回このAPIが呼ばれた際に自動的に生成・キャッシュされる
+            # （app.services.realtime_voice_ai.get_or_generate_greeting_audio()参照）。
+            # Availability判定・予約ロジックには一切関係しない。
+            try:
+                await conn.execute(text("ALTER TABLE ai_staff_settings ADD COLUMN IF NOT EXISTS greeting_audio_data BYTEA"))
+                await conn.execute(text("ALTER TABLE ai_staff_settings ADD COLUMN IF NOT EXISTS greeting_audio_content_type VARCHAR(50)"))
+                await conn.execute(text("ALTER TABLE ai_staff_settings ADD COLUMN IF NOT EXISTS greeting_audio_fingerprint VARCHAR(64)"))
+                await conn.execute(text("ALTER TABLE ai_staff_settings ADD COLUMN IF NOT EXISTS greeting_audio_generated_at TIMESTAMP"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ ai_staff_settings のGreeting音声キャッシュ用カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 
