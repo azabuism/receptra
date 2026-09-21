@@ -9,7 +9,7 @@
 
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>店舗オーナーページ - レセプトラ</title>
+    <title>オーナーページ - レセプトラ</title>
     <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -231,19 +231,19 @@
         </div>
     </nav>
     <main id="app" style="display: none;">
-        <h1>店舗オーナーページ</h1>
+        <h1>オーナーページ</h1>
         <p class="subtitle">お店の情報を登録して、レセプトラでお店を紹介しましょう。</p>
 
         <div class="card">
-            <h2>登録済みの店舗</h2>
+            <h2>登録済みの店舗・事業所</h2>
             <div id="shop-list"><div class="empty-state">読み込み中…</div></div>
         </div>
 
         <div class="card">
-            <h2>新しい店舗を登録する</h2>
+            <h2>新しい店舗・事業所を登録する</h2>
             <form id="shop-form">
                 <div class="field">
-                    <label for="shop-name">店舗名 *</label>
+                    <label for="shop-name">店舗・事業所名 *</label>
                     <input type="text" id="shop-name" required>
                 </div>
                 <div class="row-2">
@@ -373,7 +373,7 @@
                 }
                 const data = await res.json();
                 if (!data.items || data.items.length === 0) {
-                    listEl.innerHTML = '<div class="empty-state">まだ登録された店舗はありません。下のフォームから登録してみましょう。</div>';
+                    listEl.innerHTML = '<div class="empty-state">まだ登録された店舗・事業所はありません。下のフォームから登録してみましょう。</div>';
                     return;
                 }
                 listEl.innerHTML = data.items.map(function (shop) {
@@ -468,7 +468,7 @@
                 }
                 msg.className = 'msg success';
                 msg.style.display = 'block';
-                msg.innerHTML = '店舗を登録しました。続けて、写真の追加やAIスタッフの設定を行いましょう。'
+                msg.innerHTML = '店舗・事業所を登録しました。続けて、写真の追加やAIスタッフの設定を行いましょう。'
                     + '<br><a href="shop-manage.html?id=' + encodeURIComponent(data.shop_id) + '">お店の情報を編集する →</a>'
                     + ' ／ <a href="shop.html?id=' + encodeURIComponent(data.shop_id) + '">紹介ページを見る →</a>';
                 document.getElementById('shop-form').reset();

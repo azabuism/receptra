@@ -9,7 +9,7 @@
 
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>店舗の管理 - レセプトラ</title>
+    <title>店舗・事業所の管理 - レセプトラ</title>
     <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -205,14 +205,14 @@
         </div>
     </nav>
     <main id="app" style="display: none;">
-        <h1 id="shop-name-title">店舗の管理</h1>
+        <h1 id="shop-name-title">店舗・事業所の管理</h1>
         <p class="subtitle">お店の基本情報・写真・メニュー・特徴を編集できます。</p>
 
         <div class="card">
             <h2>基本情報</h2>
             <form id="basic-form">
                 <div class="field">
-                    <label for="edit-name">店舗名 *</label>
+                    <label for="edit-name">店舗・事業所名 *</label>
                     <input type="text" id="edit-name" required>
                 </div>
                 <div class="row-2">
@@ -426,10 +426,10 @@
         </div>
 
         <div class="card" id="service-staff-card" style="display: none;">
-            <h2>サービス・スタッフの管理</h2>
-            <p class="hint">
-                美容院・クリニック・スクール・フィットネスなど施術/コース単位で予約を受け付ける業種向けの機能です。
-                サービス（施術・コース）とスタッフを登録すると、お客様の予約フォームで「サービスを選ぶ→スタッフを選ぶ」流れで予約できるようになります。
+            <h2 id="service-staff-card-title">サービス・スタッフの管理</h2>
+            <p class="hint" id="service-staff-card-hint">
+                施術・コースなどサービス単位で予約を受け付ける機能です。
+                サービスとスタッフを登録すると、お客様の予約フォームで「サービスを選ぶ→スタッフを選ぶ」流れで予約できるようになります。
             </p>
 
             <div class="field checkbox-field" style="margin-bottom: 16px;">
@@ -447,11 +447,11 @@
                 <div class="msg error" id="staff-schedule-warning" style="display: none; margin-top: 8px;"></div>
             </div>
 
-            <h3 class="subsection-title">サービスメニュー</h3>
+            <h3 class="subsection-title" id="service-section-title">サービスメニュー</h3>
             <form id="service-form">
                 <div class="row-2">
                     <div class="field">
-                        <label for="service-name">サービス名 *</label>
+                        <label for="service-name" id="service-name-label">サービス名 *</label>
                         <input type="text" id="service-name" placeholder="例：カット、初診、体験レッスン" required>
                     </div>
                     <div class="field">
@@ -607,7 +607,7 @@
         </div>
 
         <div class="card">
-            <h2>店舗情報・AI回答設定</h2>
+            <h2>基本情報・AI回答設定</h2>
             <p class="hint">
                 ここで登録した内容だけを使って、音声AI受付が駐車場・お支払い方法・設備・来店前のご案内・
                 キャンセルポリシーについて正確にお答えします。未入力の項目は「情報が登録されていません」と
@@ -640,7 +640,7 @@
                     </div>
                     <div class="field">
                         <label for="sk-parking-location">場所</label>
-                        <input type="text" id="sk-parking-location" maxlength="255" placeholder="例：店舗裏">
+                        <input type="text" id="sk-parking-location" maxlength="255" placeholder="例：建物裏">
                     </div>
                     <div class="field">
                         <label for="sk-partner-parking">提携駐車場</label>
@@ -653,7 +653,7 @@
                 </div>
                 <div class="field">
                     <label for="sk-parking-notes">駐車場の補足</label>
-                    <textarea id="sk-parking-notes" maxlength="2000" placeholder="例：店舗正面の2台は他店舗専用です"></textarea>
+                    <textarea id="sk-parking-notes" maxlength="2000" placeholder="例：正面の2台は隣の建物専用です"></textarea>
                 </div>
 
                 <h3 class="subheading">お支払い方法</h3>
@@ -807,7 +807,7 @@
 
         <div class="card">
             <h2>よくあるご質問（FAQ）</h2>
-            <p class="hint">上記の項目に当てはまらない、店舗独自のよくある質問と回答を登録できます。音声AI受付がキーワード検索して回答します。</p>
+            <p class="hint">上記の項目に当てはまらない、独自のよくある質問と回答を登録できます。音声AI受付がキーワード検索して回答します。</p>
             <form id="faq-form">
                 <div class="field">
                     <label for="faq-question">質問</label>
@@ -888,9 +888,9 @@
         </div>
 
         <div class="card">
-            <h2>店舗の削除</h2>
-            <p class="hint">この店舗と、登録されている写真・メニュー・営業時間などをすべて削除します。この操作は取り消せません。</p>
-            <button type="button" class="btn-outline btn-danger" id="delete-shop-btn">この店舗を削除する</button>
+            <h2>店舗・事業所の削除</h2>
+            <p class="hint">この店舗・事業所と、登録されている写真・メニュー・営業時間などをすべて削除します。この操作は取り消せません。</p>
+            <button type="button" class="btn-outline btn-danger" id="delete-shop-btn">この店舗・事業所を削除する</button>
             <div class="msg" id="delete-msg"></div>
         </div>
     </main>
@@ -905,7 +905,35 @@
         const KIND_LABELS = { exterior: '外観', interior: '内装', other: 'その他' };
         const DAY_NAMES = ['月', '火', '水', '木', '金', '土', '日'];
         const STATUS_LABELS = { pending: '確認待ち', confirmed: '確定', cancelled: 'キャンセル', no_show: '無断キャンセル', completed: '来店済み' };
-        const SERVICE_BASED_TYPES = ['beauty', 'medical', 'education', 'fitness'];
+
+        // Phase3H Workstream A: 業種（Shop.business_type）に応じて、Owner画面に
+        // 表示する「サービス」の呼び方をまとめて管理するmetadata。
+        // 内部のService/service_id等のモデル・API・変数名は一切変更せず、
+        // Owner向けの表示文言だけをここで一元的に切り替える
+        // （if (businessType === 'beauty') ... のような分岐をHTML各所に
+        // 散らさないための一箇所管理。app/services/realtime_voice_ai.py の
+        // _SERVICE_TERMINOLOGY_LABELS と同じ考え方・同じキー（business_type）
+        // を使っているが、フロントとバックエンドでファイルが別なため、
+        // 表記を変える場合は両方を更新すること）。
+        const SERVICE_LABEL_META = {
+            beauty:    { sectionLabel: '施術メニュー', itemLabel: '施術',     examplePlaceholder: '例：カット、カラー、パーマ' },
+            medical:   { sectionLabel: '診療内容',     itemLabel: '診療科目', examplePlaceholder: '例：内科、皮膚科、健康診断' },
+            education: { sectionLabel: 'コース・レッスン', itemLabel: 'コース', examplePlaceholder: '例：英会話、個別指導、ピアノレッスン' },
+            fitness:   { sectionLabel: 'コース・メニュー', itemLabel: 'コース', examplePlaceholder: '例：パーソナルトレーニング、ヨガクラス、体験レッスン' },
+            hotel:     { sectionLabel: '宿泊プラン',    itemLabel: 'プラン',   examplePlaceholder: '例：素泊まりプラン、朝食付きプラン、連泊プラン' },
+        };
+        const DEFAULT_SERVICE_LABEL_META = { sectionLabel: 'サービスメニュー', itemLabel: 'サービス', examplePlaceholder: '例：カット、初診、体験レッスン' };
+
+        function getServiceLabelMeta(businessType) {
+            return SERVICE_LABEL_META[businessType] || DEFAULT_SERVICE_LABEL_META;
+        }
+
+        // 飲食店(restaurant)は、既存の「メニュー」機能（MenuItem・loadMenu()）が
+        // すでにこの役割を担っているため、あえてSERVICE_BASED_TYPESに含めない
+        // （同じ店舗にService由来の「メニュー」とMenuItem由来の「メニュー」の
+        // 二つが並ぶ混乱を避けるため。詳細はPhase3H最終報告を参照）。
+        const SERVICE_BASED_TYPES = ['beauty', 'medical', 'education', 'fitness', 'hotel'];
+        let currentServiceLabelMeta = DEFAULT_SERVICE_LABEL_META;
 
         if (!token || !shopId) {
             document.getElementById('gate').style.display = 'block';
@@ -1307,6 +1335,32 @@
         function updateServiceStaffVisibility(businessType) {
             const card = document.getElementById('service-staff-card');
             card.style.display = SERVICE_BASED_TYPES.indexOf(businessType) !== -1 ? 'block' : 'none';
+            applyServiceLabels(businessType);
+        }
+
+        // Phase3H Workstream A: SERVICE_LABEL_META（一箇所管理のmetadata）を
+        // 実際のDOMへ反映する。ここで触るのは表示文言のみで、Service自体の
+        // データ構造・保存先API・変数名は一切変更しない。
+        function applyServiceLabels(businessType) {
+            const meta = getServiceLabelMeta(businessType);
+            currentServiceLabelMeta = meta;
+
+            const cardTitle = document.getElementById('service-staff-card-title');
+            if (cardTitle) cardTitle.textContent = meta.sectionLabel + '・スタッフの管理';
+
+            const sectionTitle = document.getElementById('service-section-title');
+            if (sectionTitle) sectionTitle.textContent = meta.sectionLabel;
+
+            const nameLabel = document.getElementById('service-name-label');
+            if (nameLabel) nameLabel.textContent = meta.itemLabel + '名 *';
+
+            const nameInput = document.getElementById('service-name');
+            if (nameInput) nameInput.placeholder = meta.examplePlaceholder;
+
+            const addBtn = document.getElementById('service-add-btn');
+            if (addBtn) addBtn.textContent = meta.itemLabel + 'を追加';
+
+            renderServiceList();
         }
 
         async function loadServices() {
@@ -1323,7 +1377,7 @@
         function renderServiceList() {
             const container = document.getElementById('service-list');
             if (!servicesCache.length) {
-                container.innerHTML = '<p class="empty-hint">まだサービスが登録されていません</p>';
+                container.innerHTML = '<p class="empty-hint">まだ' + escapeHtml(currentServiceLabelMeta.sectionLabel) + 'が登録されていません</p>';
                 return;
             }
             container.innerHTML = servicesCache.map(function (s) {
@@ -1379,7 +1433,7 @@
                     const errData = await res.json().catch(function () { return {}; });
                     throw new Error(errData.detail || '追加に失敗しました');
                 }
-                showMsg(msg, 'サービスを追加しました', 'success');
+                showMsg(msg, currentServiceLabelMeta.itemLabel + 'を追加しました', 'success');
                 document.getElementById('service-form').reset();
                 await loadServices();
                 renderStaffList();
@@ -1404,7 +1458,7 @@
         }
 
         async function deleteService(serviceId) {
-            if (!confirm('このサービスを削除しますか？スタッフへの割り当ても解除されます。')) return;
+            if (!confirm('この' + currentServiceLabelMeta.itemLabel + 'を削除しますか？スタッフへの割り当ても解除されます。')) return;
             const msg = document.getElementById('service-msg');
             try {
                 const res = await authFetch('/api/v1/services/' + encodeURIComponent(serviceId), { method: 'DELETE' });
@@ -1487,7 +1541,7 @@
                             'data-staff-id="' + st.id + '" data-svc-id="' + svc.id + '" data-assigned="' + assigned + '">' +
                             (assigned ? '✓ ' : '+ ') + escapeHtml(svc.name) + '</button>';
                     }).join('') + '</div>'
-                    : '<p class="empty-hint" style="padding: 6px 0 0;">先にサービスを登録すると、担当サービスを設定できます</p>';
+                    : '<p class="empty-hint" style="padding: 6px 0 0;">先に' + escapeHtml(currentServiceLabelMeta.sectionLabel) + 'を登録すると、担当する' + escapeHtml(currentServiceLabelMeta.itemLabel) + 'を設定できます</p>';
                 return '<div class="staff-item">' +
                     '<div class="row-top">' +
                         '<div>' +
@@ -1883,7 +1937,7 @@
                     }).join('');
                     const tableInfo = r.table_name ? '（' + escapeHtml(r.table_name) + '）' : '';
                     const serviceBits = [];
-                    if (r.service_name) serviceBits.push('サービス：' + escapeHtml(r.service_name));
+                    if (r.service_name) serviceBits.push(escapeHtml(currentServiceLabelMeta.itemLabel) + '：' + escapeHtml(r.service_name));
                     if (r.staff_name) serviceBits.push('担当：' + escapeHtml(r.staff_name));
                     if (r.total_price != null) serviceBits.push('¥' + Number(r.total_price).toLocaleString());
                     if (r.coupon_code) {
@@ -2552,7 +2606,7 @@
         async function loadShopKnowledge() {
             try {
                 const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/knowledge');
-                if (!res.ok) throw new Error('店舗情報の取得に失敗しました');
+                if (!res.ok) throw new Error('情報の取得に失敗しました');
                 const data = await res.json();
                 SHOP_KNOWLEDGE_FIELD_IDS.forEach(function (id) {
                     const el = document.getElementById('sk-' + id);

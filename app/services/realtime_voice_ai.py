@@ -440,6 +440,42 @@ _SHOP_INFO_TEMPLATE = """\
 {today_str}（「明日」「今週土曜」などの相対的な日時表現はこれを基準に解釈してください）\
 """
 
+# Phase3H Workstream A: 業種（Shop.business_type）に応じて、AIが会話の中で
+# 「サービス」をどう呼ぶかだけを伝える最小限のセクション。
+#
+# 設計方針（重要）:
+# - Realtime instructionsへ業種ごとの長い文章を大量に詰め込むことはせず、
+#   1行の呼び方だけを差し替える最小限のmetadataにとどめる。
+# - Core Rules・Scope・Examples・Constraints・Shop Knowledge Rules・
+#   Booking Safetyなど、E2Eで検証済みの既存固定テンプレートは一切変更しない。
+#   このセクションは、build_realtime_instructions()のdocstringが示す
+#   「Phase2の新セクションはShopInfoとConstraintsの間にのみ挿入する」という
+#   既存の挿入位置ルールに従い、その間にのみ追加する。
+# - service_id・create_reservation等のtool/パラメータ名は一切変更しない。
+#   あくまで会話中の「呼び方」だけを伝える。
+# - frontend/public/shop-manage.html の SERVICE_LABEL_META と同じ考え方・
+#   同じキー（business_type）を使った、意図的に重複させた別のmetadataである
+#   （フロントとバックエンドでファイル・言語が異なるため）。表記を変える場合は
+#   両方を更新すること。
+# - Serviceの概念を使わない業種（restaurant/entertainment/other等）では、
+#   このセクション自体を挿入しない（該当しない店舗のinstructionsを
+#   不必要に長くしないため）。
+_SERVICE_TERMINOLOGY_LABELS = {
+    "beauty": "施術メニュー",
+    "medical": "診療内容",
+    "education": "コース・レッスン",
+    "fitness": "コース・メニュー",
+    "hotel": "宿泊プラン",
+}
+
+_SERVICE_TERMINOLOGY_TEMPLATE = """\
+# この店舗での呼び方
+この店舗の業種では、「サービス」のことを「{service_term}」と呼びます。
+お客様との会話の中で呼びかけるときは、「サービス」ではなく「{service_term}」と
+いう言葉を自然に使ってください（例:「ご希望の{service_term}を教えてください」）。
+ツールの呼び出し自体（service_id等のパラメータ名）はこれまで通りで構いません。\
+"""
+
 # 話し方の見本。Phase1から変更しない固定文言。
 # 元のテンプレートでは「言語ルール」の直後・店舗情報より前に配置されて
 # いたため、Phase2でもその位置関係を維持する
@@ -702,6 +738,7 @@ async def build_realtime_instructions(
       2. Scope（Phase3B: 受付業務の会話範囲ルール）          … 常に固定
       3. Examples（話し方の見本）                            … 常に固定
       4. Shop Information（営業時間・本日の日付）            … 常に固定
+      4b. Service Terminology（Phase3H: 業種別の「サービス」呼称） … 該当業種のみ
       5a. AI Staff Personality                               … staff_settingsがある場合のみ
       5b. 電話に出たときの第一声（Greeting）                 … Phase3Cより常に付与
       6. Shop Custom Instructions（店舗独自の補助指示）      … 明示的に下位と位置づけ
@@ -732,6 +769,11 @@ async def build_realtime_instructions(
         _EXAMPLES_TEMPLATE,
         _SHOP_INFO_TEMPLATE.format(hours_block=hours_block, today_str=_today_str_jst()),
     ]
+
+    # Phase3H Workstream A: 業種に応じた「サービス」の呼び方（該当する業種のみ）。
+    service_term = _SERVICE_TERMINOLOGY_LABELS.get(shop.business_type)
+    if service_term:
+        sections.append(_SERVICE_TERMINOLOGY_TEMPLATE.format(service_term=service_term))
 
     if staff_settings is not None:
         personality_section = _build_personality_section(staff_settings)

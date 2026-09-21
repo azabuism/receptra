@@ -253,7 +253,7 @@
 
     <div id="loading">読み込み中…</div>
     <div id="not-found">
-        <p>店舗が見つかりませんでした。</p>
+        <p>情報が見つかりませんでした。</p>
         <p style="margin-top:12px;"><a href="/">ホームに戻る</a></p>
     </div>
 
@@ -388,7 +388,17 @@
         let currentBusinessType = null;
         let selectedBookingTime = null;
         let bookingServices = [];
-        const SERVICE_BASED_TYPES = ['beauty', 'medical', 'education', 'fitness'];
+        // Phase3H Workstream A: shop-manage.html（Owner側）と同じ一覧を維持すること。
+        // 飲食店(restaurant)はMenuItem由来の既存「メニュー」機能を使うため含めない。
+        const SERVICE_BASED_TYPES = ['beauty', 'medical', 'education', 'fitness', 'hotel'];
+        const CUSTOMER_FACING_NOUN = {
+            restaurant: 'お店', beauty: 'サロン', medical: 'クリニック',
+            education: '教室', fitness: '施設', hotel: 'ホテル',
+            entertainment: '施設', other: 'お店'
+        };
+        function customerFacingNoun(businessType) {
+            return CUSTOMER_FACING_NOUN[businessType] || 'お店';
+        }
         const CATEGORY_LABELS = {
             RESTAURANT: '飲食店', CAFE: 'カフェ', RAMEN: 'ラーメン', SUSHI: '寿司',
             IZAKAYA: '居酒屋', BAR: 'バー', BEAUTY: '美容', SALON: 'サロン',
@@ -575,7 +585,7 @@
                 formArea.innerHTML = '<p class="review-form-note">口コミを投稿するには <a href="user-login.html">ユーザーログイン</a> が必要です。</p>';
             } else {
                 formArea.innerHTML =
-                    '<div class="review-form-note">この店舗を利用した感想を投稿できます</div>' +
+                    '<div class="review-form-note">この' + escapeHtml(customerFacingNoun(currentBusinessType)) + 'を利用した感想を投稿できます</div>' +
                     '<div class="star-picker" id="review-star-picker">' +
                         [1, 2, 3, 4, 5].map(function (n) { return '<span data-value="' + n + '">★</span>'; }).join('') +
                     '</div>' +
