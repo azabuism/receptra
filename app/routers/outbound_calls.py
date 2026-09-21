@@ -6,6 +6,13 @@ app.routers.shops の notification-settings エンドポイントと同じ
 マスク済みの形でのみ返す。本フェーズでは架電自体はFake providerによる
 シミュレーションのみのため、ここに表示される履歴も実際の通話記録ではなく
 模擬架電の記録であることに注意。
+
+Phase 1.5（Owner Notification UX）での最小拡張:
+Owner UIが通知履歴に予約者名・予約日時を表示できるよう、関連する
+Reservationをselectinloadで取得しレスポンスに補完する。新しいAPI
+エンドポイントは追加しない。顧客電話番号・通知先電話番号（マスクなしの生値）・
+内部provider詳細・他tenant情報は引き続き一切含めない
+（app.schemas.outbound_call.OutboundCallLogResponseのdocstring参照）。
 """
 
 import logging
@@ -13,6 +20,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.deps import get_current_user
@@ -24,6 +32,29 @@ from app.schemas.user import CurrentUser
 logger = logging.getLogger("receptra.outbound.router")
 
 router = APIRouter(prefix="/api/v1/shops", tags=["outbound_calls"])
+
+
+def _to_log_response(log: OutboundCallLog) -> OutboundCallLogResponse:
+    """OutboundCallLog ORM行をレスポンスへ変換する。
+
+    reservation_guest_name / reservation_date は、紐づくReservationが
+    まだ存在する場合のみ埋める（Reservation.outbound_call_logsのcascade
+    delete-orphanにより、通常はReservationが削除されればこのLog行も
+    一緒に削除されるため、Noneになるのは想定外のデータ不整合時のみ）。
+    """
+    reservation = log.reservation
+    return OutboundCallLogResponse(
+        id=log.id,
+        reservation_id=log.reservation_id,
+        call_type=log.call_type,
+        category=log.category,
+        provider=log.provider,
+        result_status=log.result_status,
+        to_phone_masked=log.to_phone_masked,
+        created_at=log.created_at,
+        reservation_guest_name=(reservation.guest_name if reservation else None),
+        reservation_date=(reservation.reservation_date if reservation else None),
+    )
 
 
 @router.get(
@@ -49,6 +80,7 @@ async def get_outbound_call_logs(
 
     result = await db.execute(
         select(OutboundCallLog)
+        .options(selectinload(OutboundCallLog.reservation))
         .filter(OutboundCallLog.shop_id == shop_id)
         .order_by(OutboundCallLog.created_at.desc())
         .limit(limit)
@@ -56,5 +88,5 @@ async def get_outbound_call_logs(
     logs = result.scalars().all()
 
     return OutboundCallLogListResponse(
-        logs=[OutboundCallLogResponse.from_orm(log) for log in logs]
+        logs=[_to_log_response(log) for log in logs]
     )

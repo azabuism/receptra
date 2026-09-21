@@ -103,6 +103,7 @@
         }
         .msg.error { background: #fee2e2; color: var(--error); display: block; }
         .msg.success { background: #d1fae5; color: #047857; display: block; }
+        .msg.info { background: #eef2ff; color: #3730a3; display: block; }
         .hours-edit-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }
         .hours-edit-table th { text-align: left; padding: 6px 8px; color: #888; font-weight: 700; border-bottom: 1px solid #eee; }
         .hours-edit-table td { padding: 6px 8px; border-bottom: 1px solid #f5f5f5; }
@@ -207,6 +208,46 @@
         .rc-footer a { color: #777; text-decoration: none; font-size: 13px; }
         .rc-footer a:hover { color: #FF6B35; }
         .rc-footer-copy { color: #aaa; font-size: 12px; }
+
+        /* Phase 1.5: AIからの予約通知（Owner Notification UX） */
+        .notif-banner {
+            background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
+            font-size: 13px; padding: 12px 14px; border-radius: 10px; margin-bottom: 18px; line-height: 1.6;
+        }
+        .notif-toggle-row {
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            padding: 14px; background: #fafafa; border-radius: 10px;
+        }
+        .notif-toggle-title { font-size: 14px; font-weight: 700; color: #333; }
+        .notif-toggle-desc { font-size: 12px; color: #888; margin-top: 2px; }
+        .toggle-switch { position: relative; display: inline-block; width: 46px; height: 26px; flex-shrink: 0; }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider {
+            position: absolute; inset: 0; background-color: #ddd; transition: 0.15s; border-radius: 26px; cursor: pointer;
+        }
+        .toggle-slider::before {
+            position: absolute; content: ""; height: 20px; width: 20px; left: 3px; bottom: 3px;
+            background-color: var(--white); transition: 0.15s; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
+        .toggle-switch input:checked + .toggle-slider { background-color: var(--primary); }
+        .toggle-switch input:checked + .toggle-slider::before { transform: translateX(20px); }
+        .toggle-switch input:disabled + .toggle-slider { opacity: 0.5; cursor: not-allowed; }
+        .notif-ai-staff-line {
+            display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 16px;
+            padding: 12px 14px; background: #f5f5f5; border-radius: 10px; font-size: 13px; color: #555; flex-wrap: wrap;
+        }
+        .notif-ai-staff-line a { color: var(--primary-dark); font-weight: 700; text-decoration: none; font-size: 12px; white-space: nowrap; }
+        .notif-ai-staff-line a:hover { text-decoration: underline; }
+        .notif-history-item { padding: 14px; border: var(--border); border-radius: 10px; margin-bottom: 10px; }
+        .notif-history-top {
+            display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 6px; flex-wrap: wrap;
+        }
+        .notif-history-guest { font-weight: 700; font-size: 14px; }
+        .notif-history-meta { font-size: 12px; color: #888; margin-top: 2px; }
+        .notif-result-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+        .notif-result-badge.done { background: #d1fae5; color: #047857; }
+        .notif-result-badge.failed { background: #fee2e2; color: var(--error); }
+        .notif-result-badge.unknown { background: #f3f4f6; color: #888; }
 </style>
 </head>
 <body>
@@ -538,7 +579,7 @@
             <div id="staff-list" style="margin-top: 18px;"></div>
         </div>
 
-        <div class="card">
+        <div class="card" id="ai-staff-settings-card">
             <h2>AIスタッフ設定（音声AI受付）</h2>
             <p class="hint">
                 「通話で予約」から利用できる音声AI受付（Realtime Voice AI）の声・名前・話し方をカスタマイズできます。
@@ -1057,21 +1098,43 @@
         </div>
 
         <div class="card">
-            <h2>予約が入ったときの連絡先</h2>
-            <p class="hint">新しい予約が入ったとき、RECEPTRAのAIスタッフがこの番号へ予約内容をお知らせします。お店のオーナーご本人でなくても、店長や受付担当の方の番号でも構いません。この番号がお客様に公開されることはありません。</p>
+            <h2>AIからの予約通知</h2>
+            <p class="hint">新しい予約が入ったとき、AIスタッフが電話でお知らせします。</p>
+
+            <div class="notif-banner">
+                電話でのお知らせ機能は現在準備中です。近日中にご利用いただけるようになります。今のうちに設定だけ済ませておくことができます。
+            </div>
+
             <form id="notification-settings-form">
-                <div class="field">
-                    <label for="notification-phone">連絡先の電話番号</label>
-                    <input type="tel" id="notification-phone" placeholder="例：090-1234-5678" maxlength="20">
+                <div class="notif-toggle-row">
+                    <div>
+                        <div class="notif-toggle-title">予約が入ったら電話で知らせる</div>
+                        <div class="notif-toggle-desc">ONにしておくと、準備が整い次第このお店から自動でお知らせが始まります。</div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="notification-enabled">
+                        <span class="toggle-slider"></span>
+                    </label>
                 </div>
-                <div class="field" style="display: flex; align-items: center; gap: 8px; margin-bottom: 0;">
-                    <input type="checkbox" id="notification-enabled" style="width: auto;">
-                    <label for="notification-enabled" style="margin-bottom: 0; font-weight: 400; color: #333;">新しい予約が入ったらAIから電話で知らせる</label>
+
+                <div class="field" style="margin-top: 16px;">
+                    <label for="notification-phone">通知先の電話番号</label>
+                    <input type="tel" id="notification-phone" placeholder="例：090-1234-5678" maxlength="20">
+                    <p class="hint" style="margin-top: 6px; margin-bottom: 0;">予約が入ったときに連絡を受ける電話番号を設定します。お店のオーナーご本人でなくても、店長や受付担当の方の番号でも構いません。この番号がお客様に公開されることはありません。</p>
                 </div>
                 <p class="hint" id="notification-enabled-hint" style="margin-top: 8px; margin-bottom: 0;">※ 電話番号を登録すると、この機能をONにできるようになります。</p>
+
+                <div class="notif-ai-staff-line" id="notification-ai-staff-line" style="display: none;"></div>
+
                 <button type="submit" class="btn" id="notification-settings-save-btn" style="margin-top: 14px;">保存する</button>
                 <div class="msg" id="notification-settings-msg"></div>
             </form>
+        </div>
+
+        <div class="card">
+            <h2>最近の予約通知</h2>
+            <p class="hint">予約が入ったときにお知らせした履歴です。</p>
+            <div id="notification-history-list"><p class="empty-hint">読み込み中...</p></div>
         </div>
 
         <div class="card">
@@ -1244,6 +1307,8 @@
             loadShopKnowledge();
             loadFaqs();
             loadNotificationSettings();
+            loadNotificationAiStaffInfo();
+            loadNotificationHistory();
         }
 
         // ---------- 画像設定（ロゴ・サムネイル・カバー） ----------
@@ -2908,6 +2973,7 @@
             }
 
             btn.disabled = true;
+            showMsg(msg, '保存中…', 'info');
             try {
                 const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/notification-settings', {
                     method: 'PUT',
@@ -2932,6 +2998,76 @@
                 btn.disabled = false;
             }
         });
+
+        // Phase 1.5: 「電話ではAIスタッフ『○○』がお知らせします」の表示。
+        // AIStaffSettingsをSingle Source of Truthとして読み取り専用で参照するのみで、
+        // 名前・声・性格等の第二の設定フォームはここには作らない
+        // （変更は既存のAIスタッフ設定カードへ導線を張るだけに留める）。
+        async function loadNotificationAiStaffInfo() {
+            const line = document.getElementById('notification-ai-staff-line');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/ai-staff-settings');
+                if (!res.ok) throw new Error('取得に失敗しました');
+                const data = await res.json();
+                const staffName = (data.staff_name || '').trim();
+                const label = staffName
+                    ? '電話ではAIスタッフ「' + escapeHtml(staffName) + '」がお知らせします'
+                    : 'AIスタッフの名前はまだ設定されていません（未設定のまま自動でお知らせできます）';
+                line.innerHTML = '<span>' + label + '</span>' +
+                    '<a href="#ai-staff-settings-card" id="notification-ai-staff-link">AIスタッフの設定を見る</a>';
+                line.style.display = 'flex';
+            } catch (e) {
+                // 取得に失敗しても通知設定自体の利用は妨げない。
+                line.style.display = 'none';
+            }
+        }
+
+        // ---------- Phase 1.5: 予約通知の履歴 ----------
+        // 表示する状態ラベルは、実際にapp.models.outbound_call /
+        // app.services.outbound_call_worker が発行する値のみに対応させる
+        // （simulated_success・success・failed の3種類。それ以外は未知の値として
+        // 「確認中」表示にとどめ、UI側で存在しない状態を作らない）。
+        function formatOutboundResultBadge(resultStatus) {
+            if (resultStatus === 'simulated_success' || resultStatus === 'success') {
+                return '<span class="notif-result-badge done">通知完了</span>';
+            }
+            if (resultStatus === 'failed') {
+                return '<span class="notif-result-badge failed">通知できませんでした</span>';
+            }
+            return '<span class="notif-result-badge unknown">確認中</span>';
+        }
+
+        async function loadNotificationHistory() {
+            const container = document.getElementById('notification-history-list');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/outbound-calls?limit=20');
+                if (!res.ok) throw new Error('取得に失敗しました');
+                const data = await res.json();
+                const logs = data.logs || [];
+                if (logs.length === 0) {
+                    container.innerHTML = '<p class="empty-hint">予約通知の履歴はここに表示されます</p>';
+                    return;
+                }
+                container.innerHTML = logs.map(function (log) {
+                    const guestName = log.reservation_guest_name
+                        ? escapeHtml(log.reservation_guest_name) + '様'
+                        : '（予約者名不明）';
+                    const notifiedAt = formatReservationDate(log.created_at);
+                    const reservationDateText = log.reservation_date
+                        ? '　/　ご予約日時：' + formatReservationDate(log.reservation_date)
+                        : '';
+                    return '<div class="notif-history-item">' +
+                        '<div class="notif-history-top">' +
+                        '<span class="notif-history-guest">' + guestName + '</span>' +
+                        formatOutboundResultBadge(log.result_status) +
+                        '</div>' +
+                        '<div class="notif-history-meta">お知らせした日時：' + notifiedAt + reservationDateText + '</div>' +
+                        '</div>';
+                }).join('');
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
 
         // ---------- Phase3D: FAQ ----------
         let faqCache = [];
