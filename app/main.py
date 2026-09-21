@@ -43,10 +43,6 @@ from app.routers.staff import router as staff_router
 from app.routers.staff_shift import router as staff_shift_router
 from app.routers.billing import router as billing_router, webhook_router as payjp_webhook_router
 from app.routers.outbound_calls import router as outbound_calls_router
-# 【一時】Outbound AI Phase 1.5 Production E2Eクリーンアップ用。検証完了後、
-# 本import・下のinclude_router呼び出し・app/routers/_p15_e2e_debug.py 自体を
-# まとめて削除し、再デプロイ後にOpenAPIから消えていることを確認すること。
-from app.routers._p15_e2e_debug import router as p15_e2e_debug_router
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -354,7 +350,6 @@ def create_app() -> FastAPI:
     app.include_router(billing_router)
     app.include_router(payjp_webhook_router)
     app.include_router(outbound_calls_router)
-    app.include_router(p15_e2e_debug_router)  # 【一時】Phase 1.5 E2Eクリーンアップ用。完了後に削除
 
     @app.get("/api/v1/debug/db-status", tags=["debug"])
     async def debug_db_status():
