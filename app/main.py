@@ -39,6 +39,7 @@ from app.routers.mypage import router as mypage_router
 from app.routers.coupons import router as coupons_router
 from app.routers.services import router as services_router
 from app.routers.staff import router as staff_router
+from app.routers.staff_shift import router as staff_shift_router
 from app.routers.billing import router as billing_router, webhook_router as payjp_webhook_router
 
 logger = logging.getLogger(__name__)
@@ -270,6 +271,7 @@ def create_app() -> FastAPI:
     app.include_router(coupons_router)
     app.include_router(services_router)
     app.include_router(staff_router)
+    app.include_router(staff_shift_router)
     app.include_router(vonage_voice_router)
     app.include_router(voice_ai_test_router)
     app.include_router(shop_booking_ai_router)

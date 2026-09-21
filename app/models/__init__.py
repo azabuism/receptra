@@ -12,6 +12,10 @@ from app.models.shop import Shop, ShopHours, ShopCategory, BusinessType
 from app.models.service import Service
 from app.models.staff import Staff, StaffService
 
+# Phase3E-2: スタッフシフト管理（新規テーブル。alembicは使わず
+# Base.metadata.create_all()で自動作成される）
+from app.models.staff_shift import StaffWeeklyShift, StaffShiftOverride
+
 # Reservation models
 from app.models.reservation import Reservation, ReservationStatus
 
@@ -57,6 +61,10 @@ __all__ = [
     "Service",
     "Staff",
     "StaffService",
+
+    # Phase3E-2: スタッフシフト管理
+    "StaffWeeklyShift",
+    "StaffShiftOverride",
     
     # Reservation
     "Reservation",

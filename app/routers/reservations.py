@@ -21,6 +21,7 @@ from app.models.reservation import Reservation, ReservationStatus
 from app.models.shop import Shop, ShopHours, ShopTable, ShopClosure
 from app.models.service import Service
 from app.models.staff import Staff, StaffService
+from app.models.staff_shift import StaffWeeklyShift, StaffShiftOverride
 from app.models.promotion import Coupon
 from app.schemas.reservation import (
     ReservationCreateRequest, ReservationResponse, ReservationCreateResponse,
@@ -147,15 +148,103 @@ async def _find_available_table(
     return None, False
 
 
+async def _is_staff_scheduled(
+    db: AsyncSession, staff_id: str, start_dt: datetime, duration_minutes: int
+) -> bool:
+    """
+    Phase3E-2: 指定した日時（start_dt〜start_dt+duration_minutes）に、指定スタッフが
+    シフト上「勤務している」かどうかを判定する。この関数は_find_available_staff_for_service
+    からenforce_schedule=Trueの場合にのみ呼ばれ、shop.staff_schedule_enabledが
+    Falseの店舗（デフォルト・既存の全店舗）では一切呼ばれない。
+
+    判定ロジック:
+    1. スタッフに週次シフト・日付調整のいずれも一度も登録されていない場合は
+       「シフト未設定」として常にTrue（勤務可能）を返す。staff_schedule_enabledを
+       ONにしただけで、シフト未登録の全スタッフが一律予約不可になる事故を防ぐための
+       安全側フォールバック（_find_available_table/_find_available_staff_for_serviceの
+       「管理対象データが0件なら常に空き扱い」という既存の設計思想と一貫させている）。
+    2. 対象日にoverride_type="day_off"が1件でもあれば終日不可。
+    3. 対象日にoverride_type="hours"があれば、その時間帯を週次シフトの代わりに使う
+       （無ければ週次シフトのその曜日の時間帯を使う。どちらも無ければ「その日は
+       勤務日として登録されていない」として不可）。
+    4. 予約したい時間帯が上記の勤務時間帯に完全に収まっているかを確認する。
+    5. 対象日にoverride_type="unavailable"があれば、その時間帯と重なっていないかを
+       確認する（重なっていれば不可。重ならない部分は通常どおり勤務扱いのまま）。
+    """
+    target_date = start_dt.date()
+    end_dt = start_dt + timedelta(minutes=duration_minutes)
+    weekday = target_date.weekday()
+
+    any_weekly = await db.execute(
+        select(StaffWeeklyShift.id).filter(StaffWeeklyShift.staff_id == staff_id).limit(1)
+    )
+    has_any_weekly = any_weekly.scalar_one_or_none() is not None
+    any_override_ever = await db.execute(
+        select(StaffShiftOverride.id).filter(StaffShiftOverride.staff_id == staff_id).limit(1)
+    )
+    has_any_override = any_override_ever.scalar_one_or_none() is not None
+    if not has_any_weekly and not has_any_override:
+        return True
+
+    overrides_result = await db.execute(
+        select(StaffShiftOverride).filter(
+            StaffShiftOverride.staff_id == staff_id,
+            StaffShiftOverride.target_date == target_date,
+        )
+    )
+    overrides = list(overrides_result.scalars().all())
+
+    if any(o.override_type == "day_off" for o in overrides):
+        return False
+
+    hours_overrides = [o for o in overrides if o.override_type == "hours"]
+    if hours_overrides:
+        base_windows = [
+            (datetime.combine(target_date, o.start_time), datetime.combine(target_date, o.end_time))
+            for o in hours_overrides
+        ]
+    else:
+        weekly_result = await db.execute(
+            select(StaffWeeklyShift).filter(
+                StaffWeeklyShift.staff_id == staff_id,
+                StaffWeeklyShift.day_of_week == weekday,
+            )
+        )
+        weekly = list(weekly_result.scalars().all())
+        if not weekly:
+            return False
+        base_windows = [
+            (datetime.combine(target_date, w.start_time), datetime.combine(target_date, w.end_time))
+            for w in weekly
+        ]
+
+    if not any(bw_start <= start_dt and end_dt <= bw_end for bw_start, bw_end in base_windows):
+        return False
+
+    unavailable_overrides = [o for o in overrides if o.override_type == "unavailable"]
+    for o in unavailable_overrides:
+        u_start = datetime.combine(target_date, o.start_time)
+        u_end = datetime.combine(target_date, o.end_time)
+        if u_start < end_dt and u_end > start_dt:
+            return False
+
+    return True
+
+
 async def _find_available_staff_for_service(
     db: AsyncSession, shop_id: str, service_id: str, start: datetime, duration_minutes: int,
-    preferred_staff_id: Optional[str] = None
+    preferred_staff_id: Optional[str] = None, enforce_schedule: bool = False
 ) -> tuple[Optional[str], bool]:
     """
     指定したサービスを提供できる、かつその時間帯が空いているスタッフを探す。
     戻り値: (staff_id または None, このサービスにスタッフが1人も割り当てられていないか)
     スタッフが1人も割り当てられていない場合は指名なしの空き状況チェックを行わず、
     常に (None, True) を返す（テーブル管理の _find_available_table と同じ考え方）。
+
+    enforce_schedule: Phase3E-2で追加。Trueの場合のみ、_is_staff_scheduled()による
+    シフトチェックを予約重複チェックに加えて行う。呼び出し元は必ず
+    shop.staff_schedule_enabledの値をそのまま渡すこと。この引数はデフォルトFalseで、
+    Falseの間は_is_staff_scheduled()を一切呼ばない＝Phase3E-1までと完全に同じ挙動になる。
     """
     staff_result = await db.execute(
         select(Staff)
@@ -178,6 +267,11 @@ async def _find_available_staff_for_service(
     end = start + timedelta(minutes=duration_minutes)
 
     for staff in eligible_staff:
+        if enforce_schedule:
+            scheduled = await _is_staff_scheduled(db, staff.id, start, duration_minutes)
+            if not scheduled:
+                continue
+
         overlap_result = await db.execute(
             select(Reservation).filter(
                 Reservation.staff_id == staff.id,
@@ -267,7 +361,8 @@ async def check_single_slot_availability(
 
     if service:
         found_staff_id, unmanaged = await _find_available_staff_for_service(
-            db, shop.id, service.id, start_dt, duration, staff_id
+            db, shop.id, service.id, start_dt, duration, staff_id,
+            enforce_schedule=bool(shop.staff_schedule_enabled),
         )
         if unmanaged or found_staff_id is not None:
             return True, None
@@ -380,7 +475,8 @@ async def get_availability(
         if cursor > now:
             if service:
                 found_staff_id, unmanaged = await _find_available_staff_for_service(
-                    db, shop_id, service.id, cursor, duration, staff_id
+                    db, shop_id, service.id, cursor, duration, staff_id,
+                    enforce_schedule=bool(shop.staff_schedule_enabled),
                 )
                 available = unmanaged or (found_staff_id is not None)
             else:
@@ -487,7 +583,8 @@ async def create_reservation(
                     raise _http_error(400, "指定されたスタッフはこのサービスを提供していません", reason_code="staff_unavailable")
 
             found_staff_id, unmanaged = await _find_available_staff_for_service(
-                db, request.shop_id, service.id, request.reservation_date, duration, request.staff_id
+                db, request.shop_id, service.id, request.reservation_date, duration, request.staff_id,
+                enforce_schedule=bool(shop.staff_schedule_enabled),
             )
             if not unmanaged and found_staff_id is None:
                 detail = (

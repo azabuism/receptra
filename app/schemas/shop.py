@@ -69,6 +69,9 @@ class ShopUpdateRequest(BaseModel):
     reservations_enabled: Optional[bool] = Field(
         None, description="予約受付をON/OFFする。ONにするには課金アクティベーションが必要"
     )
+    staff_schedule_enabled: Optional[bool] = Field(
+        None, description="Phase3E-2: スタッフシフト（週次シフト・日付調整）による予約可否判定をON/OFFする"
+    )
 
 
 class ShopHoursBulkUpdateRequest(BaseModel):
@@ -95,6 +98,7 @@ class ShopResponse(BaseModel):
     is_active: bool
     is_featured: bool
     reservations_enabled: bool = False
+    staff_schedule_enabled: bool = False
     total_reservations: Optional[int]
     total_reviews: Optional[int]
     average_rating: Optional[float]

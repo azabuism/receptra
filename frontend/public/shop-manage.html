@@ -169,6 +169,11 @@
         .service-chip.assigned { background: #fff0e6; color: var(--primary-dark); border-color: #ffd8bd; }
         .subsection-title { font-size: 15px; font-weight: 700; margin: 22px 0 10px; }
         .subsection-title:first-of-type { margin-top: 0; }
+        .staff-shift-panel { padding: 12px; background: #fafafa; border: var(--border); border-radius: 10px; }
+        .shift-panel-title { font-size: 13px; font-weight: 700; margin: 0 0 8px; color: #555; }
+        .shift-panel-section + .shift-panel-section { border-top: var(--border); padding-top: 14px; }
+        .shift-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid #f0f0f0; }
+        .shift-row:last-of-type { border-bottom: none; }
         .menu-category-title { font-size: 14px; font-weight: 700; color: var(--primary-dark); margin: 18px 0 8px; }
         .menu-category-title:first-child { margin-top: 0; }
         .menu-row {
@@ -426,6 +431,18 @@
                 美容院・クリニック・スクール・フィットネスなど施術/コース単位で予約を受け付ける業種向けの機能です。
                 サービス（施術・コース）とスタッフを登録すると、お客様の予約フォームで「サービスを選ぶ→スタッフを選ぶ」流れで予約できるようになります。
             </p>
+
+            <div class="field checkbox-field" style="margin-bottom: 16px;">
+                <label>
+                    <input type="checkbox" id="staff-schedule-enabled-toggle">
+                    スタッフのシフト（週次シフト・休み・時間変更）を予約可否判定に反映する
+                </label>
+                <p class="hint" style="margin-top: 4px;">
+                    ONにすると、下の「シフトを管理」で設定した勤務時間・休みが、お客様の予約可否に反映されます。
+                    シフトが1件も登録されていないスタッフは、従来通り常に予約可能なままです。
+                </p>
+                <div class="msg" id="staff-schedule-enabled-msg"></div>
+            </div>
 
             <h3 class="subsection-title">サービスメニュー</h3>
             <form id="service-form">
@@ -988,6 +1005,7 @@
 
                     document.getElementById('reservation-duration').value = shop.reservation_duration_minutes || 90;
                     renderHoursForm(shop.shop_hours || []);
+                    document.getElementById('staff-schedule-enabled-toggle').checked = !!shop.staff_schedule_enabled;
                 }
             } catch (e) {}
             initImagePreviews();
@@ -1439,12 +1457,14 @@
                             '<div class="meta">' + meta + '</div>' +
                         '</div>' +
                         '<div class="actions">' +
+                            '<button type="button" class="btn-outline staff-shift-toggle-btn" data-id="' + st.id + '">シフトを管理</button>' +
                             '<button type="button" class="btn-outline staff-toggle-btn" data-id="' + st.id + '" data-active="' + st.is_active + '">' +
                                 (st.is_active ? '非公開にする' : '公開する') + '</button>' +
                             '<button type="button" class="btn-outline btn-danger staff-delete-btn" data-id="' + st.id + '">削除</button>' +
                         '</div>' +
                     '</div>' +
                     chips +
+                    '<div class="staff-shift-panel" id="staff-shift-panel-' + st.id + '" style="display: none; margin-top: 14px;"></div>' +
                 '</div>';
             }).join('');
             container.querySelectorAll('.staff-toggle-btn').forEach(function (btn) {
@@ -1459,6 +1479,9 @@
                 chip.addEventListener('click', function () {
                     toggleStaffService(chip.dataset.staffId, chip.dataset.svcId, chip.dataset.assigned === 'true');
                 });
+            });
+            container.querySelectorAll('.staff-shift-toggle-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () { toggleStaffShiftPanel(btn.dataset.id); });
             });
         }
 
@@ -1500,6 +1523,30 @@
             }
         });
 
+        document.getElementById('staff-schedule-enabled-toggle').addEventListener('change', async function (event) {
+            const checkbox = event.target;
+            const msg = document.getElementById('staff-schedule-enabled-msg');
+            const nextValue = checkbox.checked;
+            checkbox.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId), {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ staff_schedule_enabled: nextValue })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '設定の保存に失敗しました');
+                }
+                showMsg(msg, nextValue ? 'シフトによる予約可否判定を有効にしました' : '無効にしました', 'success');
+            } catch (err) {
+                checkbox.checked = !nextValue;
+                showMsg(msg, typeof err.message === 'string' ? err.message : '設定の保存に失敗しました', 'error');
+            } finally {
+                checkbox.disabled = false;
+            }
+        });
+
         async function toggleStaffActive(staffId, nextActive) {
             try {
                 await authFetch('/api/v1/staff/' + encodeURIComponent(staffId), {
@@ -1538,6 +1585,214 @@
                     });
                 }
                 loadStaff();
+            } catch (e) {}
+        }
+
+        // ---------- Phase3E-2: スタッフシフト管理（週次シフト・日付単位の調整） ----------
+        const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'];
+
+        function toggleStaffShiftPanel(staffId) {
+            const panel = document.getElementById('staff-shift-panel-' + staffId);
+            if (!panel) return;
+            const isHidden = panel.style.display === 'none' || !panel.style.display;
+            if (isHidden) {
+                panel.style.display = 'block';
+                loadStaffShiftPanel(staffId);
+            } else {
+                panel.style.display = 'none';
+            }
+        }
+
+        async function loadStaffShiftPanel(staffId) {
+            const panel = document.getElementById('staff-shift-panel-' + staffId);
+            if (!panel) return;
+            panel.innerHTML = '<p class="empty-hint">読み込み中...</p>';
+            try {
+                const [weeklyRes, overrideRes] = await Promise.all([
+                    authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/weekly-shifts'),
+                    authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/shift-overrides')
+                ]);
+                const weekly = weeklyRes.ok ? await weeklyRes.json() : [];
+                const overrides = overrideRes.ok ? await overrideRes.json() : [];
+                renderStaffShiftPanel(staffId, weekly, overrides);
+            } catch (e) {
+                panel.innerHTML = '<p class="empty-hint">シフト情報の読み込みに失敗しました</p>';
+            }
+        }
+
+        function _extractErrorMessage(errData, fallback) {
+            if (errData && Array.isArray(errData.detail) && errData.detail[0] && errData.detail[0].msg) {
+                return errData.detail[0].msg;
+            }
+            if (errData && typeof errData.detail === 'string') return errData.detail;
+            return fallback;
+        }
+
+        function renderStaffShiftPanel(staffId, weekly, overrides) {
+            const panel = document.getElementById('staff-shift-panel-' + staffId);
+            if (!panel) return;
+
+            const sortedWeekly = weekly.slice().sort(function (a, b) {
+                return (a.day_of_week - b.day_of_week) || a.start_time.localeCompare(b.start_time);
+            });
+            const weeklyRows = sortedWeekly.length
+                ? sortedWeekly.map(function (w) {
+                    return '<div class="shift-row"><span>' + WEEKDAY_LABELS[w.day_of_week] + '曜　' +
+                        escapeHtml(w.start_time) + '〜' + escapeHtml(w.end_time) + '</span>' +
+                        '<button type="button" class="btn-outline btn-danger shift-delete-btn" data-kind="weekly" data-staff-id="' + staffId + '" data-id="' + w.id + '">削除</button></div>';
+                }).join('')
+                : '<p class="empty-hint">週次シフトが未登録です（未登録の間は常に予約可能として扱われます）</p>';
+
+            const sortedOverrides = overrides.slice().sort(function (a, b) {
+                return a.target_date.localeCompare(b.target_date);
+            });
+            const overrideRows = sortedOverrides.length
+                ? sortedOverrides.map(function (o) {
+                    const typeLabel = o.override_type === 'day_off'
+                        ? '終日休み'
+                        : (o.override_type === 'hours'
+                            ? 'この日だけ ' + escapeHtml(o.start_time) + '〜' + escapeHtml(o.end_time)
+                            : '一部不在 ' + escapeHtml(o.start_time) + '〜' + escapeHtml(o.end_time));
+                    const noteText = o.note ? '（' + escapeHtml(o.note) + '）' : '';
+                    return '<div class="shift-row"><span>' + escapeHtml(o.target_date) + '　' + typeLabel + noteText + '</span>' +
+                        '<button type="button" class="btn-outline btn-danger shift-delete-btn" data-kind="override" data-staff-id="' + staffId + '" data-id="' + o.id + '">削除</button></div>';
+                }).join('')
+                : '<p class="empty-hint">日付単位の調整（休み・時間変更・部分的な不在）は登録されていません</p>';
+
+            const dayOptions = WEEKDAY_LABELS.map(function (label, idx) {
+                return '<option value="' + idx + '">' + label + '曜</option>';
+            }).join('');
+
+            panel.innerHTML =
+                '<div class="shift-panel-section">' +
+                    '<h4 class="shift-panel-title">週次シフト</h4>' +
+                    weeklyRows +
+                    '<div class="row-2" style="margin-top: 10px;">' +
+                        '<div class="field"><label>曜日</label><select class="weekly-day-input">' + dayOptions + '</select></div>' +
+                        '<div class="field"><label>開始</label><input type="time" class="weekly-start-input" value="09:00"></div>' +
+                    '</div>' +
+                    '<div class="row-2">' +
+                        '<div class="field"><label>終了</label><input type="time" class="weekly-end-input" value="18:00"></div>' +
+                        '<div class="field" style="display: flex; align-items: flex-end;">' +
+                            '<button type="button" class="btn-outline weekly-add-btn">この曜日に追加</button>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="shift-panel-section" style="margin-top: 16px;">' +
+                    '<h4 class="shift-panel-title">日付単位の調整（休み・時間変更・部分的な不在）</h4>' +
+                    overrideRows +
+                    '<div class="row-2" style="margin-top: 10px;">' +
+                        '<div class="field"><label>日付</label><input type="date" class="override-date-input"></div>' +
+                        '<div class="field"><label>種類</label><select class="override-type-input">' +
+                            '<option value="day_off">終日休み</option>' +
+                            '<option value="hours">この日だけ時間変更</option>' +
+                            '<option value="unavailable">勤務時間内の一部だけ不在</option>' +
+                        '</select></div>' +
+                    '</div>' +
+                    '<div class="row-2 override-time-fields">' +
+                        '<div class="field"><label>開始</label><input type="time" class="override-start-input" value="09:00"></div>' +
+                        '<div class="field"><label>終了</label><input type="time" class="override-end-input" value="18:00"></div>' +
+                    '</div>' +
+                    '<div class="field"><label>メモ（任意）</label><input type="text" class="override-note-input" maxlength="255" placeholder="例：私用のため"></div>' +
+                    '<button type="button" class="btn-outline override-add-btn">この調整を追加</button>' +
+                    '<div class="msg shift-panel-msg"></div>' +
+                '</div>';
+
+            const typeSelect = panel.querySelector('.override-type-input');
+            const timeFields = panel.querySelector('.override-time-fields');
+            function syncTimeFieldsVisibility() {
+                timeFields.style.display = typeSelect.value === 'day_off' ? 'none' : '';
+            }
+            typeSelect.addEventListener('change', syncTimeFieldsVisibility);
+            syncTimeFieldsVisibility();
+
+            panel.querySelectorAll('.shift-delete-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    if (btn.dataset.kind === 'weekly') {
+                        deleteWeeklyShift(btn.dataset.staffId, btn.dataset.id);
+                    } else {
+                        deleteShiftOverride(btn.dataset.staffId, btn.dataset.id);
+                    }
+                });
+            });
+            panel.querySelector('.weekly-add-btn').addEventListener('click', function () { addWeeklyShift(staffId); });
+            panel.querySelector('.override-add-btn').addEventListener('click', function () { addShiftOverride(staffId); });
+        }
+
+        async function addWeeklyShift(staffId) {
+            const panel = document.getElementById('staff-shift-panel-' + staffId);
+            const msg = panel.querySelector('.shift-panel-msg');
+            const dayOfWeek = parseInt(panel.querySelector('.weekly-day-input').value, 10);
+            const startTime = panel.querySelector('.weekly-start-input').value;
+            const endTime = panel.querySelector('.weekly-end-input').value;
+            if (!startTime || !endTime) {
+                showMsg(msg, '開始・終了時刻を入力してください', 'error');
+                return;
+            }
+            try {
+                const res = await authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/weekly-shifts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ day_of_week: dayOfWeek, start_time: startTime, end_time: endTime })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(_extractErrorMessage(errData, '追加に失敗しました'));
+                }
+                loadStaffShiftPanel(staffId);
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '追加に失敗しました', 'error');
+            }
+        }
+
+        async function deleteWeeklyShift(staffId, shiftId) {
+            try {
+                await authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/weekly-shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' });
+                loadStaffShiftPanel(staffId);
+            } catch (e) {}
+        }
+
+        async function addShiftOverride(staffId) {
+            const panel = document.getElementById('staff-shift-panel-' + staffId);
+            const msg = panel.querySelector('.shift-panel-msg');
+            const targetDate = panel.querySelector('.override-date-input').value;
+            const overrideType = panel.querySelector('.override-type-input').value;
+            const note = panel.querySelector('.override-note-input').value.trim() || null;
+            if (!targetDate) {
+                showMsg(msg, '日付を入力してください', 'error');
+                return;
+            }
+            const payload = { target_date: targetDate, override_type: overrideType, note: note };
+            if (overrideType !== 'day_off') {
+                const startTime = panel.querySelector('.override-start-input').value;
+                const endTime = panel.querySelector('.override-end-input').value;
+                if (!startTime || !endTime) {
+                    showMsg(msg, '開始・終了時刻を入力してください', 'error');
+                    return;
+                }
+                payload.start_time = startTime;
+                payload.end_time = endTime;
+            }
+            try {
+                const res = await authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/shift-overrides', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(_extractErrorMessage(errData, '追加に失敗しました'));
+                }
+                loadStaffShiftPanel(staffId);
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '追加に失敗しました', 'error');
+            }
+        }
+
+        async function deleteShiftOverride(staffId, overrideId) {
+            try {
+                await authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/shift-overrides/' + encodeURIComponent(overrideId), { method: 'DELETE' });
+                loadStaffShiftPanel(staffId);
             } catch (e) {}
         }
 
