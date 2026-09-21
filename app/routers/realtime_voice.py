@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_db
+from app.models.ai_staff_settings import AIStaffSettings
 from app.models.shop import Shop
 from app.models.reservation import Reservation, ReservationStatus
 from app.services import realtime_voice_ai
@@ -274,6 +275,28 @@ async def get_realtime_voice_greeting_text(shop_id: str, db: AsyncSession = Depe
     (conversation.item.create、response.createは送らない＝再度喋らせない)ため
     のみ。事前生成音声ファイル自体は別途静的ファイルとして配置されるため、
     このエンドポイントは文字列のみを返し、音声データは一切扱わない。
+
+    Phase3G追記: このページ（shop-ai-realtime-voice.html）は、以前は特定の
+    shop_idをフロントエンドにハードコードしたホワイトリスト
+    （ZERO_WAIT_GREETING_SHOP_IDS）でZero-Wait Greetingの対象店舗を判定して
+    いた。Phase3Fで固定E2Eテスト店舗を削除した際にこの配列を空にしたため、
+    Zero-Wait Greeting自体が全店舗で無効化されたままになっていた。
+    本エンドポイントのレスポンスに zero_wait_eligible を追加し、
+    フロントエンドはこの値を見て「このページを読み込むたびに」対象可否を
+    判定する（ハードコードされたshop_id一覧に依存しない）。
+
+    zero_wait_eligibleの判定基準（新しいBooleanカラムを増やさず、既存の状態
+    から判断する）: この店舗にAIStaffSettings行が存在するかどうか。
+    - 存在する店舗 = オーナーが一度でもAIスタッフ設定（声・名前等）を保存
+      済み = get_or_generate_greeting_audio()がDBキャッシュを持てる
+      （初回のみTTS生成、以後はキャッシュ読み出しのみで高速・低コスト）。
+    - 存在しない店舗 = 一度もAIスタッフ設定を保存していない = キャッシュを
+      保持する行が無いため、Zero-Wait用の音声プリロードのたびに毎回OpenAI
+      TTSを呼ぶことになってしまう（get_or_generate_greeting_audioの
+      docstring参照）。この場合はZero-Wait非対象とし、既存のPhase3C
+      （Realtime自身の第一声）にのみ委ねる。AI電話受付自体は
+      AIStaffSettingsの有無に関わらず全店舗で利用可能なままで、
+      Zero-Wait（体感速度の最適化）のみが対象を限定される。
     """
     _check_greeting_text_rate_limit(shop_id)
 
@@ -290,7 +313,17 @@ async def get_realtime_voice_greeting_text(shop_id: str, db: AsyncSession = Depe
             detail="第一声情報の取得に失敗しました。しばらくしてから再度お試しください。",
         )
 
-    return {"shop_id": shop_id, "greeting_text": greeting_text}
+    has_ai_staff_settings = (
+        await db.execute(
+            select(AIStaffSettings.id).filter(AIStaffSettings.shop_id == shop_id).limit(1)
+        )
+    ).scalar_one_or_none() is not None
+
+    return {
+        "shop_id": shop_id,
+        "greeting_text": greeting_text,
+        "zero_wait_eligible": has_ai_staff_settings,
+    }
 
 
 # Phase3E-3: Zero-Wait Greeting音声用の別バケット。ページ読み込み時に1回

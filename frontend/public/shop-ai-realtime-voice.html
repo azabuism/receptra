@@ -549,26 +549,31 @@
             }
         }
 
-        // ===== Phase3C.1 PoC: Zero-Wait Greeting =====
+        // ===== Phase3C.1 PoC → Phase3G 本番一般化: Zero-Wait Greeting =====
         //
         // 目的（重要）: OpenAI Realtimeそのものの接続を速くすることではなく、
         // 接続に必要な約3秒（Phase3C実測）をGreetingの裏に隠すこと。通話開始
         // クリックの直後、事前生成済みの第一声音声(mp3)をほぼ即座に再生しつつ、
         // 裏でRealtime接続(startCall内の既存処理)を並行して進める。
         //
-        // スコープ（重要・必ず守ること）: PoCはE2Eテスト店舗にのみ有効化する。
-        // 他店舗はZERO_WAIT_GREETING_SHOP_IDSに含まれないため
-        // zeroWaitEnabled=falseとなり、以下のロジックの影響を一切受けず、
-        // 常にPhase3C(Realtime第一声)のみで動作する（既存動作を完全に保持）。
+        // Phase3C.1〜3Fまでは、フロントエンドにハードコードした固定shop_id
+        // ホワイトリスト（ZERO_WAIT_GREETING_SHOP_IDS）で対象店舗を限定していた。
+        // Phase3Fで旧固定E2Eテスト店舗を削除した際にこの配列を空にしたため、
+        // Zero-Wait Greetingが全店舗で無効化されたままになっていた。
         //
-        // Phase3F: 旧固定E2Eテスト店舗(82dff3eb-...)はProduction Demo Cleanup
-        // により削除されたため、このIDを含めたままにすると存在しないshop_idが
-        // 残り続けて紛らわしい。今後のE2Eテストは「フェーズごとに専用テスト
-        // 店舗を作成→E2E→削除」の運用に統一するため、恒久的な固定IDは置かず
-        // 空配列とする（＝Zero-Wait Greetingは意図的に全店舗で無効。既存の
-        // Phase3C Realtime第一声のみの動作は変わらない）。
-        const ZERO_WAIT_GREETING_SHOP_IDS = [];
-        const zeroWaitEnabled = ZERO_WAIT_GREETING_SHOP_IDS.includes(shopId);
+        // Phase3G: 固定shop_idホワイトリストを廃止し、ページ読み込み時に
+        // GET /realtime-voice/greeting-text のレスポンス（zero_wait_eligible）
+        // で対象可否をバックエンドから毎回動的に判定する方式に変更した。
+        // 判定基準はAIStaffSettings行の有無（新しいBooleanカラムを追加せず、
+        // 既存の状態から判断する。詳細はapp/routers/realtime_voice.pyの
+        // get_realtime_voice_greeting_text docstring参照）。
+        // AI電話受付自体はAIStaffSettingsの有無に関わらず全店舗で利用可能な
+        // ままで、Zero-Wait（体感速度の最適化）のみが対象を限定される。
+        //
+        // zeroWaitEnabledはページ読み込み時のfetch完了まで暫定的にfalseで
+        // 開始する。fetch失敗時もfalseのまま（＝Phase3C第一声のみにフォール
+        // バック）となり、既存動作を壊さない安全側に倒す。
+        let zeroWaitEnabled = false;
         // Phase3E-3: 静的ファイル(/greeting_audio/{shop_id}.mp3の手動配置運用)から、
         // DBキャッシュ・staff_name/voice/greeting変更時に自動再生成される
         // バックエンドエンドポイントへ切り替えた（app/routers/realtime_voice.pyの
@@ -642,28 +647,35 @@
             }
         }
 
-        async function preloadZeroWaitGreetingText() {
-            if (!zeroWaitEnabled) return;
+        // Phase3G: 第一声テキスト取得とZero-Wait対象可否判定(zero_wait_eligible)
+        // を同じレスポンスから行う（ハードコードshop_id一覧の代わり）。
+        // 常にこの店舗の第一声テキストは取得する（zeroWaitEnabledが後で
+        // falseと判明した場合でも、この値自体は他の用途に影響しない）。
+        async function loadGreetingTextAndDetermineEligibility() {
             try {
                 const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/greeting-text');
                 const data = await res.json().catch(() => null);
                 if (res.ok && data && typeof data.greeting_text === 'string') {
                     zeroWaitGreetingText = data.greeting_text;
-                    logEvent('[ZeroWait] 第一声テキストを取得しました（会話履歴通知用）');
+                }
+                if (res.ok && data && data.zero_wait_eligible === true) {
+                    zeroWaitEnabled = true;
+                    logEvent('[ZeroWait] この店舗はZero-Wait Greeting対象と判定されました（AIStaffSettings設定済み）');
+                } else {
+                    logEvent('[ZeroWait] この店舗はZero-Wait Greeting非対象です（Phase3Cの第一声のみで動作します）');
                 }
             } catch (e) {
-                // 取得失敗してもZero-Wait Greeting自体（音声再生）は継続可能。
-                // 影響はRealtime会話履歴への明示的な通知(conversation.item.create)が
-                // 省略されることのみ（二重発話・機能停止にはならない）。
-                logEvent('[ZeroWait] 第一声テキスト取得に失敗（会話履歴通知は省略されます）: ' + e.message);
+                // 判定自体が失敗した場合も安全側（Zero-Wait無効=Phase3Cのみ）に倒す。
+                logEvent('[ZeroWait] 対象可否判定に失敗（Phase3Cの第一声のみで動作します）: ' + e.message);
+            }
+
+            if (zeroWaitEnabled) {
+                resetZeroWaitCallState();
+                await preloadZeroWaitGreetingAudio();
             }
         }
 
-        if (zeroWaitEnabled) {
-            resetZeroWaitCallState();
-            preloadZeroWaitGreetingAudio();
-            preloadZeroWaitGreetingText();
-        }
+        loadGreetingTextAndDetermineEligibility();
 
         // startCall()の同期チェーン内（getUserMediaより前・awaitを挟まない）から
         // 呼び出すこと（section11相当: ユーザー操作由来のジェスチャーとして
