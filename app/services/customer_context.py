@@ -76,8 +76,9 @@ import app.database as db_module
 from app.models.customer_memory import CustomerMemory
 from app.models.reservation import Reservation, ReservationStatus
 from app.models.service import Service
-from app.models.shop import BusinessType, Shop, ShopCategory
+from app.models.shop import Shop
 from app.models.staff import Staff, StaffService
+from app.taxonomy import LEGACY_CATEGORY_MAP, resolve_business_type
 
 logger = logging.getLogger("receptra.customer_context")
 
@@ -193,19 +194,48 @@ _INVALID_LAST_RESERVATION_STATUSES = (
 )
 
 
+_MEDICAL_TAXONOMY_GROUP_KEY = "medical"  # app/taxonomy.py の医療グループの key と同じ値
+
+
 def is_medical_category(shop: Shop) -> bool:
     """
     医療系業種かどうかを判定する唯一の場所（仕様書Phase4B section12
     「一箇所にルールを集約し、巨大なif文を各所に散らさない」への対応）。
 
-    Shop.business_type（主分類。Phase3H以降の新規店舗はこちらを設定）と
-    Shop.category（細分類。business_typeが未設定な旧来の店舗でも
-    category="clinic"が使われているケースを想定）の両方をチェックする。
+    重要な修正履歴（Production E2E中に発見・即修正）:
+    当初は app/models/shop.py の BusinessType/ShopCategory Enum
+    （値="clinic"）とのstring比較で実装していたが、これらのEnumは
+    taxonomy体系（app/taxonomy.py）導入前の廃止済み定数であり、
+    実際のオーナー向け店舗登録UI（frontend/public/owner.html）は
+    taxonomyのJSON（/api/v1/taxonomy）から選ばせた日本語カテゴリー名を
+    そのままShop.categoryに保存し、Shop.business_typeには
+    app.taxonomy.resolve_business_type()が返すtaxonomyグループkey
+    （医療系なら"medical"）を保存する（app/routers/shops.py参照）。
+    つまり旧Enumとの比較では実運用中の医療系店舗を一件も検出できず
+    （現行データ経路がそもそも"clinic"という値を生成しない）、
+    Section12が禁じる「医療系店舗でのService名漏洩」を防げていなかった。
+    E2E本番検証（【E2E-TEMP】P4BShopC, category="一般クリニック"相当）で
+    実際にlast_service_nameが返ってしまうことを確認し、直ちに本実装へ修正。
+
+    現在の実装は、taxonomy.py を単一の情報源として3段階でチェックする
+    （安全側に倒すため、いずれか一つでも一致すればTrueとする）:
+    1. shop.business_type が taxonomy の "medical" グループkeyと一致する
+       （Phase3H以降の通常の新規登録・更新経路）。
+    2. shop.category を resolve_business_type() で逆引きした結果が
+       "medical" となる（business_typeが何らかの理由で未同期・未設定の
+       場合のフォールバック）。
+    3. shop.category が taxonomy導入前の旧固定値（例: "CLINIC"）を
+       保持したままの未移行データである場合、LEGACY_CATEGORY_MAP経由で
+       医療系と判定する。
     """
-    return (
-        shop.business_type == BusinessType.CLINIC.value
-        or shop.category == ShopCategory.CLINIC.value
-    )
+    if shop.business_type == _MEDICAL_TAXONOMY_GROUP_KEY:
+        return True
+    if resolve_business_type(shop.category) == _MEDICAL_TAXONOMY_GROUP_KEY:
+        return True
+    legacy_entry = LEGACY_CATEGORY_MAP.get(shop.category or "")
+    if legacy_entry and legacy_entry[0] == _MEDICAL_TAXONOMY_GROUP_KEY:
+        return True
+    return False
 
 
 async def _is_staff_capable_of_service(db, staff_id: str, service_id: str) -> bool:
