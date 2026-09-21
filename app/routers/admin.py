@@ -17,6 +17,7 @@ Production環境には検証・デモ目的で複数店舗が登録されてお�
   店舗棚卸し・整理に必要な最小限の機能のみを提供する。
 """
 
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
@@ -95,6 +96,47 @@ async def get_shops_inventory(
 class ShopsDeleteRequest(BaseModel):
     shop_ids: List[str]
     dry_run: bool = True
+
+
+@router.post(
+    "/shops/{shop_id}/test-enable-reservations",
+    summary="【Phase3G Workstream2 検証専用・一時的】指定した明示shop_id 1件のみ、"
+            "課金アクティベーションを経由せずreservations_enabledを直接ONにする",
+)
+async def test_enable_reservations(
+    shop_id: str,
+    current_user=Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    重要（一時的なテスト専用エンドポイント）:
+    通常、Shop.reservations_enabledは app/routers/shops.py の PATCH /shops/{shop_id}
+    経由でのみONにでき、その際テナントの課金アクティベーション
+    (Tenant.subscription_status == "active") が必須という仕様になっている
+    （初期費用・月額サブスクを経ていない店舗が予約受付を開始できないようにする
+    ための意図的なゲート）。
+
+    Phase3G Workstream2（Coupon Reservation Integrity）のProduction E2Eでは、
+    実際にcreate_reservation/cancel_reservationのコードパスをProduction DBに
+    対して検証する必要があるが、Tenant/User/課金情報には一切変更を加えない
+    という方針があるため、通常の課金アクティベーションを経由することはしない。
+    その代わり、このエンドポイントは指定された1つのshop_idについてのみ、
+    Tenant側には一切触れず、Shop.reservations_enabledだけを直接trueにする
+    （billing/subscription/PAY.jpは一切参照・変更しない）。
+
+    このエンドポイントはWorkstream2のE2Eテストが完了次第、コードごと削除する
+    （Workstream3のAdmin API Security Reviewで、恒久的なAPIとして残さない
+    方針と合わせて確認済み）。
+    """
+    shop = (await db.execute(select(Shop).filter(Shop.id == shop_id))).scalar_one_or_none()
+    if shop is None:
+        return {"found": False, "shop_id": shop_id}
+
+    shop.reservations_enabled = True
+    shop.updated_at = datetime.utcnow()
+    await db.commit()
+
+    return {"found": True, "shop_id": shop_id, "reservations_enabled": True}
 
 
 @router.post(
