@@ -3,30 +3,40 @@
 
 目的:
 Production環境には検証・デモ目的で複数店舗が登録されており、これらを
-安全に棚卸し・整理するための最小限の読み取り専用エンドポイント。
+安全に棚卸し・整理するための最小限のエンドポイント。
 
 設計方針（重要）:
-- 参照系（GET）のみ。削除・変更操作はここには一切含まない
-  （削除はユーザー承認後、DB操作として別途・限定的に実施する）。
+- 棚卸し（GET）に加え、ユーザー承認済みのDB整理作業を実施するための
+  限定的な削除エンドポイントを含む。
+- 削除は必ず明示的な shop_id リストのみを対象とする（ワイルドカード・
+  テナント一括・LIKE検索による削除は一切行わない）。
+- Tenant / User / 課金情報（PAY.jp・サブスクリプション・カード情報）は
+  このエンドポイントの削除対象に一切含めない。
 - get_current_admin（User.is_admin=True）必須。一般オーナーは利用不可。
 - 大規模な管理画面やダッシュボードを新規に作るのではなく、Phase3Fの
-  店舗棚卸しに必要な最小限の集計のみを提供する。
+  店舗棚卸し・整理に必要な最小限の機能のみを提供する。
 """
 
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+from pydantic import BaseModel
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.deps import get_current_admin
 from app.models.ai_staff_settings import AIStaffSettings
+from app.models.analytics import MonthlyAnalytics, ShopAnalytics
+from app.models.promotion import Coupon, Promotion
 from app.models.reservation import Reservation
+from app.models.review import Review
 from app.models.service import Service
-from app.models.shop import Shop
+from app.models.shop import MenuItem, Shop, ShopClosure, ShopHours, ShopPhoto, ShopTable
 from app.models.shop_knowledge import ShopFAQ, ShopKnowledge
-from app.models.staff import Staff
+from app.models.social import UserShopRelation
+from app.models.staff import Staff, StaffService
+from app.models.staff_shift import StaffShiftOverride, StaffWeeklyShift
 from app.models.user import Tenant
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
@@ -79,3 +89,107 @@ async def get_shops_inventory(
         })
 
     return {"total": len(items), "shops": items}
+
+
+class ShopsDeleteRequest(BaseModel):
+    shop_ids: List[str]
+    dry_run: bool = True
+
+
+@router.post(
+    "/shops/delete",
+    summary="指定した shop_id のみを対象に、関連データを含めて完全削除する（管理者限定・明示ID限定）",
+)
+async def delete_shops(
+    payload: ShopsDeleteRequest,
+    current_user=Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    重要な安全設計:
+    - 本エンドポイントは payload.shop_ids に明示的に列挙された shop_id のみを
+      対象とする。ワイルドカード・LIKE検索・テナント一括削除は一切行わない。
+    - Tenant / User / 課金情報（PAY.jp・サブスクリプション・カード情報）は
+      削除対象に一切含めない（そもそも参照すらしない）。
+    - Shop に紐づく全ての子テーブルを、FK依存関係を考慮した順序で明示的に
+      DELETEし、孤立レコード（orphan）を残さない。
+    - dry_run=True（デフォルト）の場合は削除件数のカウントのみを行い、
+      実際のDELETEは実行しない（コミットもしない）。
+    """
+    if not payload.shop_ids:
+        return {"error": "shop_ids must be a non-empty explicit list", "results": []}
+
+    # 重複排除しつつ順序を保持
+    shop_ids = list(dict.fromkeys(payload.shop_ids))
+
+    results = []
+
+    for shop_id in shop_ids:
+        shop = (
+            await db.execute(select(Shop).filter(Shop.id == shop_id))
+        ).scalar_one_or_none()
+
+        if shop is None:
+            results.append({
+                "shop_id": shop_id,
+                "found": False,
+                "counts": {},
+            })
+            continue
+
+        staff_id_subq = select(Staff.id).filter(Staff.shop_id == shop_id).scalar_subquery()
+
+        # (テーブル名, モデル, フィルタ条件) を厳密な依存順に列挙
+        steps = [
+            ("reviews", Review, Review.shop_id == shop_id),
+            ("reservations", Reservation, Reservation.shop_id == shop_id),
+            ("staff_services", StaffService, StaffService.staff_id.in_(staff_id_subq)),
+            ("staff_weekly_shifts", StaffWeeklyShift, StaffWeeklyShift.staff_id.in_(staff_id_subq)),
+            ("staff_shift_overrides", StaffShiftOverride, StaffShiftOverride.staff_id.in_(staff_id_subq)),
+            ("staff", Staff, Staff.shop_id == shop_id),
+            ("coupons", Coupon, Coupon.shop_id == shop_id),
+            ("promotions", Promotion, Promotion.shop_id == shop_id),
+            ("services", Service, Service.shop_id == shop_id),
+            ("shop_tables", ShopTable, ShopTable.shop_id == shop_id),
+            ("shop_photos", ShopPhoto, ShopPhoto.shop_id == shop_id),
+            ("menu_items", MenuItem, MenuItem.shop_id == shop_id),
+            ("shop_hours", ShopHours, ShopHours.shop_id == shop_id),
+            ("shop_closures", ShopClosure, ShopClosure.shop_id == shop_id),
+            ("shop_analytics", ShopAnalytics, ShopAnalytics.shop_id == shop_id),
+            ("monthly_analytics", MonthlyAnalytics, MonthlyAnalytics.shop_id == shop_id),
+            ("user_shop_relations", UserShopRelation, UserShopRelation.shop_id == shop_id),
+            ("ai_staff_settings", AIStaffSettings, AIStaffSettings.shop_id == shop_id),
+            ("shop_knowledge", ShopKnowledge, ShopKnowledge.shop_id == shop_id),
+            ("shop_faqs", ShopFAQ, ShopFAQ.shop_id == shop_id),
+        ]
+
+        counts = {}
+        for table_name, model, condition in steps:
+            if payload.dry_run:
+                count_result = await db.execute(
+                    select(func.count()).select_from(model).filter(condition)
+                )
+                counts[table_name] = int(count_result.scalar() or 0)
+            else:
+                delete_result = await db.execute(delete(model).where(condition))
+                counts[table_name] = delete_result.rowcount or 0
+
+        # 最後に Shop 本体
+        if payload.dry_run:
+            counts["shop"] = 1
+        else:
+            await db.execute(delete(Shop).where(Shop.id == shop_id))
+            counts["shop"] = 1
+
+        results.append({
+            "shop_id": shop_id,
+            "shop_name": shop.name,
+            "found": True,
+            "dry_run": payload.dry_run,
+            "counts": counts,
+        })
+
+    if not payload.dry_run:
+        await db.commit()
+
+    return {"dry_run": payload.dry_run, "results": results}

@@ -560,7 +560,14 @@
         // 他店舗はZERO_WAIT_GREETING_SHOP_IDSに含まれないため
         // zeroWaitEnabled=falseとなり、以下のロジックの影響を一切受けず、
         // 常にPhase3C(Realtime第一声)のみで動作する（既存動作を完全に保持）。
-        const ZERO_WAIT_GREETING_SHOP_IDS = ['82dff3eb-7e99-49c6-828f-870b4a069e75'];
+        //
+        // Phase3F: 旧固定E2Eテスト店舗(82dff3eb-...)はProduction Demo Cleanup
+        // により削除されたため、このIDを含めたままにすると存在しないshop_idが
+        // 残り続けて紛らわしい。今後のE2Eテストは「フェーズごとに専用テスト
+        // 店舗を作成→E2E→削除」の運用に統一するため、恒久的な固定IDは置かず
+        // 空配列とする（＝Zero-Wait Greetingは意図的に全店舗で無効。既存の
+        // Phase3C Realtime第一声のみの動作は変わらない）。
+        const ZERO_WAIT_GREETING_SHOP_IDS = [];
         const zeroWaitEnabled = ZERO_WAIT_GREETING_SHOP_IDS.includes(shopId);
         // Phase3E-3: 静的ファイル(/greeting_audio/{shop_id}.mp3の手動配置運用)から、
         // DBキャッシュ・staff_name/voice/greeting変更時に自動再生成される
