@@ -259,11 +259,15 @@
                     <span class="label">DataChannel</span><span class="val" id="diagDataChannel">未接続</span>
                     <span class="label">送信（あなたの声・packets）</span><span class="val" id="diagSend">未確認</span>
                     <span class="label">送信音声レベル（energy）</span><span class="val" id="diagAudioEnergy">未確認</span>
+                    <span class="label">INBOUND PACKETS（AI音声・受信）</span><span class="val" id="diagInboundPackets">未確認</span>
+                    <span class="label">PACKETS LOST</span><span class="val" id="diagPacketsLost">—</span>
+                    <span class="label">JITTER</span><span class="val" id="diagJitter">—</span>
                     <span class="label">VAD（発話検知）</span><span class="val" id="diagVad">idle</span>
                     <span class="label">AI応答状態</span><span class="val" id="diagResponse">idle</span>
                     <span class="label">AI音声出力(output_audio_buffer)</span><span class="val" id="diagAiOutput">idle</span>
                     <span class="label">AI音声トラック受信</span><span class="val" id="diagAiAudio">未受信</span>
-                    <span class="label">AI音声 再生</span><span class="val" id="diagPlayback">未確認</span>
+                    <span class="label">AI音声 再生（REALTIME PLAYBACK）</span><span class="val" id="diagPlayback">未確認</span>
+                    <span class="label">ZERO-WAIT PLAYBACK</span><span class="val" id="diagZeroWaitPlayback">unknown</span>
                     <span class="label">AudioContext(マイク)</span><span class="val" id="diagAudioContextMic">未作成</span>
                     <span class="label">AudioContext(AI音声)</span><span class="val" id="diagAudioContextRemote">未作成</span>
                     <span class="label">直近Tool</span><span class="val" id="diagTool">—</span>
@@ -509,6 +513,17 @@
         // 'unknown' | 'increasing' | 'stopped' | 'unsupported'
         let audioEnergyTrend = 'unknown';
         let lastOutboundAudioEnergy = null;
+        // 再調査（第2ラウンド・Inbound Audio診断）: 受信側（AIの声）のWebRTC
+        // inbound-rtp統計。OpenAI→ブラウザへの音声パケット自体が途切れて
+        // いるのか（packetsReceived停止・packetsLost増加・jitter急増）、
+        // パケットは正常に届いているのにHTMLAudioElement側の再生だけが
+        // 途切れているのか（audioEl側のwaiting/stalledイベントだけが発生）を
+        // 切り分けるために追加。ブラウザが対応しない項目はN/Aのまま。
+        // 'unknown' | 'increasing' | 'stopped'
+        let inboundPacketsTrend = 'unknown';
+        let lastInboundAudioStats = null;
+        let lastPacketsLost = null;
+        let lastJitter = null;
         // PHASE9: ユーザー発話検知(VAD)の現在状態。'idle' | 'speech'
         let userVadState = 'idle';
         // PHASE10: AI応答生成の現在状態。'idle' | 'active' | 'done' | 'error'
@@ -587,9 +602,16 @@
         let failureSnapshot = null;
 
         // PHASE17: 直近の主要イベントをPIIなしで保持する簡易タイムライン
-        // （最大30件。テキスト本文・電話番号・氏名・店舗名・予約内容は一切
+        // （テキスト本文・電話番号・氏名・店舗名・予約内容は一切
         // 含めない。イベント名・状態文字列・Tool名のみ）。
-        const RECENT_EVENTS_MAX = 30;
+        // 再調査（第2ラウンド）: Audio Element Timeline（ZERO_WAIT_AUDIO:/
+        // REALTIME_AUDIO:の各種イベント）を追加したことで、Greeting区間だけで
+        // 記録されるイベント数が大幅に増えた。30件のままだとConnection Failure
+        // までの間に古い（Greeting開始時点の）イベントが押し出されてしまい、
+        // 「audio stalled → PC disconnected」のような前後関係の確認に必要な
+        // 範囲が失われる可能性があるため60件に拡大する（表示・保持件数のみの
+        // 変更であり、VAD等の挙動には一切影響しない）。
+        const RECENT_EVENTS_MAX = 60;
         let recentEvents = [];
         function pushTimelineEvent(text) {
             const t = new Date().toLocaleTimeString('ja-JP', { hour12: false }) + '.' + String(new Date().getMilliseconds()).padStart(3, '0');
@@ -659,6 +681,10 @@
             const diagAudioSourceEl = document.getElementById('diagAudioSource');
             const diagLastInterruptionEl = document.getElementById('diagLastInterruption');
             const diagFailureSourceEl = document.getElementById('diagFailureSource');
+            const diagInboundPacketsEl = document.getElementById('diagInboundPackets');
+            const diagPacketsLostEl = document.getElementById('diagPacketsLost');
+            const diagJitterEl = document.getElementById('diagJitter');
+            const diagZeroWaitPlaybackEl = document.getElementById('diagZeroWaitPlayback');
 
             const micTrack = localStream ? localStream.getAudioTracks()[0] : null;
             if (!micTrack) {
@@ -736,8 +762,51 @@
                 setStatus(diagPlaybackEl, '× ブロック（自動再生制限の可能性）', 'bad');
             } else if (remotePlayState === 'paused') {
                 setStatus(diagPlaybackEl, '一時停止', 'warn');
+            } else if (remotePlayState === 'waiting' || remotePlayState === 'stalled') {
+                // 再調査（第2ラウンド）: バッファリング待ち/ストール中。
+                // 「ブチッ」の候補としてもっとも直接的な状態。
+                setStatus(diagPlaybackEl, '△ ' + remotePlayState + '（バッファリング/ストール中）', 'warn');
             } else {
                 setStatus(diagPlaybackEl, '未確認', null);
+            }
+
+            // 再調査（第2ラウンド・Inbound Audio診断）: OpenAI→ブラウザへの
+            // 音声パケット自体の到達状況。REALTIME PLAYBACK（上）がwaiting/
+            // stalledなのにこちらがincreasingのままなら「パケットは届いて
+            // いるのにHTMLAudioElement側の再生だけが途切れている」ことになり、
+            // 逆にこちらもstoppedなら「そもそもパケットが届いていない
+            // （ネットワーク/WebRTC側の問題）」ことになる、という切り分けに使う。
+            if (diagInboundPacketsEl) {
+                if (inboundPacketsTrend === 'increasing') {
+                    setStatus(diagInboundPacketsEl, '● 増加中', 'ok');
+                } else if (inboundPacketsTrend === 'stopped') {
+                    setStatus(diagInboundPacketsEl, '× 停止(packets増加なし)', 'bad');
+                } else {
+                    setStatus(diagInboundPacketsEl, debugMode && pc ? '確認中…' : '未確認', null);
+                }
+            }
+            if (diagPacketsLostEl) {
+                setStatus(diagPacketsLostEl, (lastPacketsLost === null ? 'N/A' : String(lastPacketsLost)),
+                    (lastPacketsLost !== null && lastPacketsLost > 0) ? 'warn' : null);
+            }
+            if (diagJitterEl) {
+                setStatus(diagJitterEl, (lastJitter === null ? 'N/A' : lastJitter.toFixed(4)), null);
+            }
+            // 再調査（第2ラウンド）: Zero-Wait音声要素自体の生のメディア
+            // イベント状態（アプリ側のzeroWaitState=ready/playing/ended等とは
+            // 別軸）。「和風デモの」直後のwaiting/stalled/pauseを直接確認する。
+            if (diagZeroWaitPlaybackEl) {
+                if (zeroWaitPlaybackState === 'playing') {
+                    setStatus(diagZeroWaitPlaybackEl, '● 再生中', 'ok');
+                } else if (zeroWaitPlaybackState === 'waiting' || zeroWaitPlaybackState === 'stalled') {
+                    setStatus(diagZeroWaitPlaybackEl, '△ ' + zeroWaitPlaybackState + '（バッファリング/ストール中）', 'warn');
+                } else if (zeroWaitPlaybackState === 'pause' || zeroWaitPlaybackState === 'abort' || zeroWaitPlaybackState === 'error') {
+                    setStatus(diagZeroWaitPlaybackEl, '× ' + zeroWaitPlaybackState, 'bad');
+                } else if (zeroWaitPlaybackState === 'ended') {
+                    setStatus(diagZeroWaitPlaybackEl, '再生終了', null);
+                } else {
+                    setStatus(diagZeroWaitPlaybackEl, zeroWaitPlaybackState, null);
+                }
             }
 
             setStatus(diagAudioContextMicEl, micAudioCtx ? micAudioCtx.state : '未作成',
@@ -814,6 +883,16 @@
                 greetingSource: greetingSource,
                 audioSource: audioSource,
                 zeroWaitState: zeroWaitEnabled ? zeroWaitState : 'not_applicable',
+                // 再調査（第2ラウンド・Audio Element Timeline/Inbound Audio診断）:
+                // cleanup直前の生のメディア再生状態・inbound RTP統計もあわせて
+                // 保存する。cleanupConnection()はremotePlayState等をリセットする
+                // ため、これを保存しておかないと「ブチッ」の瞬間の再生状態が
+                // 失われてしまう。
+                zeroWaitPlaybackState: zeroWaitPlaybackState,
+                realtimePlaybackState: remotePlayState,
+                inboundPacketsTrend: inboundPacketsTrend,
+                lastPacketsLost: lastPacketsLost,
+                lastJitter: lastJitter,
                 lastInterruptionInfo: lastInterruptionInfo,
                 currentToolLabel: lastToolLabel,
                 // PHASE3: このスナップショットが取得された通話の世代番号。
@@ -866,6 +945,11 @@
                 'greetingSource: ' + s.greetingSource,
                 'audioSource（実際に鳴った音声）: ' + s.audioSource,
                 'zeroWaitState: ' + s.zeroWaitState,
+                'ZERO-WAIT PLAYBACK（生イベント）: ' + s.zeroWaitPlaybackState,
+                'REALTIME PLAYBACK（生イベント）: ' + s.realtimePlaybackState,
+                'INBOUND PACKETS trend: ' + s.inboundPacketsTrend,
+                'PACKETS LOST: ' + (s.lastPacketsLost === null ? 'N/A' : s.lastPacketsLost),
+                'JITTER: ' + (s.lastJitter === null ? 'N/A' : s.lastJitter),
                 'lastInterruptionInfo: ' + s.lastInterruptionInfo,
                 '直近Tool: ' + s.currentToolLabel,
                 'callGeneration(取得時点): ' + s.callGenerationAtCapture,
@@ -923,6 +1007,10 @@
             outboundPacketsTrend = 'unknown';
             audioEnergyTrend = 'unknown';
             lastOutboundAudioEnergy = null;
+            inboundPacketsTrend = 'unknown';
+            lastInboundAudioStats = null;
+            lastPacketsLost = null;
+            lastJitter = null;
         }
 
         function startStatsPolling() {
@@ -933,11 +1021,38 @@
                 try {
                     const stats = await pc.getStats();
                     let outboundAudio = null;
+                    // 再調査（第2ラウンド・Inbound Audio診断）: inbound-rtpは
+                    // isRemoteフィールドを持たない実装が多いため、outbound側と
+                    // 異なりisRemoteでの絞り込みは行わない（kind==='audio'のみで
+                    // 十分に一意に特定できる。受信側は通常1本のみのため）。
+                    let inboundAudio = null;
                     stats.forEach((report) => {
                         if (report.type === 'outbound-rtp' && report.kind === 'audio' && !report.isRemote) {
                             outboundAudio = report;
                         }
+                        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                            inboundAudio = report;
+                        }
                     });
+                    if (inboundAudio) {
+                        const packetsReceived = (typeof inboundAudio.packetsReceived === 'number') ? inboundAudio.packetsReceived : null;
+                        const bytesReceived = (typeof inboundAudio.bytesReceived === 'number') ? inboundAudio.bytesReceived : null;
+                        const packetsLost = (typeof inboundAudio.packetsLost === 'number') ? inboundAudio.packetsLost : null;
+                        const jitter = (typeof inboundAudio.jitter === 'number') ? inboundAudio.jitter : null;
+                        if (lastInboundAudioStats && packetsReceived !== null && lastInboundAudioStats.packetsReceived !== null) {
+                            inboundPacketsTrend = (packetsReceived > lastInboundAudioStats.packetsReceived) ? 'increasing' : 'stopped';
+                        }
+                        lastInboundAudioStats = { packetsReceived, bytesReceived, ts: performance.now() };
+                        lastPacketsLost = packetsLost;
+                        lastJitter = jitter;
+                        logEvent('[音声受信統計] packetsReceived=' + (packetsReceived === null ? 'N/A' : packetsReceived)
+                            + ' bytesReceived=' + (bytesReceived === null ? 'N/A' : bytesReceived)
+                            + ' packetsLost=' + (packetsLost === null ? 'N/A' : packetsLost)
+                            + ' jitter=' + (jitter === null ? 'N/A' : jitter)
+                            + ' trend=' + inboundPacketsTrend);
+                    } else {
+                        logEvent('[音声受信統計] inbound audio RTP統計がこのブラウザでは取得できませんでした(N/A)');
+                    }
                     if (outboundAudio) {
                         const packetsSent = (typeof outboundAudio.packetsSent === 'number') ? outboundAudio.packetsSent : null;
                         const bytesSent = (typeof outboundAudio.bytesSent === 'number') ? outboundAudio.bytesSent : null;
@@ -1216,6 +1331,12 @@
         let zeroWaitOutcomeResolve = null;
         let zeroWaitOutcomePromise = null; // 通話ごとに作り直す。'success'|'failure'|'not_applicable'|'timeout'に解決
         let zeroWaitAwaitingFirstPostGreetingLatency = false; // KPI-5計測用
+        // 再調査（第2ラウンド・Audio Element Timeline）: Zero-Wait音声要素
+        // そのもののメディア再生状態（アプリ側の判断=zeroWaitStateとは別軸）。
+        // HTMLMediaElementの生イベント(playing/waiting/stalled/suspend/pause/
+        // ended/abort/error)をそのまま反映するだけの値。診断パネルの
+        // 「ZERO-WAIT PLAYBACK」表示に使う。PIIなし。
+        let zeroWaitPlaybackState = 'unknown';
 
         const zeroWaitTiming = {
             playingEventAt: null,   // 'playing'イベント実測（KPI-1の分子）
@@ -1230,6 +1351,13 @@
                 zeroWaitState = 'ready';
             }
             if (zeroWaitAudioEl) {
+                // 再調査（第2ラウンド）: 明示的にpause()を呼ぶ唯一の箇所。
+                // これは次の通話の準備（resetZeroWaitCallState自体は
+                // startCall()より前のloadGreetingTextAndDetermineEligibility内
+                // でのみ呼ばれ、通話進行中には一切呼ばれない）としてのみ
+                // 実行される。通話進行中にこの経路が実行されていないかを
+                // タイムラインで確認できるようにする。
+                pushTimelineEvent('ZERO_WAIT_PAUSE_REQUESTED (source=resetZeroWaitCallState)');
                 try { zeroWaitAudioEl.pause(); zeroWaitAudioEl.currentTime = 0; } catch (e) {}
             }
             zeroWaitTiming.playingEventAt = null;
@@ -1255,6 +1383,22 @@
                 zeroWaitAudioEl.preload = 'auto';
                 zeroWaitAudioEl.src = zeroWaitObjectUrl;
                 zeroWaitAudioEl.load();
+                // 再調査（第2ラウンド・最重要）: この要素はページ読み込み時に一度だけ
+                // 作られ、通話をまたいで再利用されるため、ライフサイクルイベントの
+                // 購読もここで一度だけ行う（通話ごとに再登録しない＝多重登録を防ぐ）。
+                // 「和風デモの」直後の「ブチッ」が、Zero-Wait音声要素自体の
+                // バッファリング停止(waiting/stalled)によるものか、何らかの理由で
+                // 一時停止(pause)されたのかを、ミリ秒単位のタイムスタンプ付きで
+                // 区別できるようにする。UI・ビジネスロジックには一切影響しない
+                // 観測専用の記録。PIIなし。
+                ['playing', 'waiting', 'stalled', 'suspend', 'pause', 'ended', 'abort', 'error'].forEach((evt) => {
+                    zeroWaitAudioEl.addEventListener(evt, () => {
+                        zeroWaitPlaybackState = evt;
+                        pushTimelineEvent('ZERO_WAIT_AUDIO: ' + evt
+                            + ' (currentTime=' + zeroWaitAudioEl.currentTime.toFixed(2) + 's)');
+                        updateAudioDiagnosticsPanel();
+                    });
+                });
                 zeroWaitState = 'ready';
                 logEvent('[ZeroWait] プリロード完了 (' + Math.round(performance.now() - t0) + 'ms, '
                     + blob.size + 'bytes)');
@@ -1383,6 +1527,7 @@
             };
 
             try {
+                pushTimelineEvent('ZERO_WAIT_AUDIO: play requested');
                 const playPromise = zeroWaitAudioEl.play();
                 if (playPromise && typeof playPromise.catch === 'function') {
                     playPromise.catch((e) => failIfStillUnresolved(e.message || e.name || String(e)));
@@ -2589,7 +2734,10 @@
                 startBtn.disabled = false;
                 // getUserMedia失敗時は、事前作成した音声要素（PHASE3/4）を
                 // 残さないようにする（次回startCall()呼び出し時の重複防止）。
-                if (remoteAudioEl) { try { remoteAudioEl.remove(); } catch (cleanupErr) {} remoteAudioEl = null; }
+                if (remoteAudioEl) {
+                    pushTimelineEvent('REALTIME_REMOVE_REQUESTED (source=getUserMedia失敗)');
+                    try { remoteAudioEl.remove(); } catch (cleanupErr) {} remoteAudioEl = null;
+                }
                 updatePlaybackRecoveryButton();
                 return;
             }
@@ -2760,6 +2908,7 @@
                     // 通常UXへの見た目の変更は無い（autoplay=trueとほぼ同じ動作を
                     // 明示的に行っているだけ）。
                     try {
+                        pushTimelineEvent('REALTIME_AUDIO: play requested');
                         const playPromise = audioEl.play();
                         if (playPromise && typeof playPromise.then === 'function') {
                             playPromise.then(() => {
@@ -2784,8 +2933,18 @@
                         logEvent('リモート音声 play() 呼び出しで例外: ' + (e && e.message));
                         updatePlaybackRecoveryButton();
                     }
+                    // 再調査（第2ラウンド・最重要）: Realtime側のremoteAudioEl
+                    // （このpc.ontrack発火のたびに再利用/再アタッチされる要素）の
+                    // ライフサイクルイベントを、Zero-Wait側と同じ命名規則
+                    // （REALTIME_AUDIO:）でタイムラインに記録する。既存の
+                    // playbackPauseCount・'audioEl pause'記録（PHASE8由来）は
+                    // そのまま維持し、今回は不足していたwaiting/stalled/suspend/
+                    // ended/abort/errorを追加する。「和風デモの」直後の「ブチッ」が
+                    // Realtime側のtrack起因（waiting/stalled）かどうかを
+                    // 区別できるようにする。UI・ビジネスロジックには影響しない。
                     audioEl.addEventListener('playing', () => {
                         remotePlayState = 'playing';
+                        pushTimelineEvent('REALTIME_AUDIO: playing (currentTime=' + (audioEl.currentTime || 0).toFixed(2) + 's)');
                         updateAudioDiagnosticsPanel();
                         updatePlaybackRecoveryButton();
                     });
@@ -2801,6 +2960,15 @@
                         playbackPauseCount++;
                         updateAudioDiagnosticsPanel();
                         pushTimelineEvent('audioEl pause (累計' + playbackPauseCount + '回, remoteTrack muted=' + remoteTrackMuted + ')');
+                        pushTimelineEvent('REALTIME_AUDIO: pause (currentTime=' + (audioEl.currentTime || 0).toFixed(2) + 's)');
+                    });
+                    ['waiting', 'stalled', 'suspend', 'ended', 'abort', 'error'].forEach((evt) => {
+                        audioEl.addEventListener(evt, () => {
+                            if (evt === 'waiting' || evt === 'stalled') remotePlayState = evt;
+                            pushTimelineEvent('REALTIME_AUDIO: ' + evt
+                                + ' (currentTime=' + (audioEl.currentTime || 0).toFixed(2) + 's)');
+                            updateAudioDiagnosticsPanel();
+                        });
                     });
 
                     setupLatencyMeter(remoteMediaStream);
@@ -3087,8 +3255,30 @@
             if (disconnectGraceTimer) { clearTimeout(disconnectGraceTimer); disconnectGraceTimer = null; }
             stopMicLevelMeter();
             stopStatsPolling();
-            if (localStream) { localStream.getTracks().forEach((t) => t.stop()); localStream = null; }
-            if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+            // 再調査（第2ラウンド・PHASE「ブチッ」とcleanupの順序）: cleanupが
+            // 実際にpc.close()/track.stop()/audio要素の停止・除去を行う直前に
+            // それぞれ個別のタイムラインエントリを記録する。目的は、音声が
+            // 自然に途切れた"結果"connection failureになったのか、逆に
+            // cleanupが先に実行されてaudioを強制停止したことで「ブチッ」と
+            // 聞こえたのか、を時系列の前後関係から確定できるようにすること。
+            // なお、zeroWaitAudioElはdocument.body.appendChild()されておらず
+            // document.querySelectorAll('audio')には含まれない（new Audio()の
+            // まま）ため、下のAUDIO_REMOVE_REQUESTEDはRealtime側の
+            // remoteAudioElのみに影響する（Zero-Wait音声要素はここでは
+            // 一切操作されない設計を維持）。
+            if (localStream) {
+                pushTimelineEvent('LOCAL_TRACK_STOP_REQUESTED (source=cleanupConnection)');
+                localStream.getTracks().forEach((t) => t.stop());
+                localStream = null;
+            }
+            if (pc) {
+                pushTimelineEvent('PC_CLOSE_REQUESTED (source=cleanupConnection, connectionState=' + pc.connectionState + ')');
+                try { pc.close(); } catch (e) {}
+                pc = null;
+            }
+            if (document.querySelectorAll('audio').length > 0) {
+                pushTimelineEvent('AUDIO_REMOVE_REQUESTED (source=cleanupConnection, 対象=remoteAudioElのみ・zeroWaitAudioElは対象外)');
+            }
             document.querySelectorAll('audio').forEach((el) => el.remove());
             // 音声診断パネル表示用の参照・状態のみリセットする（次回通話開始時に
             // pc.ontrackが発火した際、改めて新しい値で更新される）。
