@@ -208,6 +208,12 @@
             <div class="big-mic" id="bigMic">🎤</div>
             <div id="statusText">タップして通話を開始</div>
             <div id="subStatusText"></div>
+            <!-- PHASE11/15（Mobile Audio Reliability）: AI音声のplay()がブラウザの
+                 自動再生制限で実際にブロックされた場合のみ表示する（通常時は非表示）。
+                 タップ＝新しいuser gestureのため、この中でのplay()再試行は
+                 ブラウザの自動再生ポリシー上、常に許可される。技術的すぎる文言は
+                 避け、行動を促す一言に留める（PHASE15）。 -->
+            <button class="btn-primary" id="playbackRecoverBtn" type="button" style="display:none; margin-top:8px;">🔊 音声を再生するにはタップしてください</button>
         </div>
 
         <div class="level-meter-wrap">
@@ -223,23 +229,30 @@
         <!-- 以下は開発・検証用のデバッグ表示。一般のお客様には表示せず、
              URLに ?debug=1 を付けて開いた場合のみ表示する（JS側で切り替え）。 -->
         <div id="debugPanels" style="display:none;">
-            <!-- スマホ実機診断用（PHASE9/10）: DevToolsが見づらいスマートフォンでも
-                 ここを見るだけで「マイク→WebRTC→OpenAI→WebRTC→スピーカー」の
-                 どこで音声が止まっているかの目安が分かるようにする。PIIは一切
-                 表示しない（true/false・状態文字列・カウンタのみ）。debug=1以外
-                 では#debugPanels自体が非表示のため、このパネルも表示されない。 -->
-            <div class="latency-panel" id="audioDiagPanel">
-                <h2>音声診断（実機確認用・スマホ向け）</h2>
-                <div class="status-grid">
+            <!-- Mobile Audio Reliability Phase（PHASE24）: スマホの小さい画面で
+                 通話UIを覆ってしまわないよう、既定で折りたたんでおく。<details>は
+                 iOS Safari含め広くサポートされており、追加JSなしで1タップ展開できる。 -->
+            <details class="latency-panel" id="audioDiagPanel">
+                <summary style="cursor:pointer; font-size:13px; color:var(--dark); font-weight:700;">音声診断（実機確認用・スマホ向け・タップで開閉）</summary>
+                <!-- スマホ実機診断用（PHASE9/10/23）: DevToolsが見づらいスマートフォンでも
+                     ここを見るだけで「マイク→WebRTC送信→VAD→AI応答→AI音声トラック→再生」の
+                     どこで止まっているかの目安が分かるようにする。PIIは一切表示しない
+                     （true/false・状態文字列・カウンタのみ）。debug=1以外では#debugPanels
+                     自体が非表示のため、このパネルも表示されない。 -->
+                <div class="status-grid" style="margin-top:8px;">
                     <span class="label">マイク</span><span class="val" id="diagMic">未確認</span>
+                    <span class="label">マイク入力レベル</span><span class="val" id="diagMicLevel">—</span>
                     <span class="label">WebRTC</span><span class="val" id="diagWebrtc">未接続</span>
-                    <span class="label">送信（あなたの声）</span><span class="val" id="diagSend">未確認</span>
+                    <span class="label">送信（あなたの声・packets）</span><span class="val" id="diagSend">未確認</span>
+                    <span class="label">送信音声レベル（energy）</span><span class="val" id="diagAudioEnergy">未確認</span>
+                    <span class="label">VAD（発話検知）</span><span class="val" id="diagVad">idle</span>
+                    <span class="label">AI応答状態</span><span class="val" id="diagResponse">idle</span>
                     <span class="label">AI音声トラック受信</span><span class="val" id="diagAiAudio">未受信</span>
                     <span class="label">AI音声 再生</span><span class="val" id="diagPlayback">未確認</span>
                     <span class="label">AudioContext(マイク)</span><span class="val" id="diagAudioContextMic">未作成</span>
                     <span class="label">AudioContext(AI音声)</span><span class="val" id="diagAudioContextRemote">未作成</span>
                 </div>
-            </div>
+            </details>
 
             <div class="latency-panel">
                 <h2>通話状態（実機確認用）</h2>
@@ -352,6 +365,7 @@
         const usageOutputTextEl = document.getElementById('usageOutputText');
         const usageTotalTokensEl = document.getElementById('usageTotalTokens');
         const usageLogEl = document.getElementById('usageLog');
+        const playbackRecoverBtn = document.getElementById('playbackRecoverBtn');
 
         if (!shopId) {
             loadingEl.style.display = 'none';
@@ -454,6 +468,17 @@
         let outboundPacketsTrend = 'unknown';
         let lastOutboundAudioStats = null;
         let statsPollIntervalId = null;
+        // Mobile Audio Reliability Phase PHASE6/7: packetsSentとは別に、実際の
+        // 音声エネルギー(totalAudioEnergy)の増減も独立して追跡する（「packetは
+        // 送っているが実質的な音声が無い」ケースを区別するため）。ブラウザが
+        // totalAudioEnergyを提供しない場合は'unsupported'のまま。
+        // 'unknown' | 'increasing' | 'stopped' | 'unsupported'
+        let audioEnergyTrend = 'unknown';
+        let lastOutboundAudioEnergy = null;
+        // PHASE9: ユーザー発話検知(VAD)の現在状態。'idle' | 'speech'
+        let userVadState = 'idle';
+        // PHASE10: AI応答生成の現在状態。'idle' | 'active' | 'done' | 'error'
+        let responseState = 'idle';
 
         // PHASE9/10: debug=1限定の音声診断パネルを更新する。通常Production
         // 利用者には#debugPanels自体が非表示のため、この関数はdebugMode=falseの
@@ -468,6 +493,10 @@
             const diagPlaybackEl = document.getElementById('diagPlayback');
             const diagAudioContextMicEl = document.getElementById('diagAudioContextMic');
             const diagAudioContextRemoteEl = document.getElementById('diagAudioContextRemote');
+            const diagMicLevelEl = document.getElementById('diagMicLevel');
+            const diagAudioEnergyEl = document.getElementById('diagAudioEnergy');
+            const diagVadEl = document.getElementById('diagVad');
+            const diagResponseEl = document.getElementById('diagResponse');
 
             const micTrack = localStream ? localStream.getAudioTracks()[0] : null;
             if (!micTrack) {
@@ -476,6 +505,10 @@
                 setStatus(diagMicEl, '● 正常', 'ok');
             } else {
                 setStatus(diagMicEl, '× 問題(readyState=' + micTrack.readyState + ' muted=' + micTrack.muted + ')', 'bad');
+            }
+
+            if (diagMicLevelEl) {
+                setStatus(diagMicLevelEl, (lastMicLevelPct === null ? '—' : lastMicLevelPct + '%'), null);
             }
 
             if (!pc) {
@@ -492,6 +525,37 @@
                 setStatus(diagSendEl, '× 停止(packets増加なし)', 'bad');
             } else {
                 setStatus(diagSendEl, debugMode && pc ? '確認中…' : '未確認', null);
+            }
+
+            // PHASE7: packetsSentとは別に音声エネルギーの増減も表示する。
+            // 「packetsは増えているのに音声エネルギーが増えない」ケースを
+            // 目視で区別できるようにするための診断用表示（自動判定はしない）。
+            if (diagAudioEnergyEl) {
+                if (audioEnergyTrend === 'increasing') {
+                    setStatus(diagAudioEnergyEl, '● 増加中', 'ok');
+                } else if (audioEnergyTrend === 'stopped') {
+                    setStatus(diagAudioEnergyEl, '△ 増加なし', 'warn');
+                } else if (audioEnergyTrend === 'unsupported') {
+                    setStatus(diagAudioEnergyEl, 'N/A（未対応ブラウザ）', null);
+                } else {
+                    setStatus(diagAudioEnergyEl, debugMode && pc ? '確認中…' : '未確認', null);
+                }
+            }
+
+            if (diagVadEl) {
+                setStatus(diagVadEl, userVadState === 'speech' ? '● 発話検知中' : 'idle',
+                    userVadState === 'speech' ? 'ok' : null);
+            }
+            if (diagResponseEl) {
+                if (responseState === 'active') {
+                    setStatus(diagResponseEl, '● 生成中', 'warn');
+                } else if (responseState === 'done') {
+                    setStatus(diagResponseEl, '● 完了', 'ok');
+                } else if (responseState === 'error') {
+                    setStatus(diagResponseEl, '× エラー', 'bad');
+                } else {
+                    setStatus(diagResponseEl, 'idle', null);
+                }
             }
 
             if (!remoteTrackReceived) {
@@ -520,6 +584,15 @@
                 remoteAudioCtx ? (remoteAudioCtx.state === 'running' ? 'ok' : 'warn') : null);
         }
 
+        // PHASE11/15（重要）: これはdebugMode判定を含まない。play()が実際に
+        // ブロックされた場合は、通常のお客様向け画面にもボタンを表示する必要が
+        // あるため、updateAudioDiagnosticsPanel（debug限定）とは別の独立した
+        // 関数にしている。ブロックされていない限りボタンは常に非表示。
+        function updatePlaybackRecoveryButton() {
+            if (!playbackRecoverBtn) return;
+            playbackRecoverBtn.style.display = (remotePlayState === 'blocked') ? 'inline-block' : 'none';
+        }
+
         // PHASE1: 画面ロック/バックグラウンド移行がマイク・WebRTC状態に影響して
         // いないかを、推測ではなくログで確認できるようにする（対処は行わない、
         // 観測のみ）。通話の有無に関わらずページ全体で1回だけ登録する。
@@ -541,6 +614,8 @@
             if (statsPollIntervalId) { clearInterval(statsPollIntervalId); statsPollIntervalId = null; }
             lastOutboundAudioStats = null;
             outboundPacketsTrend = 'unknown';
+            audioEnergyTrend = 'unknown';
+            lastOutboundAudioEnergy = null;
         }
 
         function startStatsPolling() {
@@ -569,6 +644,18 @@
                             outboundPacketsTrend = (packetsSent > lastOutboundAudioStats.packetsSent) ? 'increasing' : 'stopped';
                         }
                         lastOutboundAudioStats = { packetsSent, bytesSent, ts: performance.now() };
+
+                        // PHASE7: totalAudioEnergyはpacketsSentとは独立に増減を追う
+                        // （「packetは増えているが音声エネルギーは増えていない」を
+                        // 区別するため）。ブラウザが対応していない場合はunsupported。
+                        if (typeof outboundAudio.totalAudioEnergy === 'number') {
+                            if (lastOutboundAudioEnergy !== null) {
+                                audioEnergyTrend = (outboundAudio.totalAudioEnergy > lastOutboundAudioEnergy) ? 'increasing' : 'stopped';
+                            }
+                            lastOutboundAudioEnergy = outboundAudio.totalAudioEnergy;
+                        } else {
+                            audioEnergyTrend = 'unsupported';
+                        }
                         logEvent('[音声送信統計] packetsSent=' + (packetsSent === null ? 'N/A' : packetsSent)
                             + ' bytesSent=' + (bytesSent === null ? 'N/A' : bytesSent)
                             + ' audioLevel=' + audioLevelStr
@@ -586,6 +673,10 @@
         }
 
         function setupLatencyMeter(remoteStream) {
+            if (!remoteStream) {
+                logEvent('[Mobile Audio] remote MediaStreamが取得できなかったため、レイテンシ自動計測は無効です');
+                return;
+            }
             let audioCtx;
             try {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1748,7 +1839,10 @@
                 }
                 subStatusText.textContent = 'こちらの発話を認識中…';
                 setStatus(stUserSpeakEl, '発話中（認識中）', 'ok');
+                userVadState = 'speech';
+                updateAudioDiagnosticsPanel();
             } else if (type === 'input_audio_buffer.speech_stopped') {
+                userVadState = 'idle';
                 lastSpeechStoppedAt = performance.now();
                 // PHASE6相関用（PIIなし）: 対応するspeech_startedからの経過時間
                 // （＝サーバーがユーザー発話と判定していた継続時間）を記録する。
@@ -1762,17 +1856,22 @@
                 }
                 subStatusText.textContent = 'AIが応答を準備しています…';
                 setStatus(stUserSpeakEl, '待機', null);
+                updateAudioDiagnosticsPanel();
             } else if (type === 'response.created') {
                 if (greetingTiming.firstResponseCreated === null) {
                     greetingTiming.firstResponseCreated = performance.now();
                 }
                 subStatusText.textContent = 'AIが応答を生成中…';
+                responseState = 'active';
+                updateAudioDiagnosticsPanel();
             } else if (type === 'response.done') {
                 subStatusText.textContent = '待機中（お話しください）';
                 // 安全網: 通常はoutput_audio_buffer.stopped/clearedで既にfalseに
                 // 戻っているはずだが、稀にそれらのイベントを取りこぼした場合でも
                 // aiAudioOutputActiveが誤ってtrueのまま残らないようにする。
                 aiAudioOutputActive = false;
+                responseState = (msg.response && msg.response.status === 'failed') ? 'error' : 'done';
+                updateAudioDiagnosticsPanel();
                 recordUsageEvent(msg.response);
             } else if (type === 'response.output_item.done' && msg.item && msg.item.type === 'function_call') {
                 // Phase3A: Tool Calling。応答完了(response.done)を待たず、
@@ -1787,6 +1886,8 @@
             } else if (type === 'error') {
                 logEvent('サーバーエラー: ' + JSON.stringify(msg.error || msg));
                 showErrorBanner('通話中にエラーが発生しました。お手数ですが、もう一度おかけ直しください。');
+                responseState = 'error';
+                updateAudioDiagnosticsPanel();
             }
         }
 
@@ -1863,6 +1964,12 @@
         }
 
         async function startCall() {
+            // 前回の通話開始が失敗し audio要素が残っている可能性がある場合の
+            // 防御的クリーンアップ（通常は発生しない。cleanupConnection済みなら
+            // 何も無い状態）。
+            document.querySelectorAll('audio').forEach((el) => {
+                if (el !== zeroWaitAudioEl) el.remove();
+            });
             resetGreetingState();
             greetingTiming.callStart = performance.now();
             // Phase3C.1 section9相当（重要）: Zero-Wait Greetingの再生開始と
@@ -1870,6 +1977,40 @@
             // ここではawaitを挟まず、下のgetUserMedia呼び出しへ同期的に進む
             // （両方ともクリックのユーザー操作ジェスチャーの中で開始される）。
             startZeroWaitGreeting();
+
+            // PHASE3/4（Mobile Audio Reliability・重要）: 「通話開始」ボタン押下
+            // というuser gestureの中で、AI音声用の<audio>要素を先に作成し、
+            // play()を1回試みておく。この時点ではsrcObjectが無いため実際に
+            // 音声が出ることは無く、外部音声ファイルの追加や無音の長時間再生も
+            // 行わない（play()は即座に失敗/no-opになるだけで実害なし）。
+            // 目的: iOS Safari/WebKit系ブラウザで知られる「一度でもuser gesture
+            // 内でplay()を試みた要素は、その後の非同期処理を経た再生（srcObject
+            // 設定＋再play()）がブロックされにくい」という挙動を期待した、
+            // 安全なベストエフォート施策。効果自体は実機でしか確認できないため、
+            // 完了報告では「未確認（要実機確認）」として明記する。Zero-Wait
+            // Greeting（zeroWaitAudioEl、既存の別要素）とは完全に別の要素であり、
+            // 干渉しない。
+            remoteAudioEl = document.createElement('audio');
+            remoteAudioEl.autoplay = true;
+            document.body.appendChild(remoteAudioEl);
+            try {
+                const earlyPlayPromise = remoteAudioEl.play();
+                if (earlyPlayPromise && typeof earlyPlayPromise.catch === 'function') {
+                    earlyPlayPromise.catch((e) => {
+                        logEvent('[Mobile Audio] 事前play()試行（srcObject未設定時点、想定内・実害なし）: '
+                            + (e && e.name) + ' - ' + (e && e.message));
+                    });
+                }
+            } catch (e) {
+                logEvent('[Mobile Audio] 事前play()試行で例外（想定内・実害なし）: ' + (e && e.message));
+            }
+            remotePlayState = 'unknown';
+            userVadState = 'idle';
+            responseState = 'idle';
+            audioEnergyTrend = 'unknown';
+            lastOutboundAudioEnergy = null;
+            updatePlaybackRecoveryButton();
+
             startBtn.disabled = true;
             hideErrorBanner();
             statusText.textContent = '接続しています…';
@@ -1939,6 +2080,10 @@
                 bigMic.classList.remove('connecting');
                 bigMic.classList.add('error');
                 startBtn.disabled = false;
+                // getUserMedia失敗時は、事前作成した音声要素（PHASE3/4）を
+                // 残さないようにする（次回startCall()呼び出し時の重複防止）。
+                if (remoteAudioEl) { try { remoteAudioEl.remove(); } catch (cleanupErr) {} remoteAudioEl = null; }
+                updatePlaybackRecoveryButton();
                 return;
             }
 
@@ -2042,12 +2187,33 @@
                         });
                     }
 
-                    const audioEl = document.createElement('audio');
-                    audioEl.autoplay = true;
-                    audioEl.srcObject = ev.streams[0];
-                    document.body.appendChild(audioEl);
+                    // PHASE2（重要）: ev.streams[0]は常に存在する前提にしない。
+                    // WebRTC仕様上、'track'イベントのstreamsは空配列になり得る。
+                    // 空の場合はev.trackから自前でMediaStreamを構築する
+                    // （音声トラック自体は正常に受信できているケースを、
+                    // streams[0]依存だけで「未受信」に見せてしまわないため）。
+                    const remoteMediaStream = (ev.streams && ev.streams[0]) ? ev.streams[0]
+                        : (remoteTrack ? new MediaStream([remoteTrack]) : null);
+                    if (!ev.streams || !ev.streams[0]) {
+                        logEvent('[Mobile Audio] ev.streams[0]が空でした。'
+                            + (remoteMediaStream ? 'ev.trackから自前でMediaStreamを構築しました。' : 'remoteTrack自体も取得できませんでした。'));
+                    }
+
+                    // PHASE3/4（重要）: startCall()内でuser gesture中に事前作成済みの
+                    // <audio>要素（remoteAudioEl）をここで再利用する。新規要素を
+                    // 作り直さないことで、「一度でもuser gesture内でplay()を試みた
+                    // 要素」という状態を保つ（iOS Safari/WebKit系ブラウザで知られる
+                    // 再生ロック解除の挙動を期待するもの。実機効果は未確認）。
+                    // 想定外の経路でremoteAudioElが存在しない場合のみ新規作成する。
+                    const audioEl = remoteAudioEl || document.createElement('audio');
+                    if (!remoteAudioEl) {
+                        audioEl.autoplay = true;
+                        document.body.appendChild(audioEl);
+                    }
+                    audioEl.srcObject = remoteMediaStream;
                     remoteAudioEl = audioEl;
                     remotePlayState = 'unknown';
+                    updatePlaybackRecoveryButton();
 
                     // PHASE4/5（最重要）: これまでaudioEl.autoplay=trueに任せるだけで、
                     // play()を明示的に呼んでいなかった。autoplay属性任せの場合、
@@ -2065,11 +2231,13 @@
                                 remotePlayState = 'playing';
                                 logEvent('リモート音声 play() 成功');
                                 updateAudioDiagnosticsPanel();
+                                updatePlaybackRecoveryButton();
                             }).catch((e) => {
                                 remotePlayState = 'blocked';
                                 logEvent('リモート音声 play() 失敗（自動再生制限の可能性）: '
                                     + (e && e.name) + ' - ' + (e && e.message));
                                 updateAudioDiagnosticsPanel();
+                                updatePlaybackRecoveryButton();
                             });
                         } else {
                             // Promiseを返さない古い実装のブラウザでは、成功したものとして扱う
@@ -2079,17 +2247,19 @@
                     } catch (e) {
                         remotePlayState = 'blocked';
                         logEvent('リモート音声 play() 呼び出しで例外: ' + (e && e.message));
+                        updatePlaybackRecoveryButton();
                     }
                     audioEl.addEventListener('playing', () => {
                         remotePlayState = 'playing';
                         updateAudioDiagnosticsPanel();
+                        updatePlaybackRecoveryButton();
                     });
                     audioEl.addEventListener('pause', () => {
                         if (remotePlayState !== 'blocked') remotePlayState = 'paused';
                         updateAudioDiagnosticsPanel();
                     });
 
-                    setupLatencyMeter(ev.streams[0]);
+                    setupLatencyMeter(remoteMediaStream);
                     updateAudioDiagnosticsPanel();
                 };
 
@@ -2101,6 +2271,15 @@
                 const audioSenders = pc.getSenders().filter((s) => s.track && s.track.kind === 'audio');
                 logEvent('RTCPeerConnection sender確認: 全sender数=' + pc.getSenders().length
                     + ' / audio sender数=' + audioSenders.length);
+                // PHASE5: senderが保持しているtrackが、実際にgetUserMediaで取得した
+                // localTrackと同一オブジェクトであることを確認する（sender.track
+                // が別のtrackにすり替わっている等の異常が無いかの確認のみ。対処は
+                // 行わない）。
+                const localAudioTrack = localStream.getAudioTracks()[0] || null;
+                if (localAudioTrack) {
+                    const identityMatch = audioSenders.some((s) => s.track === localAudioTrack);
+                    logEvent('sender.track === localStreamのaudio track: ' + identityMatch);
+                }
 
                 // PHASE3: debug=1のときだけ、getStats()からaudio outbound RTPの
                 // 安全な統計（packetsSent等）を定期取得する。PIIは含まれない
@@ -2246,6 +2425,9 @@
             remoteTrackMuted = null;
             remoteTrackReadyState = null;
             remotePlayState = 'unknown';
+            userVadState = 'idle';
+            responseState = 'idle';
+            updatePlaybackRecoveryButton();
             setStatus(stMicTrackEl, 'なし', null);
             setStatus(stWebrtcEl, 'closed', null);
             setStatus(stSessionEl, '未接続', null);
@@ -2281,6 +2463,36 @@
             startCall();
         });
         endBtn.addEventListener('click', () => endCall('通話を終了しました', 'endBtn.click'));
+
+        // PHASE11/15（Mobile Audio Reliability）: ボタンのクリック自体が新しい
+        // user gestureのため、この中でのplay()再試行はブラウザの自動再生
+        // ポリシー上、常に許可される（他のブロック解除策と異なり、これは
+        // ブラウザ仕様として確実に効く経路）。
+        if (playbackRecoverBtn) {
+            playbackRecoverBtn.addEventListener('click', () => {
+                if (!remoteAudioEl) return;
+                logEvent('[Mobile Audio] 「音声を再生」ボタンがタップされました。play()を再試行します');
+                try {
+                    const p = remoteAudioEl.play();
+                    if (p && typeof p.then === 'function') {
+                        p.then(() => {
+                            remotePlayState = 'playing';
+                            logEvent('[Mobile Audio] 再試行play()成功');
+                            updatePlaybackRecoveryButton();
+                            updateAudioDiagnosticsPanel();
+                        }).catch((e) => {
+                            logEvent('[Mobile Audio] 再試行play()も失敗: ' + (e && e.name) + ' - ' + (e && e.message));
+                            updatePlaybackRecoveryButton();
+                        });
+                    } else {
+                        remotePlayState = 'playing';
+                        updatePlaybackRecoveryButton();
+                    }
+                } catch (e) {
+                    logEvent('[Mobile Audio] 再試行play()で例外: ' + (e && e.message));
+                }
+            });
+        }
 
         window.addEventListener('beforeunload', () => {
             cleanupConnection('beforeunload');
