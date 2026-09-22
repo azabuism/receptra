@@ -28,6 +28,7 @@ Inbound（app.services.realtime_voice_ai）との共有方針:
 
 from app.models.reservation import Reservation
 from app.models.shop import Shop
+from app.models.callback_request import CallbackRequest
 from app.services.realtime_voice_ai import _SERVICE_TERMINOLOGY_LABELS
 
 
@@ -62,4 +63,45 @@ def build_reservation_confirmed_message(shop: Shop, reservation: Reservation) ->
         f"{shop.name}様、新しいご予約のお知らせです。"
         f"{name_part}{datetime_str}、{people_str}で{service_part}ご予約が確定しました。"
         "内容のご確認をお願いいたします。"
+    )
+
+
+def _format_callback_desired_datetime(callback_request: CallbackRequest) -> str:
+    """CallbackRequest.desired_date/desired_timeを発話用の文字列に整形する。
+    いずれもAIが把握できた場合のみの参考情報のため、無ければ空文字を返す
+    （_format_reservation_datetimeと異なり、reservation_dateのような必須値ではない）。"""
+    if not callback_request.desired_date:
+        return ""
+    weekday_labels = ["月", "火", "水", "木", "金", "土", "日"]
+    weekday = weekday_labels[callback_request.desired_date.weekday()]
+    date_str = f"{callback_request.desired_date.month}月{callback_request.desired_date.day}日（{weekday}）"
+    if callback_request.desired_time:
+        t = callback_request.desired_time
+        date_str += f"{t.hour}時" + (f"{t.minute:02d}分" if t.minute else "")
+    return date_str
+
+
+def build_callback_requested_message(shop: Shop, callback_request: CallbackRequest) -> str:
+    """Human Handoff基盤: 折り返し依頼(CallbackRequest)の担当者向け通知の発話内容
+    （テキスト）を組み立てる。build_reservation_confirmed_message()と同じ方針
+    （テーブル/席等の呼称は含めない、業種問わず共通の文面）を踏襲する。
+
+    ここで組み立てる文面は、ユーザー（谷村様）が明示的に例示した文面
+    （「RECEPTRAで折り返し依頼を受け付けました。お客様：○○様 電話番号：...
+    お問い合わせ：... 希望日時：... 人数：... お客様へ折り返しをお願いします。」）
+    に準拠する。
+    """
+    name_part = f"{callback_request.customer_name}様" if callback_request.customer_name else "お名前未確認のお客様"
+    phone_part = callback_request.customer_phone or "電話番号未確認"
+    inquiry_part = callback_request.inquiry_text or "詳細はRECEPTRA管理画面をご確認ください"
+
+    desired_str = _format_callback_desired_datetime(callback_request)
+    desired_part = f"希望日時：{desired_str}。" if desired_str else ""
+    party_part = f"人数：{callback_request.party_size}名。" if callback_request.party_size else ""
+
+    return (
+        f"{shop.name}様、RECEPTRAで折り返し依頼を受け付けました。"
+        f"お客様：{name_part}。電話番号：{phone_part}。"
+        f"お問い合わせ：{inquiry_part}。{desired_part}{party_part}"
+        "お客様へ折り返しのご連絡をお願いいたします。"
     )

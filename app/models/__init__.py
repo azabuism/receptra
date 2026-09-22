@@ -54,6 +54,10 @@ from app.models.outbound_call import OutboundCallJob, OutboundCallLog, OutboundC
 # モデルと同様、alembicは使わずBase.metadata.create_all()で自動作成される）
 from app.models.customer_memory import CustomerMemory
 
+# Human Handoff基盤: 折り返し受付（新規テーブル。他のPhase3系モデルと同様、
+# alembicは使わずBase.metadata.create_all()で自動作成される）
+from app.models.callback_request import CallbackRequest, CallbackRequestStatus, CallbackRequestReasonCode
+
 __all__ = [
     # User/Tenant
     "Tenant",
@@ -115,4 +119,9 @@ __all__ = [
 
     # Outbound AI Phase 4A: Customer Memory Foundation
     "CustomerMemory",
+
+    # Human Handoff基盤
+    "CallbackRequest",
+    "CallbackRequestStatus",
+    "CallbackRequestReasonCode",
 ]

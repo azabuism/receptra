@@ -194,6 +194,13 @@ class ShopNotificationSettingsResponse(BaseModel):
     shop_id: str
     reservation_notification_phone: Optional[str] = None
     reservation_phone_notification_enabled: bool = False
+    # Human Handoff基盤: Email通知設定（店舗ごとに個別設定可能。未設定の場合、
+    # 実際の通知解決時にはTenant.email（アカウント登録メール）へ
+    # フォールバックする想定だが、このレスポンス自体には店舗固有の設定値
+    # （reservation_notification_email）だけを返す。フォールバック先の
+    # Tenant.emailそのものは、より機微度の高い情報のためこのAPIでは返さない）。
+    reservation_notification_email: Optional[str] = None
+    reservation_email_notification_enabled: bool = False
 
     class Config:
         from_attributes = True
@@ -206,16 +213,94 @@ class ShopNotificationSettingsUpdateRequest(BaseModel):
     ON/OFFの整合性チェック（電話番号が無い状態でONにできない、番号を消したら
     自動でOFFに戻す等）は、既存データとのマージが必要なためこのスキーマ単体では
     完結できず、app/routers/shops.py の update_shop_notification_settings() で
-    行う。
+    行う。Emailについても同じ整合性チェックを行う。
     """
     reservation_notification_phone: Optional[str] = Field(
         None, max_length=20, description="090-1234-5678のような自然な形式で入力可能"
     )
     reservation_phone_notification_enabled: Optional[bool] = None
+    reservation_notification_email: Optional[str] = Field(
+        None, max_length=255, description="通知を受け取るメールアドレス"
+    )
+    reservation_email_notification_enabled: Optional[bool] = None
 
     @field_validator("reservation_notification_phone", mode="before")
     @classmethod
     def _validate_and_normalize_phone(cls, v):
+        if v is None:
+            return None
+        if not isinstance(v, str) or v.strip() == "":
+            return None
+        digits = normalize_jp_phone_digits(v)
+        if not _JP_PHONE_DIGITS_RE.match(digits):
+            raise ValueError(
+                "電話番号の形式が正しくありません（例：090-1234-5678、または市外局番付きの固定電話番号）"
+            )
+        return digits
+
+    @field_validator("reservation_notification_email", mode="before")
+    @classmethod
+    def _validate_email(cls, v):
+        if v is None:
+            return None
+        if not isinstance(v, str) or v.strip() == "":
+            return None
+        candidate = v.strip()
+        # pydantic[email]のEmailStrはPUT全体を不必要に複雑化するため、ここでは
+        # 既存のShop.email等と同じ軽量な形式チェックに留める（RFC完全準拠の
+        # 検証はせず、明らかな入力ミスだけを弾く）。
+        if "@" not in candidate or " " in candidate or candidate.count("@") != 1:
+            raise ValueError("メールアドレスの形式が正しくありません")
+        local, _, domain = candidate.partition("@")
+        if not local or "." not in domain or domain.startswith(".") or domain.endswith("."):
+            raise ValueError("メールアドレスの形式が正しくありません")
+        return candidate
+
+
+class ShopPhoneReceptionSettingsResponse(BaseModel):
+    """
+    Human Handoff基盤: AI電話受付ON/OFF・将来のライブ転送設定
+    （オーナー専用・非公開）。
+
+    重要:
+    - ai_phone_reception_enabled は、ブラウザ経由のRealtime Voice AI
+      （POST /api/v1/shops/{shop_id}/realtime-voice/session）が実際に参照する。
+      OFFの店舗ではセッション自体が発行されず、OpenAI側のコストも一切
+      発生しない（app.routers.realtime_voice.create_realtime_voice_session参照）。
+    - RECEPTRAの電話（Vonage）着信経路（app/routers/vonage_voice.py）は、
+      現時点では単一共有番号を前提としており店舗ごとの振り分けに対応して
+      いない。そのためai_phone_reception_enabledも、transfer_*系のフィールドも、
+      Vonage着信処理からはまだ一切参照されない（将来のtelephony ingress
+      実装に備えた設定の土台。詳細は完了報告を参照）。
+    - transfer_to_staff_enabled/transfer_phone_number/
+      transfer_no_answer_fallback_to_callback は、将来のライブ転送機能向けの
+      データモデルのみで、今回のフェーズでは実際に電話を転送する仕組み
+      自体は実装しない。
+    - transfer_phone_numberはreservation_notification_phone（担当者への事後
+      通知専用番号）とは意味が異なる別フィールドであり、混同しないこと。
+    """
+    shop_id: str
+    ai_phone_reception_enabled: bool = True
+    transfer_to_staff_enabled: bool = False
+    transfer_phone_number: Optional[str] = None
+    transfer_no_answer_fallback_to_callback: bool = True
+
+    class Config:
+        from_attributes = True
+
+
+class ShopPhoneReceptionSettingsUpdateRequest(BaseModel):
+    """AI電話受付ON/OFF・ライブ転送設定 更新リクエスト（送られたフィールドのみ更新）。"""
+    ai_phone_reception_enabled: Optional[bool] = None
+    transfer_to_staff_enabled: Optional[bool] = None
+    transfer_phone_number: Optional[str] = Field(
+        None, max_length=20, description="担当者へライブ転送する電話番号（090-1234-5678のような自然な形式で入力可能）"
+    )
+    transfer_no_answer_fallback_to_callback: Optional[bool] = None
+
+    @field_validator("transfer_phone_number", mode="before")
+    @classmethod
+    def _validate_and_normalize_transfer_phone(cls, v):
         if v is None:
             return None
         if not isinstance(v, str) or v.strip() == "":

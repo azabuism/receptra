@@ -33,6 +33,7 @@ app.routers.reservations.create_reservation() から、予約が新規に成立�
 
 import logging
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 import app.database as db_module
@@ -81,3 +82,65 @@ async def enqueue_reservation_confirmed_call(
             "shop_id=%s reservation_id=%s",
             shop_id, reservation_id,
         )
+
+
+async def enqueue_callback_requested_call(
+    shop_id: str,
+    callback_request_id: str,
+    notification_enabled: bool,
+    notification_phone: str | None,
+) -> str | None:
+    """Human Handoff基盤: 折り返し依頼(CallbackRequest)の担当者向け電話通知の
+    Outboundジョブをキューへ積む。enqueue_reservation_confirmed_call()と全く同じ
+    設計方針（非同期・失敗分離・専用DBセッション・idempotency_keyのDB一意制約を
+    最終防衛線とする）を踏襲する。
+
+    通知が無効、または通知先電話番号が未設定の店舗では何もしない（コストゼロ）。
+    reservation_id列は使わない（callback_requested種別のジョブは予約に紐付かない
+    ため常にNoneのまま）。callback_request_idとの対応づけは、このジョブのidを
+    呼び出し元がCallbackRequest.outbound_call_job_idへ保存することで行う
+    （OutboundCallJob側に逆参照カラムを追加すると2テーブル間の循環FKになり、
+    店舗削除時のカスケード順序が複雑化するため、意図的に単方向のみにしている）。
+
+    戻り値: enqueueに成功した（または既に同一キーで存在した）OutboundCallJob.id。
+    通知が無効/未設定、またはenqueue自体が失敗した場合はNone。
+    """
+    if not notification_enabled or not notification_phone:
+        return None
+
+    try:
+        async with db_module.AsyncSessionLocal() as db:
+            idempotency_key = f"outbound:callback_requested:{callback_request_id}"
+            job = OutboundCallJob(
+                shop_id=shop_id,
+                reservation_id=None,
+                call_type="callback_requested",
+                category=OutboundCallCategory.TRANSACTIONAL.value,
+                to_phone=notification_phone,
+                status=OutboundCallJobStatus.PENDING.value,
+                idempotency_key=idempotency_key,
+            )
+            db.add(job)
+            try:
+                await db.commit()
+            except IntegrityError:
+                # 同一CallbackRequestに対する重複enqueue（idempotency_keyのunique index）。
+                # 想定内の競合なので握りつぶし、先に成立していたジョブのidを返す。
+                await db.rollback()
+                result = await db.execute(
+                    select(OutboundCallJob).filter(OutboundCallJob.idempotency_key == idempotency_key)
+                )
+                existing = result.scalar_one_or_none()
+                return existing.id if existing else None
+            return job.id
+    except Exception:
+        # ここでの失敗は、呼び出し元（request_callback Tool）のCallbackRequest保存の
+        # 成功に一切影響してはならない。専用セッションのため、呼び出し元の
+        # セッション状態には一切波及しない。
+        logger.exception(
+            "Outbound通知ジョブ(callback_requested)のenqueueに失敗しました"
+            "（折り返し受付自体は成功済みのため処理を継続します） "
+            "shop_id=%s callback_request_id=%s",
+            shop_id, callback_request_id,
+        )
+        return None

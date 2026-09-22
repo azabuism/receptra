@@ -356,3 +356,46 @@ class SetConversationLanguageToolResponse(BaseModel):
     # accepted（実際に切り替えを記録した） / not_allowed（この店舗では許可されていない言語、
     # またはsession_idが無く記録できなかった） / temporarily_unavailable
     status: str = "not_allowed"
+
+
+# ===== Human Handoff基盤: request_callback Tool Calling用 =====
+#
+# 設計方針（重要・必ず守ること）:
+# - shop_id・tenant_id・voice_session_id・call_idはAIに渡すToolのparameters
+#   には一切含めない。他のToolと同じく、shop_idはURLパス由来、call_idは
+#   ブラウザ側がOpenAI Realtime APIのfunction_callイベントから直接読み取った
+#   値をリクエストボディへ追加して転送する（AI自身の出力JSONには含まれない）。
+#   RECEPTRA側（このToolのエンドポイント実装）がcall_idを
+#   "realtime_voice:{shop_id}:{call_id}" の形にnamespace化し、
+#   CallbackRequest.idempotency_keyのDB一意インデックスで同一Tool呼び出しの
+#   二重受付を最終防衛する（create_reservationと同じ設計パターン）。
+# - inquiry_textはAIが要約した簡潔な用件テキストを想定する。生の音声内容
+#   そのものではない（そもそもRealtime APIはブラウザ⇔OpenAI直結のため、
+#   RECEPTRAサーバーは生の音声を経由しない）。
+# - successは「CallbackRequestがDBへ保存できたかどうか」だけを表す。
+#   担当者への実際の通知（Email送信・電話ジョブのenqueue）が成功したか
+#   どうかはAIへ一切伝えない（AIが「担当者へ連絡済みです」のように
+#   通知の成否まで確約してしまうことを防ぐため）。
+class RequestCallbackToolRequest(BaseModel):
+    """Realtime AIのrequest_callback Toolからの引数 + ブラウザが付与するcall_id/session_id"""
+    customer_name: str = Field(..., min_length=1, max_length=255, description="お客様のお名前")
+    customer_phone: str = Field(..., min_length=1, max_length=20, description="折り返し先電話番号")
+    inquiry_text: str = Field(..., min_length=1, max_length=1000, description="お問い合わせ内容の簡潔な要約")
+    desired_date: Optional[str] = Field(None, description="来店・予約希望日（YYYY-MM-DD、分かる場合のみ）")
+    desired_time: Optional[str] = Field(None, description="来店・予約希望時刻（HH:MM、24時間表記、分かる場合のみ）")
+    party_size: Optional[int] = Field(None, ge=1, le=999, description="人数（分かる場合のみ）")
+    service_id: Optional[str] = Field(None, description="サービスID（分かる場合のみ）")
+    reason_code: Optional[str] = Field(None, max_length=50, description="折り返しが必要になった理由")
+    # AIの出力ではなく、ブラウザがOpenAI Realtimeのfunction_callイベントから
+    # 直接読み取ったcall_idをそのまま転送する（AI自身にはこの値を生成させない）。
+    call_id: str = Field(..., min_length=1, max_length=128, description="OpenAI Realtime APIのfunction_call call_id（ブラウザが転送。AIの引数ではない）")
+    session_id: Optional[str] = Field(
+        None, description="フロントエンドが付与する、この通話を識別するopaqueな値。AIの引数ではない"
+    )
+
+
+class RequestCallbackToolResponse(BaseModel):
+    """Realtime AIへ返す最小レスポンス"""
+    success: bool
+    # success=Falseの場合のみ設定。候補: invalid_request / temporarily_unavailable
+    reason_code: Optional[str] = None

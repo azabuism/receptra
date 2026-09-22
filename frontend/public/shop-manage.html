@@ -1174,8 +1174,91 @@
 
                 <div class="notif-ai-staff-line" id="notification-ai-staff-line" style="display: none;"></div>
 
+                <!-- Human Handoff基盤: メールでの通知設定。電話番号の設定と全く同じ
+                     ON/OFF＋値のペア構造（値をクリアすると自動でOFFになる／
+                     ONにするには先に値の入力が必要）。担当者への折り返し依頼の通知にも
+                     同じ設定が使われる。 -->
+                <div class="notif-toggle-row" style="margin-top: 24px;">
+                    <div>
+                        <div class="notif-toggle-title">予約が入ったらメールで知らせる</div>
+                        <div class="notif-toggle-desc">折り返し依頼（お客様からのお問い合わせをAIが受け付けた場合）の通知にも、同じメールアドレスが使われます。</div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="notification-email-enabled">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <div class="field" style="margin-top: 16px;">
+                    <label for="notification-email">通知先のメールアドレス</label>
+                    <input type="email" id="notification-email" placeholder="例：owner@example.com" maxlength="255">
+                    <p class="hint" style="margin-top: 6px; margin-bottom: 0;">予約が入ったとき・お客様からの折り返し依頼を受け付けたときに連絡を受けるメールアドレスです。お客様に公開されることはありません。</p>
+                </div>
+                <p class="hint" id="notification-email-enabled-hint" style="margin-top: 8px; margin-bottom: 0;">※ メールアドレスを登録すると、この機能をONにできるようになります。</p>
+
                 <button type="submit" class="btn" id="notification-settings-save-btn" style="margin-top: 14px;">保存する</button>
                 <div class="msg" id="notification-settings-msg"></div>
+            </form>
+        </div>
+
+        <!-- Human Handoff基盤: AI電話受付ON/OFFと、将来のスタッフへの転送設定。
+             AI電話受付ON/OFFは今回のフェーズで実際に機能する（OFFにすると
+             Realtimeセッション自体が発行されず、通話AIのコストは一切発生しない）。
+             スタッフへの転送設定は、データ・設定項目のみ今回用意し、実際に
+             電話を転送する仕組み自体はまだ実装されていない（notif-bannerで
+             明示する。既存の「AIからの予約通知」カードの「準備中」表示と
+             同じパターンを踏襲）。 -->
+        <div class="card">
+            <h2>AIによる電話受付</h2>
+            <p class="hint">お客様との音声通話に、AIスタッフが応対するかどうかを設定します。</p>
+
+            <form id="phone-reception-settings-form">
+                <div class="notif-toggle-row">
+                    <div>
+                        <div class="notif-toggle-title">AIが電話受付を行う</div>
+                        <div class="notif-toggle-desc">OFFにすると、AIは一切応答しなくなります（AIスタッフが話し始めてからお断りするのではなく、そもそも接続そのものを行いません）。</div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="ai-phone-reception-enabled">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <div class="notif-banner" style="margin-top: 20px;">
+                    スタッフへの取り次ぎ（電話中にそのままスタッフへおつなぎする機能）は現在準備中です。今のうちに設定だけ済ませておくことができます。
+                </div>
+
+                <div class="notif-toggle-row">
+                    <div>
+                        <div class="notif-toggle-title">スタッフへの取り次ぎを有効にする</div>
+                        <div class="notif-toggle-desc">準備が整い次第、この設定に応じてスタッフへおつなぎできるようになります。</div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="transfer-to-staff-enabled">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <div class="field" style="margin-top: 16px;">
+                    <label for="transfer-phone-number">取り次ぎ先の電話番号</label>
+                    <input type="tel" id="transfer-phone-number" placeholder="例：090-1234-5678" maxlength="20">
+                    <p class="hint" style="margin-top: 6px; margin-bottom: 0;">スタッフへ取り次ぐ際の電話番号です。「予約通知」の連絡先とは別に、通話中の取り次ぎ専用として設定できます（上の予約通知の番号と同じでも構いません）。</p>
+                </div>
+                <p class="hint" id="transfer-enabled-hint" style="margin-top: 8px; margin-bottom: 0;">※ 電話番号を登録すると、取り次ぎをONにできるようになります。</p>
+
+                <div class="notif-toggle-row" style="margin-top: 16px;">
+                    <div>
+                        <div class="notif-toggle-title">スタッフが出られない場合は折り返し対応にする</div>
+                        <div class="notif-toggle-desc">取り次ぎ先が話し中・応答なしだった場合、AIが折り返し対応（お名前・ご用件をお預かりし、担当者から折り返し連絡）に切り替えます。</div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="transfer-no-answer-fallback">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <button type="submit" class="btn" id="phone-reception-settings-save-btn" style="margin-top: 14px;">保存する</button>
+                <div class="msg" id="phone-reception-settings-msg"></div>
             </form>
         </div>
 
@@ -1185,14 +1268,15 @@
             <div id="notification-history-list"><p class="empty-hint">読み込み中...</p></div>
         </div>
 
-        <!-- PHASE5-B: 「全体を保存」。基本情報・店舗情報・AIスタッフ設定・通知設定の
-             4フォームをまとめて保存する。FAQ・クーポン・テーブル・スタッフ・予約・
+        <!-- PHASE5-B: 「全体を保存」。基本情報・店舗情報・AIスタッフ設定・通知設定・
+             AI電話受付設定の5フォームをまとめて保存する（Human Handoff基盤で
+             AI電話受付設定フォームを追加）。FAQ・クーポン・テーブル・スタッフ・予約・
              口コミ等の一覧管理機能（追加/削除が個別に完結する）は対象外。
              削除ボタン（店舗・事業所の削除）とは別カード・大きな余白・色で
              視覚的にはっきり分離し、誤クリックを防ぐ。 -->
         <div class="card" id="save-all-card" style="border: 2px solid var(--primary); margin-top: 36px; margin-bottom: 36px;">
             <h2>まとめて保存</h2>
-            <p class="hint">基本情報・店舗情報・AIスタッフ設定・通知設定を、まとめて保存します。FAQ・クーポン・テーブル・スタッフ・予約・口コミは、それぞれの一覧画面で個別に保存されるため対象外です。</p>
+            <p class="hint">基本情報・店舗情報・AIスタッフ設定・通知設定・AI電話受付設定を、まとめて保存します。FAQ・クーポン・テーブル・スタッフ・予約・口コミは、それぞれの一覧画面で個別に保存されるため対象外です。</p>
             <button type="button" class="btn" id="save-all-btn" style="width: 100%; padding: 16px; font-size: 16px;">全体を保存</button>
             <div class="msg" id="save-all-msg" style="margin-top: 14px;"></div>
         </div>
@@ -1451,6 +1535,7 @@
             loadNotificationSettings();
             loadNotificationAiStaffInfo();
             loadNotificationHistory();
+            loadPhoneReceptionSettings();
         }
 
         // ---------- 画像設定（ロゴ・サムネイル・カバー） ----------
@@ -3186,6 +3271,9 @@
         });
 
         // ---------- Phase3H Workstream C: 予約通知の連絡先 ----------
+        // Human Handoff基盤: 電話に加えてメール通知設定も同じフォーム・同じAPIで扱う
+        // （app.routers.shops.get_shop_notification_settings/update_shop_notification_settings
+        // が電話・メール両方をまとめて返す/更新するよう拡張済み）。
         async function loadNotificationSettings() {
             try {
                 const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/notification-settings');
@@ -3193,21 +3281,29 @@
                 const data = await res.json();
                 document.getElementById('notification-phone').value = data.reservation_notification_phone || '';
                 document.getElementById('notification-enabled').checked = !!data.reservation_phone_notification_enabled;
+                document.getElementById('notification-email').value = data.reservation_notification_email || '';
+                document.getElementById('notification-email-enabled').checked = !!data.reservation_email_notification_enabled;
             } catch (e) {
                 // 未保存の場合も含め、取得に失敗してもフォームは空の状態で使えるようにする。
             }
         }
 
         // PHASE5-B: 通知設定のコア保存関数。
-        // クライアント側の事前チェック（ON時に電話番号必須）も含めてコア関数に
-        // 含めることで、「全体を保存」からもこの検証が同様に効くようにする。
+        // クライアント側の事前チェック（ON時に電話番号/メールアドレス必須）も含めて
+        // コア関数に含めることで、「全体を保存」からもこの検証が同様に効くようにする。
         async function _saveNotificationCore() {
             const phoneEl = document.getElementById('notification-phone');
             const enabledEl = document.getElementById('notification-enabled');
             const phone = phoneEl.value.trim();
+            const emailEl = document.getElementById('notification-email');
+            const emailEnabledEl = document.getElementById('notification-email-enabled');
+            const email = emailEl.value.trim();
 
             if (enabledEl.checked && !phone) {
-                return { ok: false, error: '通知をONにするには、先に電話番号を入力してください。' };
+                return { ok: false, error: '電話での通知をONにするには、先に電話番号を入力してください。' };
+            }
+            if (emailEnabledEl.checked && !email) {
+                return { ok: false, error: 'メールでの通知をONにするには、先にメールアドレスを入力してください。' };
             }
 
             const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/notification-settings', {
@@ -3215,7 +3311,9 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     reservation_notification_phone: phone === '' ? null : phone,
-                    reservation_phone_notification_enabled: enabledEl.checked
+                    reservation_phone_notification_enabled: enabledEl.checked,
+                    reservation_notification_email: email === '' ? null : email,
+                    reservation_email_notification_enabled: emailEnabledEl.checked
                 })
             });
             const data = await res.json().catch(function () { return {}; });
@@ -3226,6 +3324,8 @@
             // フォームに反映し、画面の表示と保存済みデータが必ず一致するようにする。
             phoneEl.value = data.reservation_notification_phone || '';
             enabledEl.checked = !!data.reservation_phone_notification_enabled;
+            emailEl.value = data.reservation_notification_email || '';
+            emailEnabledEl.checked = !!data.reservation_email_notification_enabled;
             return { ok: true };
         }
 
@@ -3237,6 +3337,73 @@
             showMsg(msg, '保存中…', 'info');
             try {
                 const result = await _saveNotificationCore();
+                if (!result.ok) throw new Error(result.error);
+                showMsg(msg, '保存しました。', 'success');
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // ---------- Human Handoff基盤: AI電話受付ON/OFF・スタッフへの取り次ぎ設定 ----------
+        async function loadPhoneReceptionSettings() {
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/phone-reception-settings');
+                if (!res.ok) throw new Error('取得に失敗しました');
+                const data = await res.json();
+                document.getElementById('ai-phone-reception-enabled').checked = data.ai_phone_reception_enabled !== false;
+                document.getElementById('transfer-to-staff-enabled').checked = !!data.transfer_to_staff_enabled;
+                document.getElementById('transfer-phone-number').value = data.transfer_phone_number || '';
+                document.getElementById('transfer-no-answer-fallback').checked = data.transfer_no_answer_fallback_to_callback !== false;
+            } catch (e) {
+                // 未保存の場合も含め、取得に失敗してもフォームは既定値（AI受付ON）のまま使えるようにする。
+            }
+        }
+
+        // PHASE5-B: 電話受付設定のコア保存関数。
+        // クライアント側の事前チェック（取り次ぎON時に取り次ぎ先電話番号必須）も
+        // コア関数に含め、「全体を保存」からも同様に効くようにする。
+        async function _savePhoneReceptionCore() {
+            const aiEnabledEl = document.getElementById('ai-phone-reception-enabled');
+            const transferEnabledEl = document.getElementById('transfer-to-staff-enabled');
+            const transferPhoneEl = document.getElementById('transfer-phone-number');
+            const transferPhone = transferPhoneEl.value.trim();
+            const fallbackEl = document.getElementById('transfer-no-answer-fallback');
+
+            if (transferEnabledEl.checked && !transferPhone) {
+                return { ok: false, error: 'スタッフへの取り次ぎをONにするには、先に取り次ぎ先の電話番号を入力してください。' };
+            }
+
+            const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/phone-reception-settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ai_phone_reception_enabled: aiEnabledEl.checked,
+                    transfer_to_staff_enabled: transferEnabledEl.checked,
+                    transfer_phone_number: transferPhone === '' ? null : transferPhone,
+                    transfer_no_answer_fallback_to_callback: fallbackEl.checked
+                })
+            });
+            const data = await res.json().catch(function () { return {}; });
+            if (!res.ok) {
+                return { ok: false, error: _extractErrorMessage(data, '保存に失敗しました') };
+            }
+            aiEnabledEl.checked = data.ai_phone_reception_enabled !== false;
+            transferEnabledEl.checked = !!data.transfer_to_staff_enabled;
+            transferPhoneEl.value = data.transfer_phone_number || '';
+            fallbackEl.checked = data.transfer_no_answer_fallback_to_callback !== false;
+            return { ok: true };
+        }
+
+        document.getElementById('phone-reception-settings-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('phone-reception-settings-msg');
+            const btn = document.getElementById('phone-reception-settings-save-btn');
+            btn.disabled = true;
+            showMsg(msg, '保存中…', 'info');
+            try {
+                const result = await _savePhoneReceptionCore();
                 if (!result.ok) throw new Error(result.error);
                 showMsg(msg, '保存しました。', 'success');
             } catch (err) {
@@ -3269,7 +3436,8 @@
                 document.getElementById('basic-save-btn'),
                 document.getElementById('shop-knowledge-save-btn'),
                 document.getElementById('ai-staff-save-btn'),
-                document.getElementById('notification-settings-save-btn')
+                document.getElementById('notification-settings-save-btn'),
+                document.getElementById('phone-reception-settings-save-btn')
             ].filter(Boolean);
 
             saveAllBtn.disabled = true;
@@ -3280,7 +3448,8 @@
                 { label: '基本情報', run: _saveBasicInfoCore },
                 { label: '店舗情報', run: _saveShopKnowledgeCore },
                 { label: 'AIスタッフ設定', run: _saveAiStaffCore },
-                { label: '通知設定', run: _saveNotificationCore }
+                { label: '通知設定', run: _saveNotificationCore },
+                { label: 'AI電話受付設定', run: _savePhoneReceptionCore }
             ];
 
             const results = [];

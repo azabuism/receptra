@@ -19,6 +19,7 @@ from app.schemas.shop import (
     ShopSearchQuery, ShopListResponse, ErrorResponse, ShopHoursResponse,
     ShopUpdateRequest, ShopHoursBulkUpdateRequest,
     ShopNotificationSettingsResponse, ShopNotificationSettingsUpdateRequest,
+    ShopPhoneReceptionSettingsResponse, ShopPhoneReceptionSettingsUpdateRequest,
 )
 from app.deps import get_current_user, get_current_tenant
 from app.schemas.user import CurrentUser
@@ -242,6 +243,8 @@ async def get_shop_notification_settings(
         shop_id=shop.id,
         reservation_notification_phone=shop.reservation_notification_phone,
         reservation_phone_notification_enabled=bool(shop.reservation_phone_notification_enabled),
+        reservation_notification_email=shop.reservation_notification_email,
+        reservation_email_notification_enabled=bool(shop.reservation_email_notification_enabled),
     )
 
 
@@ -295,24 +298,166 @@ async def update_shop_notification_settings(
     if not new_phone:
         new_enabled = False
 
+    # Human Handoff基盤: Emailについても電話と全く同じ整合性ルールを適用する
+    # （Emailが無い状態でONにできない、Emailを消したら自動でOFFへ戻す）。
+    new_email = (
+        update_data["reservation_notification_email"]
+        if "reservation_notification_email" in update_data
+        else shop.reservation_notification_email
+    )
+    requested_email_enabled = update_data.get("reservation_email_notification_enabled")
+
+    if requested_email_enabled is True and not new_email:
+        raise HTTPException(
+            status_code=400,
+            detail="Emailでの通知をONにするには、先にメールアドレスを登録してください。",
+        )
+
+    new_email_enabled = (
+        requested_email_enabled if requested_email_enabled is not None
+        else shop.reservation_email_notification_enabled
+    )
+    if not new_email:
+        new_email_enabled = False
+
     shop.reservation_notification_phone = new_phone
     shop.reservation_phone_notification_enabled = bool(new_enabled)
+    shop.reservation_notification_email = new_email
+    shop.reservation_email_notification_enabled = bool(new_email_enabled)
     shop.updated_at = datetime.utcnow()
 
     await db.commit()
     await db.refresh(shop)
 
     # 電話番号は個人情報のため、フルでログに残さない（末尾4桁のみのマスク表示）。
+    # Emailも同じ理由でログにはドメイン部分のみ残す（ローカル部分はマスク）。
     masked = ("****" + shop.reservation_notification_phone[-4:]) if shop.reservation_notification_phone else None
+    masked_email = None
+    if shop.reservation_notification_email and "@" in shop.reservation_notification_email:
+        _, _, domain = shop.reservation_notification_email.partition("@")
+        masked_email = "****@" + domain
     logger.info(
-        "予約通知連絡先を更新 shop_id=%s enabled=%s phone_masked=%s",
+        "予約通知連絡先を更新 shop_id=%s phone_enabled=%s phone_masked=%s email_enabled=%s email_masked=%s",
         shop_id, shop.reservation_phone_notification_enabled, masked,
+        shop.reservation_email_notification_enabled, masked_email,
     )
 
     return ShopNotificationSettingsResponse(
         shop_id=shop.id,
         reservation_notification_phone=shop.reservation_notification_phone,
         reservation_phone_notification_enabled=shop.reservation_phone_notification_enabled,
+        reservation_notification_email=shop.reservation_notification_email,
+        reservation_email_notification_enabled=shop.reservation_email_notification_enabled,
+    )
+
+
+@router.get(
+    "/{shop_id}/phone-reception-settings",
+    response_model=ShopPhoneReceptionSettingsResponse,
+    summary="AI電話受付ON/OFF・ライブ転送設定を取得（オーナー専用）",
+    description=(
+        "AI電話受付のON/OFFと、将来のライブ転送機能の設定を取得する。"
+        "オーナー認証必須・Customer向けAPIには一切含まれない非公開情報。"
+        "ai_phone_reception_enabledはRealtime Voice AI（ブラウザ経由の音声通話）の"
+        "セッション発行時に実際に参照される。transfer_*系フィールドは、"
+        "RECEPTRAの電話（Vonage）着信経路が店舗ごとの振り分けに未対応のため、"
+        "現時点ではまだどの着信処理からも参照されない設定の土台のみを提供する。"
+    ),
+)
+async def get_shop_phone_reception_settings(
+    shop_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ShopPhoneReceptionSettingsResponse:
+    shop = await db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店舗が見つかりません")
+    if shop.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="この店舗を編集する権限がありません")
+
+    return ShopPhoneReceptionSettingsResponse(
+        shop_id=shop.id,
+        ai_phone_reception_enabled=bool(shop.ai_phone_reception_enabled),
+        transfer_to_staff_enabled=bool(shop.transfer_to_staff_enabled),
+        transfer_phone_number=shop.transfer_phone_number,
+        transfer_no_answer_fallback_to_callback=bool(shop.transfer_no_answer_fallback_to_callback),
+    )
+
+
+@router.put(
+    "/{shop_id}/phone-reception-settings",
+    response_model=ShopPhoneReceptionSettingsResponse,
+    summary="AI電話受付ON/OFF・ライブ転送設定を保存（オーナー専用）",
+    description=(
+        "AI電話受付のON/OFFと、将来のライブ転送機能の設定を保存する。"
+        "ai_phone_reception_enabledはRealtime Voice AIのセッション発行時に実際に"
+        "参照される（OFFにするとセッションが発行されずOpenAI側のコストも発生しない）。"
+        "本フェーズでは実際のPSTN転送・実際の着信振り分けは実装せず、"
+        "transfer_*系フィールドは設定の保存のみを行う。"
+    ),
+)
+async def update_shop_phone_reception_settings(
+    shop_id: str,
+    request: ShopPhoneReceptionSettingsUpdateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ShopPhoneReceptionSettingsResponse:
+    shop = await db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店舗が見つかりません")
+    if shop.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="この店舗を編集する権限がありません")
+
+    update_data = request.dict(exclude_unset=True)
+
+    if "ai_phone_reception_enabled" in update_data:
+        shop.ai_phone_reception_enabled = bool(update_data["ai_phone_reception_enabled"])
+
+    # 転送先電話番号: reservation_notification_phoneと全く同じ整合性ルール
+    # （番号が無い状態でONにできない、番号を消したら自動でOFFへ戻す）。
+    new_transfer_phone = (
+        update_data["transfer_phone_number"]
+        if "transfer_phone_number" in update_data
+        else shop.transfer_phone_number
+    )
+    requested_transfer_enabled = update_data.get("transfer_to_staff_enabled")
+
+    if requested_transfer_enabled is True and not new_transfer_phone:
+        raise HTTPException(
+            status_code=400,
+            detail="担当者への転送をONにするには、先に転送先電話番号を登録してください。",
+        )
+
+    new_transfer_enabled = (
+        requested_transfer_enabled if requested_transfer_enabled is not None
+        else shop.transfer_to_staff_enabled
+    )
+    if not new_transfer_phone:
+        new_transfer_enabled = False
+
+    shop.transfer_phone_number = new_transfer_phone
+    shop.transfer_to_staff_enabled = bool(new_transfer_enabled)
+
+    if "transfer_no_answer_fallback_to_callback" in update_data:
+        shop.transfer_no_answer_fallback_to_callback = bool(update_data["transfer_no_answer_fallback_to_callback"])
+
+    shop.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(shop)
+
+    masked_transfer = ("****" + shop.transfer_phone_number[-4:]) if shop.transfer_phone_number else None
+    logger.info(
+        "AI電話受付・転送設定を更新 shop_id=%s ai_reception=%s transfer_enabled=%s transfer_phone_masked=%s fallback=%s",
+        shop_id, shop.ai_phone_reception_enabled, shop.transfer_to_staff_enabled,
+        masked_transfer, shop.transfer_no_answer_fallback_to_callback,
+    )
+
+    return ShopPhoneReceptionSettingsResponse(
+        shop_id=shop.id,
+        ai_phone_reception_enabled=shop.ai_phone_reception_enabled,
+        transfer_to_staff_enabled=shop.transfer_to_staff_enabled,
+        transfer_phone_number=shop.transfer_phone_number,
+        transfer_no_answer_fallback_to_callback=shop.transfer_no_answer_fallback_to_callback,
     )
 
 

@@ -22,13 +22,16 @@ from datetime import datetime, date as date_type, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.deps import get_db
 from app.models.ai_staff_settings import AIStaffSettings
 from app.models.shop import Shop
 from app.models.reservation import Reservation, ReservationStatus
+from app.models.callback_request import CallbackRequest, CallbackRequestStatus, CallbackRequestReasonCode
 from app.services import realtime_voice_ai
 from app.schemas.reservation import (
     CheckAvailabilityRequest, CheckAvailabilityResponse,
@@ -37,6 +40,7 @@ from app.schemas.reservation import (
     ConfirmCustomerIdentityToolRequest, ConfirmCustomerIdentityToolResponse,
     GetCustomerContextToolRequest, GetCustomerContextToolResponse,
     SetConversationLanguageToolRequest, SetConversationLanguageToolResponse,
+    RequestCallbackToolRequest, RequestCallbackToolResponse,
     ReservationCreateRequest,
 )
 from app.schemas.shop_knowledge import GetShopInfoToolRequest
@@ -47,6 +51,7 @@ from app.services.customer_memory import (
 )
 from app.services import customer_context
 from app.services import conversation_language as conversation_language_state
+from app.services.outbound_dispatch import enqueue_callback_requested_call
 
 logger = logging.getLogger("receptra.realtime_voice")
 
@@ -211,6 +216,28 @@ def _check_set_conversation_language_rate_limit(shop_id: str) -> None:
         t for t in bucket if now - t < _SET_CONVERSATION_LANGUAGE_RATE_LIMIT_WINDOW_SECONDS
     ]
     if len(bucket) >= _SET_CONVERSATION_LANGUAGE_RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
+
+
+# Human Handoff基盤: request_callback Tool Calling用の別バケット。DB書き込みを
+# 伴い、かつ成立すると担当者への電話/Email通知(Outbound)につながるため、
+# 「無駄な通知を大量発生させない」という設計方針に沿って、create_reservationと
+# 同程度の厳しめの制限にする（他のToolのクォータとは完全に独立させる。
+# AI側の会話ルールで乱用を防ぐのが一次防御、これは技術的な最終防衛線）。
+_CALLBACK_TOOL_RATE_LIMIT_WINDOW_SECONDS = 60
+_CALLBACK_TOOL_RATE_LIMIT_MAX_REQUESTS = 10
+_recent_callback_tool_requests: dict[str, list] = {}
+
+
+def _check_callback_tool_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _recent_callback_tool_requests.setdefault(shop_id, [])
+    bucket[:] = [t for t in bucket if now - t < _CALLBACK_TOOL_RATE_LIMIT_WINDOW_SECONDS]
+    if len(bucket) >= _CALLBACK_TOOL_RATE_LIMIT_MAX_REQUESTS:
         raise HTTPException(
             status_code=429,
             detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
@@ -497,6 +524,23 @@ async def create_realtime_voice_session(shop_id: str, db: AsyncSession = Depends
     shop = await db.get(Shop, shop_id)
     if not shop or not shop.is_active:
         raise HTTPException(status_code=404, detail="店舗が見つかりません")
+
+    # Human Handoff基盤: AI電話受付がOFFの店舗では、Realtimeセッション自体を
+    # 一切発行しない（OpenAI Realtime APIへのclient_secrets.create()呼び出しに
+    # 一切到達しないため、OpenAI側のコストが完全にゼロになる）。
+    # 谷村様の明示的な指示: 「AIが一度応答してからOFFである旨を説明して切る」
+    # という設計は禁止されており、そもそもセッションを開始しないこと。
+    # shop.ai_phone_reception_enabledのデフォルトはTrue（既存店舗の動作を
+    # 変更しない）。
+    if not shop.ai_phone_reception_enabled:
+        logger.info("AI電話受付がOFFのためRealtimeセッションを発行しません shop_id=%s", shop_id)
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "現在、こちらの音声AI受付はご利用いただけません。",
+                "reason_code": "ai_phone_reception_disabled",
+            },
+        )
 
     try:
         session_info = await realtime_voice_ai.create_realtime_session(db, shop)
@@ -1038,3 +1082,151 @@ async def get_shop_info_tool(
         # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(success=False)で返す。
         logger.error("get_shop_info Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
         return {"success": False, "reason_code": "temporarily_unavailable"}
+
+
+@router.post("/tools/request-callback", response_model=RequestCallbackToolResponse)
+async def request_callback_tool(
+    shop_id: str,
+    request: RequestCallbackToolRequest,
+    db: AsyncSession = Depends(get_db),
+) -> RequestCallbackToolResponse:
+    """
+    Human Handoff基盤: request_callback Tool Calling専用エンドポイント（認証不要）。
+
+    設計方針（重要・必ず守ること）:
+    - shop_idは他のToolと同じくURLパスの値のみを使う。call_idもAIの引数ではなく、
+      ブラウザがOpenAI Realtimeのfunction_callイベントから読み取った値をそのまま
+      転送したものであり、create_reservation_toolと全く同じ
+      "realtime_voice:{shop_id}:{call_id}" 形式でidempotency_keyへnamespace化する。
+      同一キーによる同時多重INSERTは、最終的にDBの一意インデックス
+      (ux_callback_requests_idempotency_key)が最終防衛する
+      （create_reservation_toolと同じ、SELECTベースの事前チェックに頼らない設計）。
+    - このToolの目的は「AIが安全に回答・予約できない場合に、担当者へ引き継ぐ」ことで
+      あり、CallbackRequest行のDB保存が確実に成功して初めてsuccess=Trueを返す。
+      成功後にOutbound通知（担当者への電話）のenqueueを試みるが、これは
+      ベストエフォートの下流処理であり、失敗してもCallbackRequest保存自体
+      （＝AIへ返すsuccess=True）を取り消さない。AIが「担当者から折り返します」と
+      お客様へ案内した後で、その根拠となる受付記録自体が消えることは絶対にない
+      設計にするため（Email通知は本フェーズでは実際に送信する仕組みを実装しない。
+      email_notification_statusへ"skipped"を記録し、値の置き場所だけ用意する）。
+    - reason_codeはCallbackRequestReasonCodeの既知の値のみを受け付け、未知の値や
+      未指定の場合は安全側で"other"にフォールバックする（AIが将来追加される
+      reason_codeを古いプロンプトのまま送ってきても失敗にはしない）。
+    - desired_date/desired_time/party_sizeはAIが把握している場合のみの参考情報
+      であり、ここで空き状況の再判定は一切行わない（Human Handoffの時点で、AIは
+      既に「今は自分で安全に判断できない」と判断済みであるため、Toolの引数を
+      検証のうえそのまま保存するのみ。形式が不正な値は静かに無視してNoneのまま
+      保存する＝受付自体は失敗させない）。
+    - customer_phone/customer_nameの妥当性（本人確認・桁数チェック等）はAI側の
+      会話ルール（既存のBOOKING_SAFETY同様、1桁ずつ復唱確認する等）に委ね、この
+      エンドポイントでは追加の検証を行わない（create_reservation_toolのguest_phone
+      と同じ方針）。
+    """
+    _check_callback_tool_rate_limit(shop_id)
+
+    def _safe_failure() -> RequestCallbackToolResponse:
+        return RequestCallbackToolResponse(success=False, reason_code=None)
+
+    try:
+        shop = await db.get(Shop, shop_id)
+        if not shop or not shop.is_active:
+            # shop_idはAIの引数ではなくURLパス由来のため、これが起きるのは
+            # 店舗の非公開化等こちら側の事情であり、AIやお客様の入力ミスではない。
+            return _safe_failure()
+
+        valid_reason_codes = {c.value for c in CallbackRequestReasonCode}
+        reason_code = (
+            request.reason_code if request.reason_code in valid_reason_codes
+            else CallbackRequestReasonCode.OTHER.value
+        )
+
+        desired_date_val = None
+        if request.desired_date:
+            try:
+                desired_date_val = date_type.fromisoformat(request.desired_date)
+            except ValueError:
+                desired_date_val = None
+
+        desired_time_val = None
+        if request.desired_time:
+            try:
+                desired_time_val = datetime.strptime(request.desired_time, "%H:%M").time()
+            except ValueError:
+                desired_time_val = None
+
+        idempotency_key = f"realtime_voice:{shop_id}:{request.call_id}"
+
+        callback_request = CallbackRequest(
+            shop_id=shop_id,
+            voice_session_id=request.session_id,
+            reason_code=reason_code,
+            customer_name=request.customer_name,
+            customer_phone=request.customer_phone,
+            inquiry_text=request.inquiry_text,
+            desired_date=desired_date_val,
+            desired_time=desired_time_val,
+            party_size=request.party_size,
+            service_id=request.service_id,
+            status=CallbackRequestStatus.PENDING.value,
+            # Email送信の仕組み自体は本フェーズでは未実装のため、常に"skipped"。
+            email_notification_status="skipped",
+            idempotency_key=idempotency_key,
+        )
+        db.add(callback_request)
+
+        try:
+            await db.commit()
+        except IntegrityError:
+            # create_reservation_toolと同じLayer1設計: 同一call_idでの同時多重
+            # INSERT（Request A/Bが共にcommit前を通過し、片方だけがDBの一意制約
+            # ux_callback_requests_idempotency_keyに違反してここへ到達するケース）。
+            # 先にcommitできた側の既存行を取得し、同じ成功結果を返す。
+            await db.rollback()
+            result = await db.execute(
+                select(CallbackRequest).filter(CallbackRequest.idempotency_key == idempotency_key)
+            )
+            existing = result.scalar_one_or_none()
+            if existing:
+                logger.info(
+                    "request_callback Tool: idempotency_key=%s のcommit競合を検知。"
+                    "先に成立した受付(id=%s)を返します (shop_id=%s)",
+                    idempotency_key, existing.id, shop_id,
+                )
+                return RequestCallbackToolResponse(success=True, reason_code=existing.reason_code)
+            logger.error(
+                "request_callback Tool: idempotency_keyの一意制約違反後、既存行が見つかりません "
+                "(shop_id=%s, call_id=%s)", shop_id, request.call_id,
+            )
+            return _safe_failure()
+
+        # ここに到達した時点でCallbackRequestのDB保存は確定済み（success=Trueが確定）。
+        # 以降のOutbound通知(電話)enqueueはベストエフォートの下流処理であり、
+        # 失敗してもこの結果（success=True）を変更しない。
+        try:
+            job_id = await enqueue_callback_requested_call(
+                shop_id=shop_id,
+                callback_request_id=callback_request.id,
+                notification_enabled=bool(shop.reservation_phone_notification_enabled),
+                notification_phone=shop.reservation_notification_phone,
+            )
+            if job_id:
+                callback_request.outbound_call_job_id = job_id
+                callback_request.status = CallbackRequestStatus.NOTIFIED.value
+                await db.commit()
+        except Exception:
+            # 通知enqueueの失敗はCallbackRequest保存自体の成功（success=True）に
+            # 一切影響させない（既にcommit済みのため、受付記録は確実に残る）。
+            logger.exception(
+                "request_callback Tool: Outbound通知enqueueに失敗しました"
+                "（受付自体は保存済みのため処理を継続します） "
+                "shop_id=%s callback_request_id=%s",
+                shop_id, callback_request.id,
+            )
+
+        return RequestCallbackToolResponse(success=True, reason_code=reason_code)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(success=False)で返す。
+        logger.error("request_callback Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
+        return _safe_failure()

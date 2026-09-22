@@ -285,6 +285,33 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ customer_memories.last_conversation_language カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # Human Handoff基盤: callback_requestsテーブル自体はapp/models/__init__.pyで
+            # importされているため、上記のBase.metadata.create_all()により新規テーブル
+            # として自動作成される（他のPhase3系新規テーブルと同じ方針。ここでの
+            # 明示的なCREATE TABLEは不要）。以下はShopへの新規カラム追加のみ。
+            #
+            # reservation_notification_email/reservation_email_notification_enabled:
+            #   既存のreservation_notification_phone/reservation_phone_notification_enabled
+            #   と同じ「連絡先の値」と「通知ON/OFF」を分離した設計を踏襲（値をNULLに
+            #   戻さず単にOFFにするだけの運用も可能にするため）。
+            # ai_phone_reception_enabled:
+            #   デフォルトTRUEで追加し、既存店舗の動作（AIが電話に出る）を変更しない
+            #   （shops.reservations_enabledの追加時と同じ「既存動作を壊さない」方針）。
+            # transfer_to_staff_enabled/transfer_phone_number/
+            # transfer_no_answer_fallback_to_callback:
+            #   将来のライブ転送機能（本フェーズでは未実装）向けのデータモデルのみ。
+            #   transfer_phone_numberはreservation_notification_phoneとは意図的に
+            #   別カラムとし、混同しない（谷村様の明示的な指示）。
+            try:
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS reservation_notification_email VARCHAR(255)"))
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS reservation_email_notification_enabled BOOLEAN NOT NULL DEFAULT false"))
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS ai_phone_reception_enabled BOOLEAN NOT NULL DEFAULT true"))
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS transfer_to_staff_enabled BOOLEAN NOT NULL DEFAULT false"))
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS transfer_phone_number VARCHAR(20)"))
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS transfer_no_answer_fallback_to_callback BOOLEAN NOT NULL DEFAULT true"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ shops のHuman Handoff/電話受付設定用カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 

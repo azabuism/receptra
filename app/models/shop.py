@@ -90,7 +90,40 @@ class Shop(Base):
     # 電話番号が未登録のままTrueにはできない、電話番号を削除したらFalseに
     # 戻す、という整合性はAPI層（update_shop_notification_settings）で保証する。
     reservation_phone_notification_enabled = Column(Boolean, nullable=False, default=False)
-    
+
+    # Human Handoff基盤: 予約・折り返し通知の連絡先Email（オーナー専用・非公開）。
+    # reservation_notification_phone/enabledと全く同じ思想・同じ非公開方針
+    # （ShopResponse等の公開スキーマには絶対に含めない。専用のオーナー認証付き
+    # エンドポイントからのみ読み書きする）。未設定の場合、通知はTenant.email
+    # （アカウント登録メール）へフォールバックする想定（app.services側で解決）。
+    reservation_notification_email = Column(String(255), nullable=True)
+    reservation_email_notification_enabled = Column(Boolean, nullable=False, default=False)
+
+    # Human Handoff基盤: AI電話受付 ON/OFF（オーナー専用・非公開の運用設定。
+    # 値自体はCustomer向けAPIに含めても実害は無いが、他のtoggle群と同じ
+    # 非公開エンドポイントにまとめて置く）。
+    # 重要: 現時点ではRECEPTRAの実際の電話着信経路（app/routers/vonage_voice.py）
+    # は単一共有番号を前提としており、着信番号から店舗を特定する仕組みが
+    # まだ存在しない（telephony ingressが未実装）。そのためこのフラグは、
+    # 将来telephony ingressが実装された際に参照される設定の土台であり、
+    # 現時点ではまだどの着信処理からも参照されない。デフォルトTrueは
+    # 「現状のAI受付という既定動作を変えない」ことを意味する。
+    ai_phone_reception_enabled = Column(Boolean, nullable=False, default=True)
+
+    # Human Handoff基盤: 将来のライブ転送設定（オーナー専用・非公開）。
+    # 重要: transfer_phone_numberは「お客様の通話をリアルタイムで転送する先」
+    # であり、reservation_notification_phone（担当者への事後通知専用の番号）
+    # とは意味が異なる別フィールド。安易に同じ値を兼用しない
+    # （転送先と通知先が異なる店舗が実在しうるため）。
+    # 現時点では実際のPSTN転送機能自体が未実装のため、これらの値は
+    # どの通話処理からも参照されない設定の土台のみ。
+    transfer_to_staff_enabled = Column(Boolean, nullable=False, default=False)
+    transfer_phone_number = Column(String(20), nullable=True)
+    # 担当者への転送呼出に応答が無かった場合に、Human Handoff（折り返し受付）
+    # へ自動的に切り替えるかどうか。転送機能自体が未実装のため現時点では
+    # 参照されないが、転送を実装する際の既定の安全側挙動として先に定義しておく。
+    transfer_no_answer_fallback_to_callback = Column(Boolean, nullable=False, default=True)
+
     # 画像
     thumbnail_url = Column(String(500), nullable=True)
     cover_image_url = Column(String(500), nullable=True)
@@ -179,6 +212,11 @@ class Shop(Base):
     # あるため、ORM cascadeとDB制約の二重の防御になっている
     # （app/models/customer_memory.pyのdocstring参照）。
     customer_memories = relationship("CustomerMemory", back_populates="shop", cascade="all, delete-orphan")
+
+    # Human Handoff基盤: 店舗削除時にCallbackRequestも一緒に削除されるように
+    # する（OutboundCallJob/OutboundCallLogと同じ理由。ORM cascadeが無いと
+    # FK制約違反でdelete_shop()が失敗するため）。
+    callback_requests = relationship("CallbackRequest", back_populates="shop", cascade="all, delete-orphan")
 
     # インデックス
     __table_args__ = (

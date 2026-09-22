@@ -850,7 +850,14 @@
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                throw new Error(data.detail || ('セッション発行エラー: ' + res.status));
+                const err = new Error(data.detail || ('セッション発行エラー: ' + res.status));
+                // Human Handoff基盤: AI電話受付がOFFの店舗では、通常の接続失敗
+                // （ネットワーク不調・サーバーエラー等）とは異なるメッセージを
+                // 表示するため、reason_codeで区別できるようにする。
+                if (data.reason_code === 'ai_phone_reception_disabled') {
+                    err.aiReceptionDisabled = true;
+                }
+                throw err;
             }
             return data;
         }
@@ -1755,9 +1762,18 @@
                 }, MAX_CALL_DURATION_MS);
             } catch (e) {
                 logEvent('エラー: ' + e.message);
-                showErrorBanner('接続に失敗しました。しばらくしてからもう一度お試しいただくか、お電話でお問い合わせください。');
-                statusText.textContent = '接続に失敗しました';
-                subStatusText.textContent = 'もう一度お試しください。';
+                if (e && e.aiReceptionDisabled) {
+                    // Human Handoff基盤: 技術的な接続失敗ではなく、店舗側がAI電話受付を
+                    // OFFにしている状態であることを明確に区別して案内する
+                    // （「接続に失敗しました」という誤解を招く表示にしない）。
+                    showErrorBanner('現在、こちらの音声AI受付はご利用いただけません。');
+                    statusText.textContent = 'AI受付は現在休止中です';
+                    subStatusText.textContent = '';
+                } else {
+                    showErrorBanner('接続に失敗しました。しばらくしてからもう一度お試しいただくか、お電話でお問い合わせください。');
+                    statusText.textContent = '接続に失敗しました';
+                    subStatusText.textContent = 'もう一度お試しください。';
+                }
                 bigMic.classList.remove('connecting');
                 bigMic.classList.add('error');
                 startBtn.disabled = false;

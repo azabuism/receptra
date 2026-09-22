@@ -38,8 +38,9 @@ from app.models.outbound_call import (
 )
 from app.models.reservation import Reservation
 from app.models.shop import Shop
+from app.models.callback_request import CallbackRequest
 from app.services.outbound_call_provider import get_outbound_call_provider
-from app.services.outbound_voice_ai import build_reservation_confirmed_message
+from app.services.outbound_voice_ai import build_reservation_confirmed_message, build_callback_requested_message
 
 logger = logging.getLogger("receptra.outbound.worker")
 
@@ -61,18 +62,37 @@ async def _process_one_job(db, job: OutboundCallJob, settings) -> None:
 
     shop = await db.get(Shop, job.shop_id)
     reservation = None
-    if job.reservation_id:
+    callback_request = None
+    message_text = None
+
+    if job.call_type == "reservation_confirmed" and job.reservation_id:
         result = await db.execute(
             select(Reservation)
             .options(selectinload(Reservation.service))
             .filter(Reservation.id == job.reservation_id)
         )
         reservation = result.scalar_one_or_none()
+        if shop is not None and reservation is not None:
+            message_text = build_reservation_confirmed_message(shop, reservation)
+    elif job.call_type == "callback_requested":
+        # Human Handoff基盤: OutboundCallJobにcallback_request_id列は追加せず
+        # （OutboundCallJob<->CallbackRequest間の循環FKを避け、店舗削除時の
+        # カスケード順序を複雑化させないため）、CallbackRequest側が持つ
+        # outbound_call_job_id の逆参照でこのジョブに対応する受付行を検索する
+        # （app.services.outbound_dispatch.enqueue_callback_requested_call参照）。
+        result = await db.execute(
+            select(CallbackRequest).filter(CallbackRequest.outbound_call_job_id == job.id)
+        )
+        callback_request = result.scalar_one_or_none()
+        if shop is not None and callback_request is not None:
+            message_text = build_callback_requested_message(shop, callback_request)
 
-    if shop is None or reservation is None or job.call_type != "reservation_confirmed":
-        # Phase 1では reservation_confirmed のみをサポートする。店舗・予約が
-        # 既に削除されている等、実行不能なジョブはリトライしても解決しないため
-        # 即座にFAILED確定する（無限リトライを避ける）。
+    if shop is None or message_text is None:
+        # サポート対象のcall_type（reservation_confirmed / callback_requested）
+        # であっても、店舗・予約・折り返し受付のいずれかが既に削除されている等、
+        # 実行不能なジョブはリトライしても解決しないため即座にFAILED確定する
+        # （無限リトライを避ける。未サポートのcall_typeが混入した場合も同様に
+        # 即FAILEDとし、既存のreservation_confirmed系ジョブの挙動は一切変えない）。
         job.status = OutboundCallJobStatus.FAILED.value
         job.last_error_category = "unsupported_or_missing_data"
         await db.commit()
@@ -89,7 +109,6 @@ async def _process_one_job(db, job: OutboundCallJob, settings) -> None:
         await db.commit()
         return
 
-    message_text = build_reservation_confirmed_message(shop, reservation)
     provider = get_outbound_call_provider()
 
     try:
