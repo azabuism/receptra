@@ -669,8 +669,15 @@ def _build_language_rules_section(ai_languages: list, staff_languages: Optional[
             "このツールを呼び出したこと自体をお客様に伝える必要はありません。"
         )
 
+    # Phase 5B修正: 以前は「staffがja以外にも対応している場合のみ」注記を
+    # 出していたが（normalized_staff != [REQUIRED_AI_LANGUAGE]）、これでは
+    # 「AIはja+en+ko+zh対応・staffはjaのみ」という、section19が最も懸念する
+    # 典型例（AI対応言語 > staff対応言語）で注記が出ない欠陥があった
+    # （staffがja固定＝REQUIRED_AI_LANGUAGEのみの場合に条件がFalseになる
+    # ため）。正しくは「AIの対応言語リストとstaffの対応言語リストが異なる
+    # 場合は常に注記する」であるべきなので、比較対象をai_languagesに変更する。
     normalized_staff = list(staff_languages) if staff_languages else [REQUIRED_AI_LANGUAGE]
-    if normalized_staff and normalized_staff != [REQUIRED_AI_LANGUAGE]:
+    if normalized_staff and normalized_staff != ai_languages:
         staff_list_str = "・".join(display_name_for(c) for c in normalized_staff)
         lines.append(
             f"- なお、この店舗の店頭スタッフが対応できる言語は{staff_list_str}です。"

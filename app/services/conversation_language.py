@@ -58,6 +58,40 @@ def _purge_expired() -> None:
         _session_languages.pop(k, None)
 
 
+def register_voice_session(shop_id: str, voice_session_id: str) -> None:
+    """
+    Phase 5B: POST /session（Realtimeセッション発行）の時点で、この
+    voice_session_idがどの店舗のものであるかをあらかじめ記録しておく。
+
+    目的（section26のセキュリティテスト対象・多店舗isolationの強化）:
+    - 以前はset_session_language()が呼ばれて初めて(shop_id, voice_session_id)
+      の組が記録されていたため、まだ一度もset_conversation_languageが
+      呼ばれていないvoice_session_idに対しては「この店舗のものである」という
+      記録が一切存在しなかった。そのため、他店舗のURLへ同じ
+      voice_session_id（推測困難な高エントロピー値だが、たとえば同一顧客が
+      複数店舗のタブを開いていた場合の誤操作等）を渡すと、その店舗の
+      ものとして書き込まれてしまう余地があった。
+    - この関数でセッション発行時点の店舗を先に記録しておくことで、
+      set_session_language()は「最初にこのvoice_session_idを見た店舗」を
+      正としてonly、以後別のshop_idからの上書きを拒否できるようになる
+      （既存のget_session_language()のshop_id一致チェックと対になる、
+      書き込み側のisolation強化）。
+    - language_code は未設定（None）のまま記録する。まだ一度も
+      set_conversation_languageが呼ばれていない状態と区別しない
+      （get_session_languageは従来どおりNoneを返す＝「不明」として扱う）。
+    - 既に同じvoice_session_idの記録がある場合は上書きしない
+      （token_urlsafe(24)の衝突は現実的に起こらないが、念のため）。
+    """
+    if not voice_session_id or not shop_id:
+        return
+    _purge_expired()
+    _session_languages.setdefault(voice_session_id, {
+        "shop_id": shop_id,
+        "language_code": None,
+        "set_at": time_module.monotonic(),
+    })
+
+
 def set_session_language(
     shop_id: str,
     voice_session_id: str,
@@ -72,10 +106,28 @@ def set_session_language(
     をeffective_ai_languagesで正規化した結果）に含まれる場合のみ、状態を
     更新してTrueを返す。それ以外は状態を一切変更せずFalseを返す
     （呼び出し元はエラーにはせず、現在の言語のまま会話を継続する）。
+
+    Phase 5B追記: このvoice_session_idが既に別のshop_idで記録されている
+    場合（register_voice_session、または過去のset_session_language呼び出し
+    によるもの）は、今回呼び出されたshop_idと一致しない限り一切状態を
+    変更せずFalseを返す（他店舗のsessionへの書き込みを防ぐ、isolationの
+    強化）。まだ記録が存在しない場合（register_voice_sessionが何らかの
+    理由で呼ばれていない場合を含む）は、従来どおりこの呼び出し時点の
+    shop_idで新規に記録する（後方互換性のため）。
     """
     if not voice_session_id or not shop_id:
         return False
     if not is_valid_language_code(language_code):
+        return False
+
+    _purge_expired()
+    existing = _session_languages.get(voice_session_id)
+    if existing is not None and existing["shop_id"] != shop_id:
+        logger.warning(
+            "set_conversation_language: voice_session_idの店舗不一致のため拒否しました "
+            "requested_shop_id=%s registered_shop_id=%s",
+            shop_id, existing["shop_id"],
+        )
         return False
 
     allowed = effective_ai_languages(ai_supported_languages_raw)
@@ -87,7 +139,6 @@ def set_session_language(
         )
         return False
 
-    _purge_expired()
     _session_languages[voice_session_id] = {
         "shop_id": shop_id,
         "language_code": language_code,

@@ -520,6 +520,11 @@ async def create_realtime_voice_session(shop_id: str, db: AsyncSession = Depends
     # 受け取った値をそのままdictのキーとして使うのみ）。
     voice_session_id = secrets.token_urlsafe(24)
 
+    # Phase 5B: set_conversation_language の書き込み側isolationを強化するため、
+    # この時点でvoice_session_idがどの店舗のものかを先に記録しておく
+    # （app.services.conversation_language.register_voice_session参照）。
+    conversation_language_state.register_voice_session(shop_id, voice_session_id)
+
     return {
         "shop_id": shop_id,
         "shop_name": shop.name,
