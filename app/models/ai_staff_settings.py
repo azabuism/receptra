@@ -26,7 +26,7 @@ AIスタッフ設定（Realtime Voice AI Phase2）
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, LargeBinary
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, LargeBinary, Boolean
 from sqlalchemy.orm import relationship, deferred
 
 from app.database import Base
@@ -85,6 +85,17 @@ class AIStaffSettings(Base):
     # 場合は常にシステムルール・言語ルールが優先される
     # （app.services.realtime_voice_ai の instructions 組み立て処理を参照）。
     custom_instructions = Column(Text, nullable=True)
+
+    # ===== Fast Reservation Flow: 来店理由の確認設定 =====
+    #
+    # 予約受付時に、お客様へ来店・来院の目的を確認するかどうかのYES/NO設定。
+    # 病院・美容室・整体等では有用な場合が多いが、飲食店等では不要な場合が
+    # 多いため、店舗オーナーが任意でON/OFFできるようにする（デフォルトOFF＝
+    # 既存店舗の挙動を変更しない）。
+    # 重要: この設定は「詳細なメニュー・施術・診療内容の選択」を求めるものでは
+    # ない。あくまで一言程度の来店目的を尋ねるかどうかだけを制御する
+    # （app.services.realtime_voice_ai._VISIT_REASON_TEMPLATE参照）。
+    ask_visit_reason_enabled = Column(Boolean, nullable=False, default=False)
 
     # ===== Phase3E-3: Zero-Wait Greeting音声のDBキャッシュ =====
     #

@@ -56,7 +56,7 @@ def _to_response(shop_id: str, row: AIStaffSettings | None) -> AIStaffSettingsRe
     if row is None:
         # レコードが存在しない場合は全項目Noneのデフォルトレスポンスを返す
         # （フロント側はこれをもって「Phase1相当のデフォルト動作」として表示する）。
-        return AIStaffSettingsResponse(shop_id=shop_id)
+        return AIStaffSettingsResponse(shop_id=shop_id, ask_visit_reason_enabled=False)
     return AIStaffSettingsResponse(
         shop_id=shop_id,
         staff_name=row.staff_name,
@@ -67,6 +67,7 @@ def _to_response(shop_id: str, row: AIStaffSettings | None) -> AIStaffSettingsRe
         energy_level=row.energy_level,
         greeting=row.greeting,
         custom_instructions=row.custom_instructions,
+        ask_visit_reason_enabled=bool(row.ask_visit_reason_enabled),
         updated_at=row.updated_at,
     )
 

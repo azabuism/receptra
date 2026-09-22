@@ -744,7 +744,22 @@
                         ※日本語での応対や電話番号・日時の読み上げ方など、システムの基本ルールより優先されることはありません。
                     </p>
                 </div>
-                <button type="submit" class="btn" id="ai-staff-save-btn">保存する</button>
+
+                <!-- Fast Reservation Flow: 予約時に来店理由を確認するかどうかのYES/NO設定。
+                     detailedな施術・診療メニューの選択までは求めない旨を明記し、
+                     オーナーが過度な期待をしないようにする。 -->
+                <div class="notif-toggle-row" style="margin-top: 16px;">
+                    <div>
+                        <div class="notif-toggle-title">予約時に来店理由を確認する</div>
+                        <div class="notif-toggle-desc">予約時に、お客様へ来店・来院の目的を確認します。詳細なメニュー選択までは求めません。</div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="ai-staff-ask-visit-reason">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <button type="submit" class="btn" id="ai-staff-save-btn" style="margin-top: 16px;">保存する</button>
                 <div class="msg" id="ai-staff-msg"></div>
             </form>
         </div>
@@ -3157,6 +3172,7 @@
                 document.getElementById('ai-staff-energy').value = data.energy_level || '';
                 document.getElementById('ai-staff-greeting').value = data.greeting || '';
                 document.getElementById('ai-staff-custom-instructions').value = data.custom_instructions || '';
+                document.getElementById('ai-staff-ask-visit-reason').checked = !!data.ask_visit_reason_enabled;
             } catch (e) {
                 await loadAiStaffVoiceOptions(null);
             }
@@ -3172,7 +3188,8 @@
                 brightness: document.getElementById('ai-staff-brightness').value || null,
                 energy_level: document.getElementById('ai-staff-energy').value || null,
                 greeting: document.getElementById('ai-staff-greeting').value.trim() || null,
-                custom_instructions: document.getElementById('ai-staff-custom-instructions').value.trim() || null
+                custom_instructions: document.getElementById('ai-staff-custom-instructions').value.trim() || null,
+                ask_visit_reason_enabled: document.getElementById('ai-staff-ask-visit-reason').checked
             };
             const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/ai-staff-settings', {
                 method: 'PUT',

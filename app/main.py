@@ -325,6 +325,19 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ callback_requests.resolution_status カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # Fast Reservation Flow: 予約時に来店理由を確認するかどうかの
+            # オーナー設定（ai_staff_settings.ask_visit_reason_enabled）。
+            # デフォルトfalseのため、既存店舗の挙動は変更されない
+            # （オーナーが明示的にONにした場合のみRealtime instructionsへ
+            # 反映される。app.services.realtime_voice_ai._VISIT_REASON_TEMPLATE参照）。
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE ai_staff_settings ADD COLUMN IF NOT EXISTS ask_visit_reason_enabled "
+                    "BOOLEAN NOT NULL DEFAULT false"
+                ))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ ai_staff_settings.ask_visit_reason_enabled カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 

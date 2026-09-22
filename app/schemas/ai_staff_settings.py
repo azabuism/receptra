@@ -28,6 +28,9 @@ class AIStaffSettingsUpdateRequest(BaseModel):
     energy_level: Optional[str] = Field(None, description="テンション: high/medium/low")
     greeting: Optional[str] = Field(None, max_length=2000, description="電話に出たときの第一声")
     custom_instructions: Optional[str] = Field(None, max_length=4000, description="店舗独自の補助的な接客指示")
+    ask_visit_reason_enabled: Optional[bool] = Field(
+        None, description="予約時に来店理由を確認するかどうか"
+    )
 
     @field_validator("voice")
     @classmethod
@@ -87,6 +90,7 @@ class AIStaffSettingsResponse(BaseModel):
     energy_level: Optional[str] = None
     greeting: Optional[str] = None
     custom_instructions: Optional[str] = None
+    ask_visit_reason_enabled: bool = False
     updated_at: Optional[datetime] = None
 
     class Config:
