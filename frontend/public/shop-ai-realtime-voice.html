@@ -243,15 +243,27 @@
                     <span class="label">マイク</span><span class="val" id="diagMic">未確認</span>
                     <span class="label">マイク入力レベル</span><span class="val" id="diagMicLevel">—</span>
                     <span class="label">WebRTC</span><span class="val" id="diagWebrtc">未接続</span>
+                    <span class="label">ICE</span><span class="val" id="diagIce">未接続</span>
+                    <span class="label">DataChannel</span><span class="val" id="diagDataChannel">未接続</span>
                     <span class="label">送信（あなたの声・packets）</span><span class="val" id="diagSend">未確認</span>
                     <span class="label">送信音声レベル（energy）</span><span class="val" id="diagAudioEnergy">未確認</span>
                     <span class="label">VAD（発話検知）</span><span class="val" id="diagVad">idle</span>
                     <span class="label">AI応答状態</span><span class="val" id="diagResponse">idle</span>
+                    <span class="label">AI音声出力(output_audio_buffer)</span><span class="val" id="diagAiOutput">idle</span>
                     <span class="label">AI音声トラック受信</span><span class="val" id="diagAiAudio">未受信</span>
                     <span class="label">AI音声 再生</span><span class="val" id="diagPlayback">未確認</span>
                     <span class="label">AudioContext(マイク)</span><span class="val" id="diagAudioContextMic">未作成</span>
                     <span class="label">AudioContext(AI音声)</span><span class="val" id="diagAudioContextRemote">未作成</span>
+                    <span class="label">直近Tool</span><span class="val" id="diagTool">—</span>
+                    <span class="label">Greeting Source</span><span class="val" id="diagGreetingSource">none</span>
+                    <span class="label">直近の割り込み</span><span class="val" id="diagLastInterruption">—</span>
+                    <span class="label">直近の失敗要因</span><span class="val" id="diagFailureSource">—</span>
                 </div>
+                <!-- PHASE17: 直近の主要イベントを時系列で最大30件保持する簡易タイムライン。
+                     テキスト本文・電話番号・氏名・店舗名・予約内容は一切含めない
+                     （イベント名・状態文字列・Tool名のみ）。 -->
+                <div style="margin-top:10px; font-size:11px; color:#888;">直近イベント（最大30件）</div>
+                <div id="diagTimeline" style="margin-top:4px; background:#111; color:#9be89b; font-family:'SFMono-Regular', Consolas, monospace; font-size:11px; line-height:1.6; border-radius:10px; padding:10px; max-height:180px; overflow-y:auto; white-space:pre-wrap; word-break:break-all;"></div>
             </details>
 
             <div class="latency-panel">
@@ -480,6 +492,90 @@
         // PHASE10: AI応答生成の現在状態。'idle' | 'active' | 'done' | 'error'
         let responseState = 'idle';
 
+        // ===== Mobile Real-Call Failure Investigation: 追加の観測状態 =====
+        // すべてPIIを含まない（状態文字列・イベント名・カウンタのみ）。対処は
+        // 行わず観測のみ（原因が実機ログで確定するまでVAD等は変更しない）。
+
+        // PHASE11/12: ICE/DataChannelの現在状態表示用。
+        let iceState = 'new';
+        let dataChannelState = '未接続';
+        // PHASE9: AI音声出力バッファがアクティブかどうかの表示用ラベル
+        // （aiAudioOutputActive自体は既存のPHASE1変数をそのまま使う）。
+        // PHASE3: このセッションのGreetingがどこから発生したか。
+        // 'none' | 'zero_wait' | 'realtime_initial' | 'realtime_fallback'
+        let greetingSource = 'none';
+        // PHASE6: 直近のAI発話中断（バージイン疑い）の簡潔な説明。無ければ'—'。
+        let lastInterruptionInfo = '—';
+        // PHASE9: 直近の接続失敗要因。無ければ'—'。
+        // 'get_user_media' | 'token_request' | 'peer_connection_setup' |
+        // 'sdp_exchange' | 'sdp_remote_description' | 'ice_failed' |
+        // 'peer_connection_failed' | 'datachannel_closed' | 'remote_track_ended' |
+        // 'cleanup' | 'unknown'
+        let failureSource = '—';
+        // startCall()内の現在の準備ステップ（PHASE9のFAILURE SOURCE分類に使う）。
+        let currentSetupStep = 'idle';
+        // PHASE14: 直近のTool呼び出し状態の簡潔な表示（Tool名+状態のみ、
+        // 引数・結果内容は一切含めない）。
+        let lastToolLabel = '—';
+        // PHASE14: describeToolFetchError()が副作用として設定する、直近のTool
+        // fetch失敗の種別（'timeout' | 'network_error' | null）。Toolの戻り値・
+        // OpenAIへ送信する内容には一切影響しない、ローカル表示専用の変数。
+        let lastToolFetchOutcome = null;
+        // PHASE6: AI発話中に発生したspeech_startedの時刻（直近1件）。
+        // truncated/clearedとの相関判定にのみ使う。
+        let lastBargeInSpeechStartedAt = null;
+        // PHASE8: 再生開始後に'pause'イベントが何度発生したか（「ブチブチ」の
+        // 目安。自動判定はしない、カウンタとして表示するのみ）。
+        let playbackPauseCount = 0;
+
+        // PHASE17: 直近の主要イベントをPIIなしで保持する簡易タイムライン
+        // （最大30件。テキスト本文・電話番号・氏名・店舗名・予約内容は一切
+        // 含めない。イベント名・状態文字列・Tool名のみ）。
+        const RECENT_EVENTS_MAX = 30;
+        let recentEvents = [];
+        function pushTimelineEvent(text) {
+            const t = new Date().toLocaleTimeString('ja-JP', { hour12: false }) + '.' + String(new Date().getMilliseconds()).padStart(3, '0');
+            recentEvents.push(t + ' ' + text);
+            if (recentEvents.length > RECENT_EVENTS_MAX) recentEvents.shift();
+            if (debugMode) {
+                const el = document.getElementById('diagTimeline');
+                if (el) el.textContent = recentEvents.join('\n');
+            }
+        }
+
+        // PHASE4（重要・response.create重複防止調査）: response.create送信の
+        // 一元化ラッパー。これまでresponse.createの送信箇所が
+        // maybeSendInitialGreeting()とhandleFunctionCallItem()の2箇所に
+        // 分散しており、それぞれ理由が記録されていなかった。ここでは
+        // reason文字列をローカルのタイムラインにのみ記録する（OpenAIへは
+        // 送信しない・PIIなし）。
+        // また、直前のresponse.createに対応するresponse.doneをまだ受信して
+        // いない（responseState==='active'）状態で新たなresponse.createを
+        // 送ろうとした場合、それを検知してログに残す。Realtime APIが
+        // 多重response.createをどう扱うか（エラーになるか、キューされるか）
+        // は実機/サーバー側の挙動に依存し断定できないため、ここでは送信を
+        // 止めず観測のみ行う（既存の応答フロー自体は変更しない）。
+        function sendResponseCreate(reason) {
+            if (!dc || dc.readyState !== 'open') {
+                pushTimelineEvent('response.create送信スキップ (dc未接続, reason=' + reason + ')');
+                logEvent('response.create送信スキップ: DataChannel未接続 (reason=' + reason + ')');
+                return false;
+            }
+            if (responseState === 'active') {
+                pushTimelineEvent('[要確認] response.create多重送信の可能性 (reason=' + reason + ')');
+                logEvent('[要確認] response.createを送信しますが、直前のresponseがまだ完了していません'
+                    + '(responseState=active, reason=' + reason + ')。多重応答の可能性があります（観測のみ・送信は継続します）');
+            }
+            try {
+                dc.send(JSON.stringify({ type: 'response.create' }));
+                pushTimelineEvent('response.create送信 (reason=' + reason + ')');
+                return true;
+            } catch (e) {
+                pushTimelineEvent('response.create送信失敗 (reason=' + reason + '): ' + e.message);
+                throw e;
+            }
+        }
+
         // PHASE9/10: debug=1限定の音声診断パネルを更新する。通常Production
         // 利用者には#debugPanels自体が非表示のため、この関数はdebugMode=falseの
         // ときは即returnし、DOM更新コストも発生させない。
@@ -497,6 +593,13 @@
             const diagAudioEnergyEl = document.getElementById('diagAudioEnergy');
             const diagVadEl = document.getElementById('diagVad');
             const diagResponseEl = document.getElementById('diagResponse');
+            const diagIceEl = document.getElementById('diagIce');
+            const diagDataChannelEl = document.getElementById('diagDataChannel');
+            const diagAiOutputEl = document.getElementById('diagAiOutput');
+            const diagToolEl = document.getElementById('diagTool');
+            const diagGreetingSourceEl = document.getElementById('diagGreetingSource');
+            const diagLastInterruptionEl = document.getElementById('diagLastInterruption');
+            const diagFailureSourceEl = document.getElementById('diagFailureSource');
 
             const micTrack = localStream ? localStream.getAudioTracks()[0] : null;
             if (!micTrack) {
@@ -582,6 +685,40 @@
                 micAudioCtx ? (micAudioCtx.state === 'running' ? 'ok' : 'warn') : null);
             setStatus(diagAudioContextRemoteEl, remoteAudioCtx ? remoteAudioCtx.state : '未作成',
                 remoteAudioCtx ? (remoteAudioCtx.state === 'running' ? 'ok' : 'warn') : null);
+
+            // PHASE11: ICE接続状態。
+            if (diagIceEl) {
+                setStatus(diagIceEl, iceState,
+                    iceState === 'connected' || iceState === 'completed' ? 'ok'
+                        : (['failed', 'disconnected', 'closed'].includes(iceState) ? 'bad' : 'warn'));
+            }
+            // PHASE12: DataChannel状態。
+            if (diagDataChannelEl) {
+                setStatus(diagDataChannelEl, dataChannelState,
+                    dataChannelState === 'open' ? 'ok' : (dataChannelState === '未接続' ? null : 'bad'));
+            }
+            // PHASE9: AI音声出力バッファのアクティブ状態（既存のaiAudioOutputActive
+            // フラグをそのまま表示するだけ。対処なし・観測のみ）。
+            if (diagAiOutputEl) {
+                setStatus(diagAiOutputEl, aiAudioOutputActive ? '● active' : 'idle',
+                    aiAudioOutputActive ? 'ok' : null);
+            }
+            // PHASE14: 直近のTool呼び出し状態（Tool名+状態のみ、PIIなし）。
+            if (diagToolEl) {
+                setStatus(diagToolEl, lastToolLabel, null);
+            }
+            // PHASE3: このセッションのGreeting発生源。
+            if (diagGreetingSourceEl) {
+                setStatus(diagGreetingSourceEl, greetingSource, null);
+            }
+            // PHASE6: 直近のAI発話中断（バージイン疑い）の簡潔な説明。
+            if (diagLastInterruptionEl) {
+                setStatus(diagLastInterruptionEl, lastInterruptionInfo, lastInterruptionInfo === '—' ? null : 'warn');
+            }
+            // PHASE9: 直近の接続失敗要因。
+            if (diagFailureSourceEl) {
+                setStatus(diagFailureSourceEl, failureSource, failureSource === '—' ? null : 'bad');
+            }
         }
 
         // PHASE11/15（重要）: これはdebugMode判定を含まない。play()が実際に
@@ -983,10 +1120,12 @@
             }
             if (zeroWaitState !== 'ready' || !zeroWaitAudioEl) {
                 logEvent('[ZeroWait] 再生スキップ（状態=' + zeroWaitState + '）。Phase3Cの第一声にフォールバックします');
+                pushTimelineEvent('ZeroWait skip (state=' + zeroWaitState + ')');
                 zeroWaitOutcomeResolve('failure');
                 return;
             }
 
+            pushTimelineEvent('ZeroWait started');
             zeroWaitAudioEl.currentTime = 0;
             const playCalledAt = greetingTiming.callStart;
 
@@ -996,6 +1135,7 @@
                 zeroWaitTiming.playingEventAt = performance.now();
                 logEvent('[ZeroWait] KPI-1 通話開始→Greeting実際の再生開始 = '
                     + Math.round(zeroWaitTiming.playingEventAt - playCalledAt) + 'ms');
+                pushTimelineEvent('ZeroWait playing');
                 bigMic.classList.add('ai-speaking');
                 statusText.textContent = '通話中';
                 subStatusText.textContent = '（ご案内音声を再生中）';
@@ -1005,6 +1145,7 @@
                 zeroWaitAudioEl.removeEventListener('ended', onEnded);
                 zeroWaitState = 'ended';
                 zeroWaitTiming.endedAt = performance.now();
+                pushTimelineEvent('ZeroWait ended');
                 bigMic.classList.remove('ai-speaking');
                 if (zeroWaitTiming.realtimeReadyAt !== null) {
                     logEvent('[ZeroWait] KPI-3 Greeting終了→Realtime準備完了 = '
@@ -1022,6 +1163,7 @@
                 if (zeroWaitState !== 'playing' && zeroWaitState !== 'ended') {
                     zeroWaitState = 'play_failed';
                     logEvent('[ZeroWait] 再生失敗（Phase3Cの第一声にフォールバックします）: ' + reason);
+                    pushTimelineEvent('ZeroWait failed (' + reason + ')');
                     zeroWaitOutcomeResolve('failure');
                 }
             };
@@ -1042,7 +1184,25 @@
             if (!zeroWaitEnabled) return Promise.resolve('not_applicable');
             return Promise.race([
                 zeroWaitOutcomePromise,
-                new Promise((resolve) => setTimeout(() => resolve('timeout'), ZERO_WAIT_DECISION_GRACE_MS)),
+                new Promise((resolve) => setTimeout(() => {
+                    // 緊急調査PHASE2（重要・二重Greeting修正）: グレース時間
+                    // (ZERO_WAIT_DECISION_GRACE_MS)経過時点で、Promiseの解決順序
+                    // だけを見て単純に'timeout'扱いにすると、実際にはZero-Wait音声の
+                    // 'playing'イベントがこの直後に発火するだけの、ごく僅かな
+                    // タイミング差でも「タイムアウト」と誤判定され、Realtime側の
+                    // 第一声（同一の自己紹介文言）が追加で送信されてしまう
+                    // ＝実機で報告された「スタッフの佐藤です」二重発話の原因と
+                    // なり得る。そのため、タイムアウト時点の実際のzeroWaitStateを
+                    // 確認し、既に'playing'/'ended'（＝実際には成功している）なら
+                    // 'success'として扱う。
+                    if (zeroWaitState === 'playing' || zeroWaitState === 'ended') {
+                        pushTimelineEvent('ZeroWait grace timeout だがstate=' + zeroWaitState + 'のためsuccess扱い');
+                        resolve('success');
+                    } else {
+                        pushTimelineEvent('ZeroWait grace timeout (state=' + zeroWaitState + ')');
+                        resolve('timeout');
+                    }
+                }, ZERO_WAIT_DECISION_GRACE_MS)),
             ]);
         }
 
@@ -1054,6 +1214,8 @@
                 // （Zero-Wait再生中の割り込みも同じ扱い。section17: 複雑な
                 // 独自の打ち切り制御は追加せず、既存の標準動作に委ねる）。
                 initialGreetingSent = true;
+                greetingSource = 'none';
+                pushTimelineEvent('initialGreetingSuppressed(userSpoke)');
                 logEvent('第一声: お客様が先に発話したため、自動送信をスキップします');
                 return;
             }
@@ -1069,6 +1231,9 @@
                 // 二重発話防止（最重要・section12）: Zero-Wait Greetingが実際に
                 // 再生開始したことを'playing'イベントで確認済みのため、
                 // Phase3Cのresponse.createは絶対に送らない。
+                greetingSource = 'zero_wait';
+                updateAudioDiagnosticsPanel();
+                pushTimelineEvent('GREETING SOURCE=zero_wait (response.createは送信しません)');
                 if (zeroWaitGreetingText) {
                     try {
                         // response.createを伴わないconversation.item.createは
@@ -1102,6 +1267,9 @@
             }
 
             // Zero-Wait対象外 / 失敗 / タイムアウト: Phase3Cの第一声にフォールバック。
+            greetingSource = zeroWaitEnabled ? 'realtime_fallback' : 'realtime_initial';
+            updateAudioDiagnosticsPanel();
+            pushTimelineEvent('GREETING SOURCE=' + greetingSource + ' / initialGreetingRequested(zeroWaitOutcome=' + zeroWaitOutcome + ')');
             greetingTiming.greetingResponseCreateSent = performance.now();
             logEvent('第一声用response.createを送信します（1通話につき1回のみ'
                 + (zeroWaitEnabled ? '、Zero-Waitフォールバック経路' : '') + '）');
@@ -1118,7 +1286,7 @@
                 // により「通話開始時に自分から話し始める」旨が常時含まれる。
                 // realtime_voice_ai.pyのbuild_realtime_instructions参照）に
                 // そのまま従わせる。
-                dc.send(JSON.stringify({ type: 'response.create' }));
+                sendResponseCreate(zeroWaitEnabled ? 'initial_greeting_fallback' : 'initial_greeting');
             } catch (e) {
                 // 第一声の送信に失敗しても通話全体は継続する。お客様が話しかければ
                 // 通常のturn_detectionによる応答フローに問題なく移行できる。
@@ -1305,9 +1473,25 @@
         // Tool呼び出し失敗ログに、通常のネットワーク断とタイムアウトを区別する
         // 一言を添えるためだけのヘルパー（PIIは一切含まない。reason_code等
         // AIへ渡す内容には影響しない。ログ表示のみの変更）。
+        // PHASE14: 副作用として、直近のTool fetch失敗種別をlastToolFetchOutcome
+        // （'timeout' | 'network_error'）へローカル表示専用で記録する。戻り値・
+        // AIへ送信する内容には一切影響しない。
         function describeToolFetchError(e) {
             const timedOut = !!(e && e.name === 'AbortError');
+            lastToolFetchOutcome = timedOut ? 'timeout' : 'network_error';
             return (timedOut ? ('（' + (TOOL_FETCH_TIMEOUT_MS / 1000) + '秒でタイムアウト）: ') : ': ') + (e && e.message);
+        }
+
+        // PHASE14: Tool結果オブジェクトの形から「失敗扱いかどうか」を大まかに
+        // 判定する（PIIなし。内容そのものは見ず、決められたキー・値のみを見る）。
+        // 表示用の分類にのみ使い、AIへ送る出力そのものやRealtime APIへの
+        // 応答フローには一切影響しない。
+        function isToolOutputFailure(output) {
+            if (!output || typeof output !== 'object') return false;
+            if (output.success === false) return true;
+            if (output.available === false && (output.reason_code === 'temporarily_unavailable' || output.reason_code === 'invalid_request')) return true;
+            if (output.status === 'error' || output.status === 'timeout' || output.status === 'not_found') return true;
+            return false;
         }
 
         async function callCheckAvailabilityTool(args) {
@@ -1685,12 +1869,24 @@
             }
             processedToolCallIds.add(callId);
 
+            // PHASE14: Tool Timeline。Tool名+状態のみを記録し、引数・結果内容
+            // （電話番号・氏名・予約内容等）は一切含めない（PII厳禁）。
+            lastToolLabel = (item.name || '(不明)') + ': requested';
+            updateAudioDiagnosticsPanel();
+            pushTimelineEvent('Tool requested: ' + (item.name || '(不明)'));
+
             let args = null;
             try {
                 args = JSON.parse(item.arguments || '{}');
             } catch (e) {
                 args = null;
             }
+
+            // PHASE14: fetch開始前にリセットしておき、このTool呼び出し自身の
+            // 失敗種別（timeout/network_error）だけを正しく拾えるようにする。
+            lastToolFetchOutcome = null;
+            lastToolLabel = (item.name || '(不明)') + ': fetching';
+            updateAudioDiagnosticsPanel();
 
             let output;
             if (item.name === 'check_availability') {
@@ -1731,6 +1927,17 @@
                 output = { available: false, success: false, status: 'not_found', reason_code: 'invalid_request' };
             }
 
+            // PHASE14: Tool結果の状態を分類する（PIIなし・Tool名+状態のみ）。
+            // lastToolFetchOutcomeが設定されていればHTTPタイムアウト/ネットワーク
+            // エラー、それ以外はisToolOutputFailure()による戻り値の形からの
+            // 大まかな成功/エラー判定。
+            const toolResultState = lastToolFetchOutcome
+                ? lastToolFetchOutcome
+                : (isToolOutputFailure(output) ? 'error' : 'success');
+            lastToolLabel = (item.name || '(不明)') + ': ' + toolResultState;
+            updateAudioDiagnosticsPanel();
+            pushTimelineEvent('Tool ' + toolResultState + ': ' + (item.name || '(不明)'));
+
             logEvent('Tool結果送信: ' + JSON.stringify(output));
             dc.send(JSON.stringify({
                 type: 'conversation.item.create',
@@ -1740,7 +1947,11 @@
                     output: JSON.stringify(output),
                 },
             }));
-            dc.send(JSON.stringify({ type: 'response.create' }));
+            lastToolLabel = (item.name || '(不明)') + ': output_sent';
+            updateAudioDiagnosticsPanel();
+            sendResponseCreate('tool_result:' + (item.name || 'unknown'));
+            lastToolLabel = (item.name || '(不明)') + ': continuation_requested';
+            updateAudioDiagnosticsPanel();
         }
 
         // 発話前の無言化調査用（PIIなし）: 「今AIの音声出力がアクティブか」を
@@ -1772,8 +1983,10 @@
 
             if (type === 'output_audio_buffer.started') {
                 aiAudioOutputActive = true;
+                pushTimelineEvent('AI音声出力 started');
             } else if (type === 'output_audio_buffer.stopped') {
                 aiAudioOutputActive = false;
+                pushTimelineEvent('AI音声出力 stopped');
             } else if (type === 'output_audio_buffer.cleared') {
                 // 無言化調査用: サーバー側がAIの音声出力バッファを破棄した
                 // タイミング。多くの場合、直前のspeech_started（＝ユーザー発話 or
@@ -1782,6 +1995,19 @@
                 // aiAudioOutputActive状態）のみを記録する。
                 logEvent('[無言化調査] output_audio_buffer.cleared を検知（直前のaiAudioOutputActive='
                     + aiAudioOutputActive + '）。AIの音声出力が中断されました。');
+                // PHASE6（INTERRUPTION相関）: AI音声出力中に発生したclearedは、
+                // 直前のspeech_started（バージイン候補）と組み合わせて
+                // lastInterruptionInfoへ1行で要約する。ここではあくまで事実の
+                // 組み合わせを記録するだけで、「これが原因」と断定はしない
+                // （実機ログを見て人間が判断するための材料）。
+                if (aiAudioOutputActive) {
+                    const sinceSpeechMs = (lastBargeInSpeechStartedAt !== null)
+                        ? Math.round(performance.now() - lastBargeInSpeechStartedAt) : null;
+                    lastInterruptionInfo = 'output_audio_buffer.cleared (AI発話中'
+                        + (sinceSpeechMs !== null ? '、直近speech_startedから' + sinceSpeechMs + 'ms' : '') + ')';
+                    updateAudioDiagnosticsPanel();
+                }
+                pushTimelineEvent('AI音声出力 cleared (直前aiAudioOutputActive=' + aiAudioOutputActive + ')');
                 aiAudioOutputActive = false;
             } else if (type === 'conversation.item.truncated') {
                 // 無言化調査用: AIの発話アイテムが（割り込み等により）途中で
@@ -1789,6 +2015,11 @@
                 // ほぼ同時に発生することが多い。原因の断定はせず事実のみ記録。
                 logEvent('[無言化調査] conversation.item.truncated を検知（直前のaiAudioOutputActive='
                     + aiAudioOutputActive + '）。AIの発話アイテムが途中で打ち切られました。');
+                if (aiAudioOutputActive) {
+                    lastInterruptionInfo = 'conversation.item.truncated (AI発話中)';
+                    updateAudioDiagnosticsPanel();
+                }
+                pushTimelineEvent('conversation.item.truncated (直前aiAudioOutputActive=' + aiAudioOutputActive + ')');
             }
 
             if (type === 'session.created' || type === 'session.updated') {
@@ -1821,8 +2052,10 @@
                 // ここでノイズかどうかを自動判定・断定はしない）。
                 lastSpeechStartedAt = performance.now();
                 speechStartedDuringAiOutput = aiAudioOutputActive;
+                if (aiAudioOutputActive) lastBargeInSpeechStartedAt = lastSpeechStartedAt;
                 logEvent('speech_started時点のマイク入力レベル: ' + (lastMicLevelPct === null ? '(未取得)' : lastMicLevelPct + '%')
                     + ' / AI音声出力中(aiAudioOutputActive)=' + aiAudioOutputActive);
+                pushTimelineEvent('speech_started (AI音声出力中=' + aiAudioOutputActive + ', mic=' + (lastMicLevelPct === null ? '?' : lastMicLevelPct + '%') + ')');
                 if (aiAudioOutputActive) {
                     // 無言化調査用（最優先A）: AIがまだ話している最中に
                     // speech_startedが発生した＝割り込み（バージイン）として
@@ -1849,11 +2082,13 @@
                 // 短時間の相槌（「はい」「違います」等）も本物の短い発話として
                 // 存在するため、この数値だけで自動的にノイズと判定はしない。
                 // あくまで実機ログを人間が確認する際の判断材料。
+                let speechDurationMsForTimeline = null;
                 if (lastSpeechStartedAt !== null) {
-                    const speechDurationMs = Math.round(performance.now() - lastSpeechStartedAt);
-                    logEvent('speech_stopped: 発話継続時間=' + speechDurationMs + 'ms'
+                    speechDurationMsForTimeline = Math.round(performance.now() - lastSpeechStartedAt);
+                    logEvent('speech_stopped: 発話継続時間=' + speechDurationMsForTimeline + 'ms'
                         + '（speech_started時点でAI音声出力中だった=' + speechStartedDuringAiOutput + '）');
                 }
+                pushTimelineEvent('speech_stopped (継続=' + (speechDurationMsForTimeline === null ? '?' : speechDurationMsForTimeline + 'ms') + ')');
                 subStatusText.textContent = 'AIが応答を準備しています…';
                 setStatus(stUserSpeakEl, '待機', null);
                 updateAudioDiagnosticsPanel();
@@ -1864,14 +2099,22 @@
                 subStatusText.textContent = 'AIが応答を生成中…';
                 responseState = 'active';
                 updateAudioDiagnosticsPanel();
+                pushTimelineEvent('response.created');
             } else if (type === 'response.done') {
                 subStatusText.textContent = '待機中（お話しください）';
                 // 安全網: 通常はoutput_audio_buffer.stopped/clearedで既にfalseに
                 // 戻っているはずだが、稀にそれらのイベントを取りこぼした場合でも
                 // aiAudioOutputActiveが誤ってtrueのまま残らないようにする。
                 aiAudioOutputActive = false;
-                responseState = (msg.response && msg.response.status === 'failed') ? 'error' : 'done';
+                // PHASE5（response lifecycle）: response.doneのmsg.response.statusは
+                // OpenAI Realtime APIが実際に使用する値のみを参照する
+                // （'completed' | 'cancelled' | 'failed' | 'incomplete'）。
+                // 存在しない値を作らない。'cancelled'/'incomplete'は「音声のみ停止」
+                // 「打ち切り」の可能性を示すが、ここでは事実の記録のみで断定しない。
+                const respStatus = msg.response && msg.response.status;
+                responseState = (respStatus === 'failed') ? 'error' : 'done';
                 updateAudioDiagnosticsPanel();
+                pushTimelineEvent('response.done (status=' + (respStatus || '不明') + ')');
                 recordUsageEvent(msg.response);
             } else if (type === 'response.output_item.done' && msg.item && msg.item.type === 'function_call') {
                 // Phase3A: Tool Calling。応答完了(response.done)を待たず、
@@ -1888,6 +2131,7 @@
                 showErrorBanner('通話中にエラーが発生しました。お手数ですが、もう一度おかけ直しください。');
                 responseState = 'error';
                 updateAudioDiagnosticsPanel();
+                pushTimelineEvent('サーバーerrorイベント受信 (type=' + ((msg.error && msg.error.type) || '不明') + ')');
             }
         }
 
@@ -2011,6 +2255,22 @@
             lastOutboundAudioEnergy = null;
             updatePlaybackRecoveryButton();
 
+            // Mobile Real-Call Failure Investigation: 新しい通話開始のたびに
+            // 前回の状態を必ずクリアする（前回のfailureSource等が次の通話へ
+            // 持ち越されないようにするため）。
+            iceState = 'new';
+            dataChannelState = '未接続';
+            greetingSource = 'none';
+            lastInterruptionInfo = '—';
+            failureSource = '—';
+            currentSetupStep = 'idle';
+            lastToolLabel = '—';
+            lastToolFetchOutcome = null;
+            lastBargeInSpeechStartedAt = null;
+            playbackPauseCount = 0;
+            recentEvents = [];
+            pushTimelineEvent('startCall() 開始');
+
             startBtn.disabled = true;
             hideErrorBanner();
             statusText.textContent = '接続しています…';
@@ -2073,6 +2333,8 @@
             } catch (e) {
                 const friendly = describeGetUserMediaError(e);
                 logEvent('getUserMediaエラー: ' + e.name + ' - ' + e.message);
+                failureSource = 'get_user_media';
+                pushTimelineEvent('getUserMedia失敗 (' + e.name + ')');
                 setStatus(stMicPermEl, '拒否/失敗: ' + e.name, 'bad');
                 showErrorBanner(friendly);
                 statusText.textContent = 'マイクを取得できませんでした';
@@ -2149,6 +2411,10 @@
             setupMicLevelMeter(localStream);
 
             try {
+                // PHASE9: 接続失敗時に「どの準備ステップで失敗したか」を分類する
+                // ための現在地マーカー。実際に送信する内容やリクエスト自体は
+                // 一切変更しない（ローカル表示専用）。
+                currentSetupStep = 'token_request';
                 logEvent('ephemeralトークンを取得中…');
                 const session = await fetchSession();
                 greetingTiming.tokenFetched = performance.now();
@@ -2157,6 +2423,7 @@
                 // Outbound AI Phase 4B: この通話のCustomer Context用session識別子。
                 voiceSessionId = session.voice_session_id || null;
 
+                currentSetupStep = 'peer_connection_setup';
                 pc = new RTCPeerConnection();
 
                 pc.ontrack = (ev) => {
@@ -2173,17 +2440,23 @@
                         remoteTrack.addEventListener('ended', () => {
                             remoteTrackReadyState = 'ended';
                             logEvent('リモート音声Trackがended状態になりました');
+                            // PHASE9: 通話がまだ続いている（endCall未呼び出し）のに
+                            // リモートtrackがended化した場合の失敗要因分類。
+                            if (!ended && failureSource === '—') failureSource = 'remote_track_ended';
                             updateAudioDiagnosticsPanel();
+                            pushTimelineEvent('remote track ended');
                         });
                         remoteTrack.addEventListener('mute', () => {
                             remoteTrackMuted = true;
                             logEvent('リモート音声Trackがmuteイベントを発火しました');
                             updateAudioDiagnosticsPanel();
+                            pushTimelineEvent('remote track mute');
                         });
                         remoteTrack.addEventListener('unmute', () => {
                             remoteTrackMuted = false;
                             logEvent('リモート音声Trackがunmuteイベントを発火しました');
                             updateAudioDiagnosticsPanel();
+                            pushTimelineEvent('remote track unmute');
                         });
                     }
 
@@ -2256,7 +2529,16 @@
                     });
                     audioEl.addEventListener('pause', () => {
                         if (remotePlayState !== 'blocked') remotePlayState = 'paused';
+                        // PHASE8（「ブチブチ」調査）: audio要素側で'pause'が何度
+                        // 発生したかをカウントするだけの指標。ブラウザがこれを
+                        // 自動的に発火させるのは、リモートtrackが実際に切れて
+                        // いる/ミュートされた場合や、要素自体が一時停止扱いに
+                        // なった場合などで、原因はこの時点では断定しない
+                        // （remote trackのmute/unmute・readyStateと合わせて
+                        // 実機ログを確認する材料とする）。
+                        playbackPauseCount++;
                         updateAudioDiagnosticsPanel();
+                        pushTimelineEvent('audioEl pause (累計' + playbackPauseCount + '回, remoteTrack muted=' + remoteTrackMuted + ')');
                     });
 
                     setupLatencyMeter(remoteMediaStream);
@@ -2290,10 +2572,14 @@
                 }
 
                 dc = pc.createDataChannel('oai-events');
+                dataChannelState = 'connecting';
                 dc.addEventListener('message', (ev) => handleDataChannelEvent(ev.data));
                 dc.addEventListener('open', () => {
                     greetingTiming.dcOpen = performance.now();
                     logEvent('データチャネル接続 (DataChannel open, readyState=' + dc.readyState + ')');
+                    dataChannelState = 'open';
+                    pushTimelineEvent('DataChannel open');
+                    updateAudioDiagnosticsPanel();
                 });
                 // 次フェーズ仕様書（通話切断原因調査）: DataChannelのclose/errorには
                 // 従来イベントリスナーが存在せず、通話が途切れた際にDataChannel側で
@@ -2304,6 +2590,12 @@
                 // 存在しないイベントを追加することはしない。
                 dc.addEventListener('close', () => {
                     logEvent('DataChannel close (readyState=' + dc.readyState + ')');
+                    dataChannelState = 'closed';
+                    pushTimelineEvent('DataChannel close');
+                    // PHASE9: 通話がまだ終了扱いになっていない状態でDataChannelが
+                    // 閉じた場合、失敗要因の候補として記録する（対処はしない）。
+                    if (!ended && failureSource === '—') failureSource = 'datachannel_closed';
+                    updateAudioDiagnosticsPanel();
                 });
                 dc.addEventListener('error', (ev) => {
                     const err = ev && ev.error;
@@ -2311,10 +2603,15 @@
                         ? (err.errorDetail || err.message || err.name || String(err))
                         : '(詳細不明)';
                     logEvent('DataChannel error: ' + detail + ' (readyState=' + dc.readyState + ')');
+                    dataChannelState = 'error';
+                    pushTimelineEvent('DataChannel error');
+                    if (!ended && failureSource === '—') failureSource = 'datachannel_closed';
+                    updateAudioDiagnosticsPanel();
                 });
 
                 pc.onconnectionstatechange = () => {
                     logEvent('接続状態(connectionState): ' + pc.connectionState);
+                    pushTimelineEvent('PC connectionState=' + pc.connectionState);
                     setStatus(stWebrtcEl, pc.connectionState, pc.connectionState === 'connected' ? 'ok' : null);
                     if (pc.connectionState === 'connected') {
                         bigMic.classList.remove('connecting');
@@ -2337,13 +2634,26 @@
                         }
                     } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
                         setStatus(stWebrtcEl, pc.connectionState, 'bad');
+                        // PHASE9: 接続済みの通話が切断された場合の失敗要因分類。
+                        // ICE自体がfailedならice_failed、それ以外はpeer_connection_failed
+                        // として記録する（最初に確定した理由を優先し、上書きしない）。
+                        if (failureSource === '—') {
+                            failureSource = (pc.iceConnectionState === 'failed') ? 'ice_failed' : 'peer_connection_failed';
+                        }
+                        updateAudioDiagnosticsPanel();
                         if (!ended) endCall('通話が切断されました。電波状況の良い場所でもう一度おかけ直しください。', 'pc.onconnectionstatechange:' + pc.connectionState);
                     }
                 };
-                pc.oniceconnectionstatechange = () => logEvent('iceConnectionState: ' + pc.iceConnectionState);
+                pc.oniceconnectionstatechange = () => {
+                    logEvent('iceConnectionState: ' + pc.iceConnectionState);
+                    iceState = pc.iceConnectionState;
+                    pushTimelineEvent('ICE ' + iceState);
+                    updateAudioDiagnosticsPanel();
+                };
                 pc.onicegatheringstatechange = () => logEvent('iceGatheringState: ' + pc.iceGatheringState);
                 pc.onsignalingstatechange = () => logEvent('signalingState: ' + pc.signalingState);
 
+                currentSetupStep = 'sdp_exchange';
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
 
@@ -2360,14 +2670,20 @@
                     throw new Error('接続の確立に失敗しました');
                 }
                 const answerSdp = await sdpResponse.text();
+                currentSetupStep = 'sdp_remote_description';
                 await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
                 greetingTiming.sdpAnswerSet = performance.now();
+                currentSetupStep = 'connected';
 
                 maxDurationTimer = setTimeout(() => {
                     endCall('通話時間が上限（30分）に達したため終了しました', 'maxDurationTimer');
                 }, MAX_CALL_DURATION_MS);
             } catch (e) {
                 logEvent('エラー: ' + e.message);
+                // PHASE9: 接続失敗UIに到達した際の要因を、直前の準備ステップから
+                // 分類して記録する（実機ログでの原因切り分け用。対処はしない）。
+                if (failureSource === '—') failureSource = currentSetupStep || 'unknown';
+                pushTimelineEvent('接続失敗 (failureSource=' + failureSource + ')');
                 if (e && e.aiReceptionDisabled) {
                     // Human Handoff基盤: 技術的な接続失敗ではなく、店舗側がAI電話受付を
                     // OFFにしている状態であることを明確に区別して案内する
@@ -2376,7 +2692,10 @@
                     statusText.textContent = 'AI受付は現在休止中です';
                     subStatusText.textContent = '';
                 } else {
-                    showErrorBanner('接続に失敗しました。しばらくしてからもう一度お試しいただくか、お電話でお問い合わせください。');
+                    // PHASE20（任意・ユーザー事前承認済み）: 「お電話でお問い合わせ
+                    // ください」は、本製品自体がAI電話受付であるため循環的な案内に
+                    // なってしまっていた。大きなUI変更を伴わない文言修正のみ行う。
+                    showErrorBanner('接続に失敗しました。しばらくしてから、もう一度お試しください。');
                     statusText.textContent = '接続に失敗しました';
                     subStatusText.textContent = 'もう一度お試しください。';
                 }
@@ -2411,6 +2730,7 @@
 
         function cleanupConnection(source) {
             logEvent('cleanupConnection実行（呼び出し元: ' + (source || '不明') + '）');
+            pushTimelineEvent('cleanupConnection (source=' + (source || '不明') + ')');
             if (maxDurationTimer) { clearTimeout(maxDurationTimer); maxDurationTimer = null; }
             stopMicLevelMeter();
             stopStatsPolling();
@@ -2439,6 +2759,7 @@
         function endCall(reason, source) {
             if (ended) return;
             ended = true;
+            pushTimelineEvent('endCall (source=' + (source || '不明') + ', reason=' + (reason ? '有' : '無') + ')');
             logConnectionSnapshot('endCall直前（呼び出し元: ' + (source || '不明') + '）');
             // Phase2.6: 通話終了時点のusage合計を確定させる（cleanupConnectionより前に
             // 実施し、状態表示のリセットの影響を受けないようにする）。
