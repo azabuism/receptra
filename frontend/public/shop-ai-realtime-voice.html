@@ -223,6 +223,24 @@
         <!-- 以下は開発・検証用のデバッグ表示。一般のお客様には表示せず、
              URLに ?debug=1 を付けて開いた場合のみ表示する（JS側で切り替え）。 -->
         <div id="debugPanels" style="display:none;">
+            <!-- スマホ実機診断用（PHASE9/10）: DevToolsが見づらいスマートフォンでも
+                 ここを見るだけで「マイク→WebRTC→OpenAI→WebRTC→スピーカー」の
+                 どこで音声が止まっているかの目安が分かるようにする。PIIは一切
+                 表示しない（true/false・状態文字列・カウンタのみ）。debug=1以外
+                 では#debugPanels自体が非表示のため、このパネルも表示されない。 -->
+            <div class="latency-panel" id="audioDiagPanel">
+                <h2>音声診断（実機確認用・スマホ向け）</h2>
+                <div class="status-grid">
+                    <span class="label">マイク</span><span class="val" id="diagMic">未確認</span>
+                    <span class="label">WebRTC</span><span class="val" id="diagWebrtc">未接続</span>
+                    <span class="label">送信（あなたの声）</span><span class="val" id="diagSend">未確認</span>
+                    <span class="label">AI音声トラック受信</span><span class="val" id="diagAiAudio">未受信</span>
+                    <span class="label">AI音声 再生</span><span class="val" id="diagPlayback">未確認</span>
+                    <span class="label">AudioContext(マイク)</span><span class="val" id="diagAudioContextMic">未作成</span>
+                    <span class="label">AudioContext(AI音声)</span><span class="val" id="diagAudioContextRemote">未作成</span>
+                </div>
+            </div>
+
             <div class="latency-panel">
                 <h2>通話状態（実機確認用）</h2>
                 <div class="status-grid">
@@ -416,6 +434,157 @@
             }
         }
 
+        // ===== 音声診断用の状態（PHASE1〜11: マイクINPUT〜AI音声OUTPUT経路の
+        // 各段階を観測可能にするためだけの変数群。PIIは一切保持しない）=====
+        // AudioContextの参照そのものを保持していなかったため、通話中に
+        // running/suspendedのどちらかを後から確認する手段が無かった
+        // （PHASE6の調査対象）。ここに保持するだけで、resume()等の挙動変更は
+        // 一切行わない。
+        let micAudioCtx = null;
+        let remoteAudioCtx = null;
+        // リモート（AI）音声トラック・再生の状態（PHASE4/5/11用）。
+        let remoteAudioEl = null;
+        let remoteTrackReceived = false;
+        let remoteTrackMuted = null;
+        let remoteTrackReadyState = null;
+        // 'unknown' | 'playing' | 'blocked' | 'paused'
+        let remotePlayState = 'unknown';
+        // 送信側（あなたの声）のWebRTC統計トレンド（PHASE3/11用）。
+        // 'unknown' | 'increasing' | 'stopped'
+        let outboundPacketsTrend = 'unknown';
+        let lastOutboundAudioStats = null;
+        let statsPollIntervalId = null;
+
+        // PHASE9/10: debug=1限定の音声診断パネルを更新する。通常Production
+        // 利用者には#debugPanels自体が非表示のため、この関数はdebugMode=falseの
+        // ときは即returnし、DOM更新コストも発生させない。
+        function updateAudioDiagnosticsPanel() {
+            if (!debugMode) return;
+            const diagMicEl = document.getElementById('diagMic');
+            if (!diagMicEl) return; // 念のため（要素が無い＝古いキャッシュ等）
+            const diagWebrtcEl = document.getElementById('diagWebrtc');
+            const diagSendEl = document.getElementById('diagSend');
+            const diagAiAudioEl = document.getElementById('diagAiAudio');
+            const diagPlaybackEl = document.getElementById('diagPlayback');
+            const diagAudioContextMicEl = document.getElementById('diagAudioContextMic');
+            const diagAudioContextRemoteEl = document.getElementById('diagAudioContextRemote');
+
+            const micTrack = localStream ? localStream.getAudioTracks()[0] : null;
+            if (!micTrack) {
+                setStatus(diagMicEl, '未取得', null);
+            } else if (micTrack.readyState === 'live' && micTrack.enabled && !micTrack.muted) {
+                setStatus(diagMicEl, '● 正常', 'ok');
+            } else {
+                setStatus(diagMicEl, '× 問題(readyState=' + micTrack.readyState + ' muted=' + micTrack.muted + ')', 'bad');
+            }
+
+            if (!pc) {
+                setStatus(diagWebrtcEl, '未接続', null);
+            } else {
+                const cs = pc.connectionState;
+                setStatus(diagWebrtcEl, '● ' + cs,
+                    cs === 'connected' ? 'ok' : (['failed', 'disconnected', 'closed'].includes(cs) ? 'bad' : 'warn'));
+            }
+
+            if (outboundPacketsTrend === 'increasing') {
+                setStatus(diagSendEl, '● 送信中(packets増加)', 'ok');
+            } else if (outboundPacketsTrend === 'stopped') {
+                setStatus(diagSendEl, '× 停止(packets増加なし)', 'bad');
+            } else {
+                setStatus(diagSendEl, debugMode && pc ? '確認中…' : '未確認', null);
+            }
+
+            if (!remoteTrackReceived) {
+                setStatus(diagAiAudioEl, '未受信', null);
+            } else if (remoteTrackReadyState === 'ended') {
+                setStatus(diagAiAudioEl, '× track終了(ended)', 'bad');
+            } else if (remoteTrackMuted) {
+                setStatus(diagAiAudioEl, '△ 受信済み(muted)', 'warn');
+            } else {
+                setStatus(diagAiAudioEl, '● 受信済み', 'ok');
+            }
+
+            if (remotePlayState === 'playing') {
+                setStatus(diagPlaybackEl, '● 再生中', 'ok');
+            } else if (remotePlayState === 'blocked') {
+                setStatus(diagPlaybackEl, '× ブロック（自動再生制限の可能性）', 'bad');
+            } else if (remotePlayState === 'paused') {
+                setStatus(diagPlaybackEl, '一時停止', 'warn');
+            } else {
+                setStatus(diagPlaybackEl, '未確認', null);
+            }
+
+            setStatus(diagAudioContextMicEl, micAudioCtx ? micAudioCtx.state : '未作成',
+                micAudioCtx ? (micAudioCtx.state === 'running' ? 'ok' : 'warn') : null);
+            setStatus(diagAudioContextRemoteEl, remoteAudioCtx ? remoteAudioCtx.state : '未作成',
+                remoteAudioCtx ? (remoteAudioCtx.state === 'running' ? 'ok' : 'warn') : null);
+        }
+
+        // PHASE1: 画面ロック/バックグラウンド移行がマイク・WebRTC状態に影響して
+        // いないかを、推測ではなくログで確認できるようにする（対処は行わない、
+        // 観測のみ）。通話の有無に関わらずページ全体で1回だけ登録する。
+        document.addEventListener('visibilitychange', () => {
+            const micTrack = localStream ? localStream.getAudioTracks()[0] : null;
+            logEvent('visibilitychange: document.visibilityState=' + document.visibilityState
+                + (pc ? (' / pc.connectionState=' + pc.connectionState) : ' / pc=なし')
+                + (micTrack ? (' / micTrack.readyState=' + micTrack.readyState + ' muted=' + micTrack.muted) : ' / micTrackなし'));
+            updateAudioDiagnosticsPanel();
+        });
+
+        // PHASE3: debug=1限定のWebRTC送信統計ポーリング。RTCPeerConnection.
+        // getStats()から、PIIを含まないaudio outbound-rtpの技術的カウンタ
+        // （packetsSent/bytesSent等）だけを安全に取得する。ブラウザにより
+        // 存在しないfieldは無理に使わずN/A表記に留める。Production通常利用者
+        // （debugMode=false）ではこの関数自体が呼ばれない設計にしている
+        // （呼び出し元のstartCall内でif (debugMode)ガード済み）。
+        function stopStatsPolling() {
+            if (statsPollIntervalId) { clearInterval(statsPollIntervalId); statsPollIntervalId = null; }
+            lastOutboundAudioStats = null;
+            outboundPacketsTrend = 'unknown';
+        }
+
+        function startStatsPolling() {
+            if (!debugMode || !pc) return;
+            stopStatsPolling();
+            statsPollIntervalId = setInterval(async () => {
+                if (!pc) { stopStatsPolling(); return; }
+                try {
+                    const stats = await pc.getStats();
+                    let outboundAudio = null;
+                    stats.forEach((report) => {
+                        if (report.type === 'outbound-rtp' && report.kind === 'audio' && !report.isRemote) {
+                            outboundAudio = report;
+                        }
+                    });
+                    if (outboundAudio) {
+                        const packetsSent = (typeof outboundAudio.packetsSent === 'number') ? outboundAudio.packetsSent : null;
+                        const bytesSent = (typeof outboundAudio.bytesSent === 'number') ? outboundAudio.bytesSent : null;
+                        // audioLevel/totalAudioEnergy/totalSamplesDurationはブラウザに
+                        // よって存在しない場合があるため、無い場合はN/Aのまま扱う
+                        // （無理に代替計算はしない）。
+                        const audioLevelStr = (typeof outboundAudio.audioLevel === 'number') ? outboundAudio.audioLevel.toFixed(3) : 'N/A';
+                        const totalAudioEnergyStr = (typeof outboundAudio.totalAudioEnergy === 'number') ? outboundAudio.totalAudioEnergy.toFixed(4) : 'N/A';
+                        const totalSamplesDurationStr = (typeof outboundAudio.totalSamplesDuration === 'number') ? outboundAudio.totalSamplesDuration.toFixed(2) : 'N/A';
+                        if (lastOutboundAudioStats && packetsSent !== null && lastOutboundAudioStats.packetsSent !== null) {
+                            outboundPacketsTrend = (packetsSent > lastOutboundAudioStats.packetsSent) ? 'increasing' : 'stopped';
+                        }
+                        lastOutboundAudioStats = { packetsSent, bytesSent, ts: performance.now() };
+                        logEvent('[音声送信統計] packetsSent=' + (packetsSent === null ? 'N/A' : packetsSent)
+                            + ' bytesSent=' + (bytesSent === null ? 'N/A' : bytesSent)
+                            + ' audioLevel=' + audioLevelStr
+                            + ' totalAudioEnergy=' + totalAudioEnergyStr
+                            + ' totalSamplesDuration=' + totalSamplesDurationStr
+                            + ' trend=' + outboundPacketsTrend);
+                    } else {
+                        logEvent('[音声送信統計] outbound audio RTP統計がこのブラウザでは取得できませんでした(N/A)');
+                    }
+                } catch (e) {
+                    logEvent('[音声送信統計] getStats()呼び出しに失敗: ' + (e && e.message));
+                }
+                updateAudioDiagnosticsPanel();
+            }, 3000);
+        }
+
         function setupLatencyMeter(remoteStream) {
             let audioCtx;
             try {
@@ -424,6 +593,12 @@
                 logEvent('Web Audio APIが利用できないため、レイテンシ自動計測は無効です: ' + e.message);
                 return;
             }
+            remoteAudioCtx = audioCtx;
+            logEvent('リモート音声用AudioContext作成 state=' + audioCtx.state);
+            audioCtx.onstatechange = () => {
+                logEvent('リモート音声用AudioContext state変化: ' + audioCtx.state);
+                updateAudioDiagnosticsPanel();
+            };
             const source = audioCtx.createMediaStreamSource(remoteStream);
             const analyser = audioCtx.createAnalyser();
             analyser.fftSize = 512;
@@ -1633,6 +1808,12 @@
                 logEvent('マイクレベルメーター初期化失敗: ' + e.message);
                 return;
             }
+            micAudioCtx = audioCtx;
+            logEvent('マイク用AudioContext作成 state=' + audioCtx.state);
+            audioCtx.onstatechange = () => {
+                logEvent('マイク用AudioContext state変化: ' + audioCtx.state);
+                updateAudioDiagnosticsPanel();
+            };
             const source = audioCtx.createMediaStreamSource(stream);
             const analyser = audioCtx.createAnalyser();
             analyser.fftSize = 512;
@@ -1653,6 +1834,11 @@
             if (micLevelRafId) { cancelAnimationFrame(micLevelRafId); micLevelRafId = null; }
             micLevelFillEl.style.width = '0%';
             lastMicLevelPct = null;
+            // 音声診断パネル表示用の参照のみクリアする（AudioContext自体の
+            // close()は行わない＝既存の挙動を変更しない。次回通話開始時に
+            // setupMicLevelMeter()が新しいAudioContextを作成しmicAudioCtxへ
+            // 再設定する）。
+            micAudioCtx = null;
         }
 
         // getUserMediaのエラーは名前(DOMException.name)ごとに原因が異なるため、
@@ -1830,14 +2016,99 @@
 
                 pc.ontrack = (ev) => {
                     logEvent('リモート音声トラック受信');
+                    remoteTrackReceived = true;
+                    const remoteTrack = ev.track;
+                    if (remoteTrack) {
+                        remoteTrackMuted = remoteTrack.muted;
+                        remoteTrackReadyState = remoteTrack.readyState;
+                        logEvent('リモート音声Track: readyState=' + remoteTrack.readyState
+                            + ' muted=' + remoteTrack.muted + ' enabled=' + remoteTrack.enabled);
+                        // PHASE1/4: 通話途中でリモートTrackがended/mutedになっていないかを
+                        // ローカルTrackと同様に観測できるようにする（対処は行わない）。
+                        remoteTrack.addEventListener('ended', () => {
+                            remoteTrackReadyState = 'ended';
+                            logEvent('リモート音声Trackがended状態になりました');
+                            updateAudioDiagnosticsPanel();
+                        });
+                        remoteTrack.addEventListener('mute', () => {
+                            remoteTrackMuted = true;
+                            logEvent('リモート音声Trackがmuteイベントを発火しました');
+                            updateAudioDiagnosticsPanel();
+                        });
+                        remoteTrack.addEventListener('unmute', () => {
+                            remoteTrackMuted = false;
+                            logEvent('リモート音声Trackがunmuteイベントを発火しました');
+                            updateAudioDiagnosticsPanel();
+                        });
+                    }
+
                     const audioEl = document.createElement('audio');
                     audioEl.autoplay = true;
                     audioEl.srcObject = ev.streams[0];
                     document.body.appendChild(audioEl);
+                    remoteAudioEl = audioEl;
+                    remotePlayState = 'unknown';
+
+                    // PHASE4/5（最重要）: これまでaudioEl.autoplay=trueに任せるだけで、
+                    // play()を明示的に呼んでいなかった。autoplay属性任せの場合、
+                    // ブラウザが自動再生を許可しなかった（特にスマホのautoplay
+                    // policy）としても、その失敗をJS側で検知・ログする手段が
+                    // 一切存在しなかった＝「AIの声が聞こえないことがある」という
+                    // 報告の有力な説明候補になり得るため、明示的にplay()を呼び、
+                    // 返却されるPromiseの成功/失敗を必ず捕捉してログする。
+                    // 通常UXへの見た目の変更は無い（autoplay=trueとほぼ同じ動作を
+                    // 明示的に行っているだけ）。
+                    try {
+                        const playPromise = audioEl.play();
+                        if (playPromise && typeof playPromise.then === 'function') {
+                            playPromise.then(() => {
+                                remotePlayState = 'playing';
+                                logEvent('リモート音声 play() 成功');
+                                updateAudioDiagnosticsPanel();
+                            }).catch((e) => {
+                                remotePlayState = 'blocked';
+                                logEvent('リモート音声 play() 失敗（自動再生制限の可能性）: '
+                                    + (e && e.name) + ' - ' + (e && e.message));
+                                updateAudioDiagnosticsPanel();
+                            });
+                        } else {
+                            // Promiseを返さない古い実装のブラウザでは、成功したものとして扱う
+                            // （それ以上の判定手段が無いため）。
+                            remotePlayState = 'playing';
+                        }
+                    } catch (e) {
+                        remotePlayState = 'blocked';
+                        logEvent('リモート音声 play() 呼び出しで例外: ' + (e && e.message));
+                    }
+                    audioEl.addEventListener('playing', () => {
+                        remotePlayState = 'playing';
+                        updateAudioDiagnosticsPanel();
+                    });
+                    audioEl.addEventListener('pause', () => {
+                        if (remotePlayState !== 'blocked') remotePlayState = 'paused';
+                        updateAudioDiagnosticsPanel();
+                    });
+
                     setupLatencyMeter(ev.streams[0]);
+                    updateAudioDiagnosticsPanel();
                 };
 
                 localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+
+                // PHASE1: addTrack後、実際にRTCPeerConnection側にaudio用の
+                // senderが存在するかを確認する（存在しなければWebRTC送信経路
+                // 自体が成立していないことになる）。
+                const audioSenders = pc.getSenders().filter((s) => s.track && s.track.kind === 'audio');
+                logEvent('RTCPeerConnection sender確認: 全sender数=' + pc.getSenders().length
+                    + ' / audio sender数=' + audioSenders.length);
+
+                // PHASE3: debug=1のときだけ、getStats()からaudio outbound RTPの
+                // 安全な統計（packetsSent等）を定期取得する。PIIは含まれない
+                // （技術的なカウンタ値のみ）。通常Production利用者には
+                // 追加の処理・ログを一切発生させない。
+                if (debugMode) {
+                    startStatsPolling();
+                }
 
                 dc = pc.createDataChannel('oai-events');
                 dc.addEventListener('message', (ev) => handleDataChannelEvent(ev.data));
@@ -1963,14 +2234,24 @@
             logEvent('cleanupConnection実行（呼び出し元: ' + (source || '不明') + '）');
             if (maxDurationTimer) { clearTimeout(maxDurationTimer); maxDurationTimer = null; }
             stopMicLevelMeter();
+            stopStatsPolling();
             if (localStream) { localStream.getTracks().forEach((t) => t.stop()); localStream = null; }
             if (pc) { try { pc.close(); } catch (e) {} pc = null; }
             document.querySelectorAll('audio').forEach((el) => el.remove());
+            // 音声診断パネル表示用の参照・状態のみリセットする（次回通話開始時に
+            // pc.ontrackが発火した際、改めて新しい値で更新される）。
+            remoteAudioEl = null;
+            remoteAudioCtx = null;
+            remoteTrackReceived = false;
+            remoteTrackMuted = null;
+            remoteTrackReadyState = null;
+            remotePlayState = 'unknown';
             setStatus(stMicTrackEl, 'なし', null);
             setStatus(stWebrtcEl, 'closed', null);
             setStatus(stSessionEl, '未接続', null);
             setStatus(stUserSpeakEl, '待機', null);
             setStatus(stAiSpeakEl, '待機', null);
+            updateAudioDiagnosticsPanel();
         }
 
         function endCall(reason, source) {
