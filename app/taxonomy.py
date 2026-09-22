@@ -34,11 +34,15 @@ TAXONOMY: List[TaxonomyGroup] = [
         "description": "飲食店から最適なお店を探す",
         "icon": "🍽️",
         "items": [
+            # 飲食店カテゴリーの中でも重要度が高いため、和食・洋食・中華を先頭に固定表示する
+            # （表示順序はこのリストの並び順そのものが単一の情報源。DOM側での並び替えは行わない）。
+            {"name": "和食", "icon": "🍚", "image": "restaurant-washoku"},
+            {"name": "洋食", "icon": "🍽️", "image": "restaurant-yoshoku"},
+            {"name": "中華", "icon": "🥢", "image": "restaurant-chinese"},
             {"name": "ラーメン", "icon": "🍜", "image": "restaurant-ramen"},
             {"name": "寿司・刺身", "icon": "🍣", "image": "restaurant-sushi"},
             {"name": "イタリアン", "icon": "🍝", "image": "restaurant-italian"},
             {"name": "フレンチ", "icon": "🥖", "image": "restaurant-french"},
-            {"name": "中華", "icon": "🥢", "image": "restaurant-chinese"},
             {"name": "焼肉", "icon": "🥩", "image": "restaurant-yakiniku"},
             {"name": "カフェ", "icon": "☕", "image": "restaurant-cafe"},
             {"name": "居酒屋", "icon": "🍺", "image": "restaurant-izakaya"},
