@@ -269,6 +269,22 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ shops の予約通知連絡先用カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # Phase 5A: 多言語AI受付。両カラムともNULL許可（未設定＝既存店舗は日本語のみ
+            # として安全にフォールバックする。app.language_registry.effective_ai_languages /
+            # effective_languages参照）。マスデータのbackfillは行わない
+            # （既存行はNULLのままで正しく安全側のデフォルト動作になる）。
+            try:
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS ai_supported_languages JSON"))
+                await conn.execute(text("ALTER TABLE shops ADD COLUMN IF NOT EXISTS staff_supported_languages JSON"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ shops の対応言語用カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
+            # Phase 5A: 前回の会話言語（ソフトなヒントのみ。国籍・民族の推測には使わない）。
+            try:
+                await conn.execute(text("ALTER TABLE customer_memories ADD COLUMN IF NOT EXISTS last_conversation_language VARCHAR(10)"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ customer_memories.last_conversation_language カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 
