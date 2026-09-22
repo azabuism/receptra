@@ -984,6 +984,42 @@
             processedToolCallIds.clear();
         }
 
+        // ===== Fix A: Tool fetchの無限ハング対策 =====
+        //
+        // 設計方針（重要）:
+        // - 調査で判明した問題: 7つのTool呼び出し用fetch()のいずれにもタイムアウトが
+        //   一切無く、Railwayの一時的な遅延やネットワークの瞬断でfetchが応答しない
+        //   まま止まると、function_call_output自体が送られず、AIが「Tool結果待ち」
+        //   のまま無言で停止し続ける経路が存在した。
+        // - この関数は既存のfetch呼び出しをAbortControllerでラップするだけで、
+        //   URL・method・headers・body等のリクエスト内容は一切変更しない。
+        //   タイムアウト時はfetchが投げる例外(DOMException name="AbortError")を
+        //   そのまま呼び出し元へ伝播させ、各Tool関数の既存のcatch(e)ブロック
+        //   （ネットワーク断時と同じ安全側フォールバック: available:false /
+        //   success:false + reason_code:"temporarily_unavailable"等）へ合流させる。
+        //   新しい失敗種別・新しいreason_code・instructions変更は一切行わない。
+        // - タイムアウト秒数は、通常のDBクエリ応答（数十〜数百ms）に対して
+        //   十分な余裕を持たせつつ、無言状態が長引きすぎないよう8秒とした。
+        const TOOL_FETCH_TIMEOUT_MS = 8000;
+
+        async function fetchToolWithTimeout(url, options) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), TOOL_FETCH_TIMEOUT_MS);
+            try {
+                return await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        }
+
+        // Tool呼び出し失敗ログに、通常のネットワーク断とタイムアウトを区別する
+        // 一言を添えるためだけのヘルパー（PIIは一切含まない。reason_code等
+        // AIへ渡す内容には影響しない。ログ表示のみの変更）。
+        function describeToolFetchError(e) {
+            const timedOut = !!(e && e.name === 'AbortError');
+            return (timedOut ? ('（' + (TOOL_FETCH_TIMEOUT_MS / 1000) + '秒でタイムアウト）: ') : ': ') + (e && e.message);
+        }
+
         async function callCheckAvailabilityTool(args) {
             const body = {
                 date: args && args.date,
@@ -994,7 +1030,7 @@
             if (args && args.staff_id) body.staff_id = args.staff_id;
 
             try {
-                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/check-availability', {
+                const res = await fetchToolWithTimeout('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/check-availability', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -1019,7 +1055,7 @@
             } catch (e) {
                 // fetch自体が例外を投げるのはネットワーク断等のみのため、
                 // 入力の誤りではなくtemporarily_unavailable。
-                logEvent('check_availability Tool呼び出しに失敗: ' + e.message);
+                logEvent('check_availability Tool呼び出しに失敗' + describeToolFetchError(e));
                 return {
                     available: false,
                     date: body.date || null,
@@ -1064,7 +1100,7 @@
             if (args && args.special_requests) body.special_requests = args.special_requests;
 
             try {
-                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/create-reservation', {
+                const res = await fetchToolWithTimeout('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/create-reservation', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -1084,7 +1120,7 @@
             } catch (e) {
                 // fetch自体が例外を投げるのはネットワーク断等のみのため、
                 // 入力の誤りではなくtemporarily_unavailable。
-                logEvent('create_reservation Tool呼び出しに失敗: ' + e.message);
+                logEvent('create_reservation Tool呼び出しに失敗' + describeToolFetchError(e));
                 return { success: false, reason_code: 'temporarily_unavailable' };
             }
         }
@@ -1105,7 +1141,7 @@
             if (args && args.query) body.query = args.query;
 
             try {
-                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/get-shop-info', {
+                const res = await fetchToolWithTimeout('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/get-shop-info', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -1126,7 +1162,7 @@
             } catch (e) {
                 // fetch自体が例外を投げるのはネットワーク断等のみのため、
                 // 入力の誤りではなくtemporarily_unavailable。
-                logEvent('get_shop_info Tool呼び出しに失敗: ' + e.message);
+                logEvent('get_shop_info Tool呼び出しに失敗' + describeToolFetchError(e));
                 return { success: false, reason_code: 'temporarily_unavailable' };
             }
         }
@@ -1150,7 +1186,7 @@
             };
 
             try {
-                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/find-customer', {
+                const res = await fetchToolWithTimeout('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/find-customer', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -1179,7 +1215,7 @@
             } catch (e) {
                 // fetch自体が例外を投げるのはネットワーク断等のみのため、
                 // 入力の誤りではなくtemporarily_unavailable。
-                logEvent('find_customer Tool呼び出しに失敗: ' + e.message);
+                logEvent('find_customer Tool呼び出しに失敗' + describeToolFetchError(e));
                 currentCandidateRef = null;
                 return { success: false, status: 'not_found', reason_code: 'temporarily_unavailable' };
             }
@@ -1204,7 +1240,7 @@
             };
 
             try {
-                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/confirm-customer-identity', {
+                const res = await fetchToolWithTimeout('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/confirm-customer-identity', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -1218,7 +1254,7 @@
                 }
                 return data;
             } catch (e) {
-                logEvent('confirm_customer_identity Tool呼び出しに失敗: ' + e.message);
+                logEvent('confirm_customer_identity Tool呼び出しに失敗' + describeToolFetchError(e));
                 return { success: false, status: 'no_pending_candidate' };
             }
         }
@@ -1237,7 +1273,7 @@
             };
 
             try {
-                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/get-customer-context', {
+                const res = await fetchToolWithTimeout('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/get-customer-context', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -1248,7 +1284,7 @@
                 }
                 return data;
             } catch (e) {
-                logEvent('get_customer_context Tool呼び出しに失敗: ' + e.message);
+                logEvent('get_customer_context Tool呼び出しに失敗' + describeToolFetchError(e));
                 return { success: false, status: 'not_verified' };
             }
         }
@@ -1269,7 +1305,7 @@
             };
 
             try {
-                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/set-conversation-language', {
+                const res = await fetchToolWithTimeout('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/set-conversation-language', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -1280,7 +1316,7 @@
                 }
                 return data;
             } catch (e) {
-                logEvent('set_conversation_language Tool呼び出しに失敗: ' + e.message);
+                logEvent('set_conversation_language Tool呼び出しに失敗' + describeToolFetchError(e));
                 return { success: false, status: 'not_allowed' };
             }
         }
@@ -1380,6 +1416,13 @@
                 maybeSendInitialGreeting().catch((e) => logEvent('第一声処理中にエラー: ' + e.message));
             } else if (type === 'input_audio_buffer.speech_started') {
                 if (!initialGreetingSent) userSpokeBeforeGreeting = true;
+                // ISSUE2調査用（PIIなし）: speech_started発生時点のローカルマイク
+                // レベルメーターの値（0-100の相対音量パーセンテージのみ。音声内容・
+                // 周波数の詳細等は含まない）をログへ残す。これにより、実機テストの
+                // 再現時に「その瞬間、実際どれくらいの音量だったか」を体感と
+                // 突き合わせられるようにする。VAD/turn_detection自体は変更しない
+                // 観測用ログの追加のみ。
+                logEvent('speech_started時点のマイク入力レベル: ' + (lastMicLevelPct === null ? '(未取得)' : lastMicLevelPct + '%'));
                 if (zeroWaitEnabled && zeroWaitState === 'playing') {
                     // section18: 対処は行わず観測のみ（エコーによるVAD誤反応の可能性）。
                     logEvent('[ZeroWait] 観測: Greeting再生中にspeech_startedを検知（エコー等による誤検知の可能性。対処は行わずログのみ記録）');
@@ -1420,6 +1463,10 @@
         // 「マイク→WebRTC/OpenAI」の区間のどちらに問題があるかを切り分けるため、
         // OpenAI側の応答を待たずにマイクを掴んだ直後から動かす。
         let micLevelRafId = null;
+        // ISSUE2調査用: 直近のマイクレベル（0-100%）をログ出力用に保持するだけの
+        // 変数。表示用のDOM更新（micLevelFillEl）とは別に、speech_startedログが
+        // 参照できるようにする。音声そのものやスペクトルの詳細は保持しない。
+        let lastMicLevelPct = null;
         function setupMicLevelMeter(stream) {
             let audioCtx;
             try {
@@ -1439,6 +1486,7 @@
                 const avg = data.reduce((a, b) => a + b, 0) / data.length;
                 const pct = Math.min(100, Math.round((avg / 80) * 100));
                 micLevelFillEl.style.width = pct + '%';
+                lastMicLevelPct = pct;
                 if (localStream) micLevelRafId = requestAnimationFrame(tick);
             }
             tick();
@@ -1446,6 +1494,7 @@
         function stopMicLevelMeter() {
             if (micLevelRafId) { cancelAnimationFrame(micLevelRafId); micLevelRafId = null; }
             micLevelFillEl.style.width = '0%';
+            lastMicLevelPct = null;
         }
 
         // getUserMediaのエラーは名前(DOMException.name)ごとに原因が異なるため、
