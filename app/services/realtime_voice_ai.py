@@ -54,6 +54,41 @@ REALTIME_VOICES = [
     "sage", "shimmer", "verse", "marin", "cedar",
 ]
 
+# オーナー管理画面（shop-manage.html）向けの表示名の単一の対応表（一元管理）。
+#
+# 重要（必ず守ること・谷村様の明示的な指示）: OpenAIは2026年9月時点で、Realtime API
+# 用の上記10種類のvoiceについて「男性の声」「女性の声」のような公式な性別分類を
+# 一切公開していない（platform.openai.com/docs/guides/text-to-speech および
+# developers.openai.com/api/docs/guides/realtime-conversations の両公式ドキュメント
+# を確認済み。書かれているのは「marin/cedarは音質面で推奨」という説明のみで、
+# 声質・性別についての説明は無い）。そのため、声の名前や印象だけでClaude/実装側が
+# 独自に「男性A/女性A」のような性別ラベルを推測して割り当てることはしない
+# （事実でないものを事実であるかのようにUIへ表示してしまうため）。
+# 代わりに、声のIDそのものを見せても非技術者の店舗オーナーには分かりにくいという
+# 課題にだけ対処する、性別を示唆しない中立的な表示名（声A〜声J）を割り当てる。
+# 「試聴」ボタンで実際に聴いて選ぶことを前提としたUIにする。
+#
+# 表示名とvoice IDの対応はこの辞書のみを唯一の情報源とする
+# （frontend/public/shop-manage.html 側では絶対にハードコードしない。
+# GET /voice-options のレスポンスを通じて必ずこの辞書経由で渡す）。
+# 表示順は、音質面で公式に推奨されているmarin/cedarを先頭に、残りは
+# REALTIME_VOICESの定義順のまま割り当てている。
+REALTIME_VOICE_DISPLAY_LABELS = {
+    "marin": "声A",
+    "cedar": "声B",
+    "alloy": "声C",
+    "ash": "声D",
+    "ballad": "声E",
+    "coral": "声F",
+    "echo": "声G",
+    "sage": "声H",
+    "shimmer": "声I",
+    "verse": "声J",
+}
+
+# 音質面でOpenAI公式に推奨されているvoice（表示名にも小さく添える）。
+REALTIME_VOICES_RECOMMENDED = {"marin", "cedar"}
+
 # voice試聴用の短い固定セリフ。実際の接客instructionsは使わず、
 # 「このvoiceがどんな声か」だけを確認できれば十分なため、店舗情報等は
 # 一切含まない最小限のinstructionsにする。

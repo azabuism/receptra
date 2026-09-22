@@ -96,6 +96,30 @@
         .seg-btn.active { background: var(--primary); border-color: var(--primary); color: var(--white); }
         .seg-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
         @media (max-width: 480px) { .seg-btn { flex: 1 1 40%; } }
+        /* AIスタッフ設定: voice選択カード（PHASE2 声の表示名simplification）。
+           「声の名前を読んで選ぶ」より「試聴して選ぶ」を優先し、各カードに
+           試聴ボタンを内蔵する。スマホでもタップしやすいよう、seg-btnと同じ
+           44px以上のタップ領域を確保する。 */
+        .voice-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+        .voice-card {
+            display: flex; align-items: center; gap: 8px;
+            flex: 1 1 auto; min-width: 132px; min-height: 44px;
+            padding: 6px 8px 6px 12px; border: 2px solid #eee; border-radius: 10px;
+            background: var(--white); cursor: pointer;
+            transition: border-color 0.12s ease, background 0.12s ease;
+        }
+        .voice-card:hover { border-color: var(--primary); }
+        .voice-card.active { border-color: var(--primary); background: #fff6f0; }
+        .voice-card .voice-card-label { flex: 1; font-size: 14px; font-weight: 700; color: var(--dark); }
+        .voice-card .voice-card-badge { font-size: 10px; font-weight: 700; color: var(--primary); margin-left: 4px; }
+        .voice-card .voice-preview-btn {
+            flex-shrink: 0; min-width: 44px; min-height: 32px; padding: 4px 10px;
+            border: 2px solid #eee; border-radius: 14px; background: var(--white);
+            color: var(--dark); font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit;
+        }
+        .voice-card .voice-preview-btn:hover { border-color: var(--primary); color: var(--primary); }
+        .voice-card .voice-preview-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        @media (max-width: 480px) { .voice-card { flex: 1 1 100%; } }
         .faq-item { padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
         .faq-item:last-child { border-bottom: none; }
         .faq-item .faq-question { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
@@ -274,6 +298,26 @@
         .notif-result-badge.done { background: #d1fae5; color: #047857; }
         .notif-result-badge.failed { background: #fee2e2; color: var(--error); }
         .notif-result-badge.unknown { background: #f3f4f6; color: #888; }
+        /* Human Handoff基盤: CallbackRequestオーナー管理UI */
+        .callback-item { padding: 14px; border: var(--border); border-radius: 10px; margin-bottom: 10px; }
+        .callback-item-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+        .callback-item-customer { font-weight: 700; font-size: 14px; }
+        .callback-item-meta { font-size: 12px; color: #888; margin-top: 2px; }
+        .callback-item-field { font-size: 13px; margin-top: 6px; }
+        .callback-item-field .field-label { color: #888; margin-right: 4px; }
+        .callback-status-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+        .callback-status-badge.unhandled { background: #fee2e2; color: var(--error); }
+        .callback-status-badge.in_progress { background: #fef3c7; color: #b45309; }
+        .callback-status-badge.handled { background: #d1fae5; color: #047857; }
+        .callback-status-control { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+        .callback-status-btn {
+            min-height: 36px; padding: 6px 12px; border: 2px solid #eee; border-radius: 14px;
+            background: var(--white); color: var(--dark); font-family: inherit;
+            font-size: 12px; font-weight: 700; cursor: pointer;
+        }
+        .callback-status-btn:hover { border-color: var(--primary); }
+        .callback-status-btn.active { background: var(--primary); border-color: var(--primary); color: var(--white); }
+        .callback-item .actions { margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -640,13 +684,11 @@
                         <input type="text" id="ai-staff-name" placeholder="例：さくら（未入力の場合は名乗りません）" maxlength="100">
                     </div>
                     <div class="field">
-                        <label for="ai-staff-voice">声のタイプ</label>
-                        <div style="display:flex; gap:8px; align-items:center;">
-                            <select id="ai-staff-voice" style="flex:1;"></select>
-                            <button type="button" class="btn-outline" id="ai-staff-voice-preview-btn" style="white-space:nowrap;">試聴</button>
-                        </div>
-                        <div class="hint" style="font-size:12px; color:#888; margin-top:4px;">
-                            声の名前だけでは違いが分かりにくいため、「試聴」ボタンで実際に聴き比べてお選びください。
+                        <label>声のタイプ</label>
+                        <input type="hidden" id="ai-staff-voice" value="">
+                        <div class="voice-grid" id="ai-staff-voice-grid"></div>
+                        <div class="hint" style="font-size:12px; color:#888; margin-top:6px;">
+                            声の名前だけでは違いが分かりにくいため、各カードの「試聴」ボタンで実際に聴き比べてお選びください。
                         </div>
                     </div>
                 </div>
@@ -1268,6 +1310,28 @@
             <div id="notification-history-list"><p class="empty-hint">読み込み中...</p></div>
         </div>
 
+        <!-- Human Handoff基盤: CallbackRequestオーナー管理UI。
+             FAQ・クーポン等と同じ「一覧管理・個別操作が即座に完結する」機能のため、
+             「全体を保存」の対象には含めない（対応状況の更新・削除は各操作ごとに
+             即時保存される）。電話番号は一覧では末尾4桁のみ表示し、「電話番号を表示」
+             ボタンを押した時だけ詳細APIを呼んでフルの番号を表示する。 -->
+        <div class="card" id="callback-requests-card">
+            <h2>折り返し依頼</h2>
+            <p class="hint">
+                AI電話受付が「担当者から折り返します」とご案内した内容の一覧です。対応状況の更新や、不要になった依頼の削除ができます。
+            </p>
+            <div class="field" style="max-width: 220px;">
+                <label for="callback-requests-filter">絞り込み</label>
+                <select id="callback-requests-filter">
+                    <option value="">すべて</option>
+                    <option value="unhandled">未対応</option>
+                    <option value="in_progress">対応中</option>
+                    <option value="handled">対応済み</option>
+                </select>
+            </div>
+            <div id="callback-requests-list"><p class="empty-hint">読み込み中...</p></div>
+        </div>
+
         <!-- PHASE5-B: 「全体を保存」。基本情報・店舗情報・AIスタッフ設定・通知設定・
              AI電話受付設定の5フォームをまとめて保存する（Human Handoff基盤で
              AI電話受付設定フォームを追加）。FAQ・クーポン・テーブル・スタッフ・予約・
@@ -1536,6 +1600,7 @@
             loadNotificationAiStaffInfo();
             loadNotificationHistory();
             loadPhoneReceptionSettings();
+            loadCallbackRequests();
         }
 
         // ---------- 画像設定（ロゴ・サムネイル・カバー） ----------
@@ -3006,24 +3071,77 @@
             document.getElementById('ai-staff-energy').value = combo.energy_level;
         });
 
+        // 選択中のvoice id（実際にDB保存・Realtime APIへ送信される値）をhidden
+        // inputへ反映し、カードの選択状態（activeクラス）を見た目に反映する。
+        // 表示名（声A等）はカードのラベルのみで扱い、この値には一切混ざらない。
+        function selectVoiceCard(voiceId) {
+            const hidden = document.getElementById('ai-staff-voice');
+            hidden.value = voiceId || '';
+            document.querySelectorAll('#ai-staff-voice-grid .voice-card').forEach(function (card) {
+                card.classList.toggle('active', card.dataset.voiceId === (voiceId || ''));
+            });
+        }
+
         async function loadAiStaffVoiceOptions(selectedVoice) {
-            const select = document.getElementById('ai-staff-voice');
+            const grid = document.getElementById('ai-staff-voice-grid');
+            let voices = [];
             try {
                 const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/ai-staff-settings/voice-options');
                 if (!res.ok) throw new Error('voice一覧の取得に失敗しました');
                 const data = await res.json();
-                const voices = data.voices || [];
-                var recommendedVoices = { marin: true, cedar: true };
-                select.innerHTML = '<option value="">未設定（標準の声を使用）</option>' +
-                    voices.map(function (v) {
-                        var label = v + (recommendedVoices[v] ? '（音質・推奨）' : '');
-                        return '<option value="' + v + '">' + label + '</option>';
-                    }).join('');
-                if (selectedVoice) select.value = selectedVoice;
+                // voice-optionsは {id, label, recommended} のオブジェクト一覧を返す
+                // （表示名・推奨フラグの単一の情報源はサーバー側
+                //   app.services.realtime_voice_ai.REALTIME_VOICE_DISPLAY_LABELS）。
+                // frontend側ではこの表示名をハードコードしない。
+                voices = data.voices || [];
             } catch (e) {
                 // voice一覧が取得できなくても、フォーム自体は使えるようにしておく
-                select.innerHTML = '<option value="">未設定（標準の声を使用）</option>';
+                voices = [];
             }
+
+            grid.innerHTML = '';
+
+            // 「未設定（標準の声を使用）」カード。試聴対象となる具体的なvoiceが
+            // 無いため、試聴ボタンは付けない。
+            const unsetCard = document.createElement('div');
+            unsetCard.className = 'voice-card';
+            unsetCard.dataset.voiceId = '';
+            unsetCard.innerHTML = '<span class="voice-card-label">未設定（標準の声）</span>';
+            unsetCard.addEventListener('click', function () { selectVoiceCard(''); });
+            grid.appendChild(unsetCard);
+
+            voices.forEach(function (v) {
+                const card = document.createElement('div');
+                card.className = 'voice-card';
+                card.dataset.voiceId = v.id;
+
+                const labelSpan = document.createElement('span');
+                labelSpan.className = 'voice-card-label';
+                labelSpan.textContent = v.label || v.id;
+                if (v.recommended) {
+                    const badge = document.createElement('span');
+                    badge.className = 'voice-card-badge';
+                    badge.textContent = '音質・推奨';
+                    labelSpan.appendChild(document.createTextNode(' '));
+                    labelSpan.appendChild(badge);
+                }
+                card.appendChild(labelSpan);
+
+                const previewBtn = document.createElement('button');
+                previewBtn.type = 'button';
+                previewBtn.className = 'voice-preview-btn';
+                previewBtn.textContent = '試聴';
+                previewBtn.addEventListener('click', function (ev) {
+                    ev.stopPropagation(); // カード本体のクリック（選択）とは独立させる
+                    previewVoice(v.id, previewBtn);
+                });
+                card.appendChild(previewBtn);
+
+                card.addEventListener('click', function () { selectVoiceCard(v.id); });
+                grid.appendChild(card);
+            });
+
+            selectVoiceCard(selectedVoice || '');
         }
 
         async function loadAiStaffSettings() {
@@ -3559,6 +3677,161 @@
             }
         }
 
+        // ---------- Human Handoff基盤: CallbackRequestオーナー管理 ----------
+        // 表示ラベル（未対応/対応中/対応済み）はサーバーの
+        // resolution_status_label（app.models.callback_request の単一の対応表）を
+        // そのまま使う。フロント側では絞り込み用<select>の選択肢テキストのみ、
+        // 他の固定enum選択肢（接客スタイル等）と同じくHTMLへ直接書いている。
+        let callbackRequestsCache = [];
+        const CALLBACK_STATUS_ORDER = ['unhandled', 'in_progress', 'handled'];
+        const CALLBACK_STATUS_LABELS_FALLBACK = { unhandled: '未対応', in_progress: '対応中', handled: '対応済み' };
+
+        function formatCallbackDesired(dateStr, timeStr) {
+            if (!dateStr && !timeStr) return '';
+            let out = '';
+            if (dateStr) {
+                const d = new Date(dateStr + 'T00:00:00');
+                out += isNaN(d.getTime()) ? dateStr : (d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate());
+            }
+            if (timeStr) {
+                out += (out ? ' ' : '') + timeStr.slice(0, 5);
+            }
+            return out;
+        }
+
+        async function loadCallbackRequests() {
+            const container = document.getElementById('callback-requests-list');
+            const filter = document.getElementById('callback-requests-filter').value;
+            try {
+                let url = '/api/v1/shops/' + encodeURIComponent(shopId) + '/callback-requests?limit=100';
+                if (filter) url += '&resolution_status=' + encodeURIComponent(filter);
+                const res = await authFetch(url);
+                if (!res.ok) throw new Error('取得に失敗しました');
+                const data = await res.json();
+                callbackRequestsCache = data.items || [];
+                renderCallbackRequestsList();
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        function renderCallbackRequestsList() {
+            const container = document.getElementById('callback-requests-list');
+            if (!callbackRequestsCache.length) {
+                container.innerHTML = '<p class="empty-hint">折り返し依頼はまだありません</p>';
+                return;
+            }
+            container.innerHTML = callbackRequestsCache.map(function (item) {
+                const customerName = item.customer_name ? escapeHtml(item.customer_name) + '様' : '（お名前未確認）';
+                const receivedAt = formatReservationDate(item.created_at);
+                const desired = formatCallbackDesired(item.desired_date, item.desired_time);
+                const statusLabel = item.resolution_status_label || CALLBACK_STATUS_LABELS_FALLBACK[item.resolution_status] || item.resolution_status;
+
+                let fields = '';
+                fields += '<div class="callback-item-field"><span class="field-label">電話番号:</span>' +
+                    '<span class="callback-phone-display" data-id="' + item.id + '">' + escapeHtml(item.customer_phone_masked || '（未確認）') + '</span>' +
+                    (item.customer_phone_masked ? ' <button type="button" class="btn-outline callback-reveal-phone-btn" data-id="' + item.id + '" style="margin-left:6px;">電話番号を表示</button>' : '') +
+                    '</div>';
+                if (item.inquiry_text) {
+                    fields += '<div class="callback-item-field"><span class="field-label">お問い合わせ内容:</span>' + escapeHtml(item.inquiry_text) + '</div>';
+                }
+                if (desired) {
+                    fields += '<div class="callback-item-field"><span class="field-label">ご希望日時:</span>' + escapeHtml(desired) + '</div>';
+                }
+                if (item.party_size) {
+                    fields += '<div class="callback-item-field"><span class="field-label">人数:</span>' + item.party_size + '名</div>';
+                }
+                if (item.service_name) {
+                    fields += '<div class="callback-item-field"><span class="field-label">サービス:</span>' + escapeHtml(item.service_name) + '</div>';
+                }
+
+                const statusButtons = CALLBACK_STATUS_ORDER.map(function (s) {
+                    const label = CALLBACK_STATUS_LABELS_FALLBACK[s];
+                    const active = s === item.resolution_status ? ' active' : '';
+                    return '<button type="button" class="callback-status-btn' + active + '" data-id="' + item.id + '" data-status="' + s + '">' + label + '</button>';
+                }).join('');
+
+                return '<div class="callback-item" data-id="' + item.id + '">' +
+                    '<div class="callback-item-top">' +
+                        '<span class="callback-item-customer">' + customerName + '</span>' +
+                        '<span class="callback-status-badge ' + item.resolution_status + '">' + escapeHtml(statusLabel) + '</span>' +
+                    '</div>' +
+                    '<div class="callback-item-meta">受付日時: ' + receivedAt + '</div>' +
+                    fields +
+                    '<div class="callback-status-control">' + statusButtons + '</div>' +
+                    '<div class="actions">' +
+                        '<button type="button" class="btn-outline btn-danger callback-delete-btn" data-id="' + item.id + '">削除</button>' +
+                    '</div>' +
+                '</div>';
+            }).join('');
+
+            container.querySelectorAll('.callback-status-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    updateCallbackRequestResolution(btn.dataset.id, btn.dataset.status);
+                });
+            });
+            container.querySelectorAll('.callback-reveal-phone-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () { revealCallbackRequestPhone(btn.dataset.id, btn); });
+            });
+            container.querySelectorAll('.callback-delete-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () { deleteCallbackRequest(btn.dataset.id); });
+            });
+        }
+
+        document.getElementById('callback-requests-filter').addEventListener('change', loadCallbackRequests);
+
+        async function updateCallbackRequestResolution(callbackRequestId, newStatus) {
+            try {
+                const res = await authFetch(
+                    '/api/v1/shops/' + encodeURIComponent(shopId) + '/callback-requests/' + encodeURIComponent(callbackRequestId),
+                    {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ resolution_status: newStatus })
+                    }
+                );
+                if (!res.ok) throw new Error('更新に失敗しました');
+                await loadCallbackRequests();
+            } catch (e) {
+                alert(typeof e.message === 'string' ? e.message : '更新に失敗しました');
+            }
+        }
+
+        // 電話番号は一覧APIではマスク済みしか返らないため、「電話番号を表示」を
+        // 押したときだけ詳細API（オーナー認証＋tenant/shop分離済み）を呼んで
+        // フルの電話番号をその場に表示する（一覧レスポンスに常時フルの番号を
+        // 含めない、という最小限の露出方針）。
+        async function revealCallbackRequestPhone(callbackRequestId, btn) {
+            btn.disabled = true;
+            try {
+                const res = await authFetch(
+                    '/api/v1/shops/' + encodeURIComponent(shopId) + '/callback-requests/' + encodeURIComponent(callbackRequestId)
+                );
+                if (!res.ok) throw new Error('取得に失敗しました');
+                const detail = await res.json();
+                const span = document.querySelector('.callback-phone-display[data-id="' + callbackRequestId + '"]');
+                if (span) span.textContent = detail.customer_phone || '（未確認）';
+                btn.remove();
+            } catch (e) {
+                btn.disabled = false;
+                alert('電話番号の取得に失敗しました');
+            }
+        }
+
+        async function deleteCallbackRequest(callbackRequestId) {
+            if (!confirm('この折り返し依頼を削除しますか？（元に戻せません）')) return;
+            try {
+                const res = await authFetch(
+                    '/api/v1/shops/' + encodeURIComponent(shopId) + '/callback-requests/' + encodeURIComponent(callbackRequestId),
+                    { method: 'DELETE' }
+                );
+                if (!res.ok) throw new Error('削除に失敗しました');
+                await loadCallbackRequests();
+            } catch (e) {
+                alert(typeof e.message === 'string' ? e.message : '削除に失敗しました');
+            }
+        }
+
         // ---------- Phase3D: FAQ ----------
         let faqCache = [];
         let editingFaqId = null;
@@ -3714,9 +3987,10 @@
             if (previewSilentCtx) { try { previewSilentCtx.close(); } catch (e) {} previewSilentCtx = null; }
         }
 
-        document.getElementById('ai-staff-voice-preview-btn').addEventListener('click', async function () {
-            const btn = this;
-            const voice = document.getElementById('ai-staff-voice').value;
+        // PHASE2: voice選択カードの「試聴」ボタンから呼ばれる（カードの選択操作とは
+        // 独立して、どのvoiceでも直接試聴できる＝「読んで選ぶ」より「聴いて選ぶ」を
+        // 優先する設計）。voiceは常にカードのdata-voice-id（＝raw voice id）を渡す。
+        async function previewVoice(voice, btn) {
             const msg = document.getElementById('ai-staff-msg');
             if (!voice) {
                 showMsg(msg, '試聴するvoiceを選択してください', 'error');
@@ -3801,7 +4075,7 @@
                 btn.disabled = false;
                 btn.textContent = originalLabel;
             }
-        });
+        }
     </script>
     <footer class="rc-footer">
         <div class="rc-footer-links">

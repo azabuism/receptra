@@ -117,7 +117,7 @@ async def save_ai_staff_settings(
     return _to_response(shop_id, row)
 
 
-@router.get("/voice-options", summary="Realtime API用voice一覧を取得")
+@router.get("/voice-options", summary="Realtime API用voice一覧を取得（オーナー向け表示名つき）")
 async def get_voice_options(
     shop_id: str,
     current_user: CurrentUser = Depends(get_current_user),
@@ -125,12 +125,29 @@ async def get_voice_options(
 ):
     """
     現在利用可能なRealtime API用voiceの一覧を返す。
-    重要: この一覧は app.services.realtime_voice_ai.REALTIME_VOICES を
-    そのまま参照しており、ハードコードの二重管理を避けている。
-    一覧自体は今後OpenAI側の仕様変更により増減しうる（コード側コメント参照）。
+
+    重要:
+    - id は app.services.realtime_voice_ai.REALTIME_VOICES をそのまま参照して
+      おり、ハードコードの二重管理を避けている。実際にDB保存・Realtime APIへ
+      送信されるのはこの id のみ（保存/送信の契約は本変更で一切変えていない）。
+    - label は同モジュールの REALTIME_VOICE_DISPLAY_LABELS
+      （id → 表示名の単一の対応表）から解決した、非技術者の店舗オーナー向けの
+      表示名。OpenAIが公式に性別分類を公開していないため、性別を示唆しない
+      中立的な名称（声A等）になっている（同モジュールのコメント参照）。
+      表示名はDBには一切保存されない（保存されるのは常に id）。
+    - recommended は音質面でOpenAI公式に推奨されているvoiceかどうか。
+    - 一覧自体は今後OpenAI側の仕様変更により増減しうる（コード側コメント参照）。
     """
     await _get_owned_shop(shop_id, current_user, db)
-    return {"voices": realtime_voice_ai.REALTIME_VOICES}
+    voices = [
+        {
+            "id": v,
+            "label": realtime_voice_ai.REALTIME_VOICE_DISPLAY_LABELS.get(v, v),
+            "recommended": v in realtime_voice_ai.REALTIME_VOICES_RECOMMENDED,
+        }
+        for v in realtime_voice_ai.REALTIME_VOICES
+    ]
+    return {"voices": voices}
 
 
 @router.post("/voice-preview", summary="voiceを試聴するための短命トークンを発行")

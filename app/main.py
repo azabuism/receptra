@@ -44,6 +44,7 @@ from app.routers.staff import router as staff_router
 from app.routers.staff_shift import router as staff_shift_router
 from app.routers.billing import router as billing_router, webhook_router as payjp_webhook_router
 from app.routers.outbound_calls import router as outbound_calls_router
+from app.routers.callback_requests import router as callback_requests_router
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -312,6 +313,18 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ shops のHuman Handoff/電話受付設定用カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # CallbackRequestオーナー管理機能: 「お客様への折り返し対応が完了したか」を
+            # 表す resolution_status を追加。既存の status カラム（担当者への通知試行の
+            # 成否）とは意味が異なる別カラムのため、既存データへの影響なく追加できる
+            # （既存行はすべて DEFAULT 'unhandled' ＝未対応 として扱われる）。
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE callback_requests ADD COLUMN IF NOT EXISTS resolution_status "
+                    "VARCHAR(20) NOT NULL DEFAULT 'unhandled'"
+                ))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ callback_requests.resolution_status カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 
@@ -395,6 +408,7 @@ def create_app() -> FastAPI:
     app.include_router(billing_router)
     app.include_router(payjp_webhook_router)
     app.include_router(outbound_calls_router)
+    app.include_router(callback_requests_router)
 
     @app.get("/api/v1/debug/db-status", tags=["debug"])
     async def debug_db_status():

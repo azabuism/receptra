@@ -34,10 +34,40 @@ from app.database import Base
 
 
 class CallbackRequestStatus(str, enum.Enum):
-    """担当者への通知が試みられたかどうかの状態（受付記録そのものの成否ではない）。"""
+    """担当者への通知が試みられたかどうかの状態（受付記録そのものの成否ではない）。
+
+    重要（オーナー管理機能追加時に必ず守ること）: この値は「担当者への通知
+    （Email/電話ジョブのenqueue）が試みられ、成功したか」だけを表す。
+    「お客様への折り返し対応そのものが完了したかどうか」とは全く別の概念であり、
+    絶対に混同しない。後者は resolution_status（別カラム）で管理する。
+    既存データ（本フィールドの意味）との互換性を壊さないため、本フィールドの
+    意味・値は一切変更しない。
+    """
     PENDING = "pending"                        # 受付済み・通知はまだ試みていない/処理中
     NOTIFIED = "notified"                      # 電話ジョブのenqueue・Email通知のいずれかが成功
     NOTIFICATION_FAILED = "notification_failed"  # 通知手段が有効だったが、いずれも失敗
+
+
+class CallbackRequestResolutionStatus(str, enum.Enum):
+    """お客様への折り返し対応そのものが完了したかどうかの状態（オーナーが手動で更新する）。
+
+    CallbackRequestStatus（担当者への通知試行の成否）とは意味が異なる、独立した軸。
+    UI表示は日本語ラベル（未対応/対応中/対応済み）を使うが、内部の値（DB保存値）は
+    英語のまま安定させる（CALLBACK_REQUEST_RESOLUTION_STATUS_LABELS_JAが表示名との
+    単一の対応表）。
+    """
+    UNHANDLED = "unhandled"      # 未対応（オーナーがまだ何も対応していない・デフォルト）
+    IN_PROGRESS = "in_progress"  # 対応中（お客様への折り返しに着手した）
+    HANDLED = "handled"          # 対応済み（お客様への折り返し対応が完了した）
+
+
+# resolution_status（内部値・英語） -> オーナー向けUI表示ラベル（日本語）の
+# 単一の対応表。フロントエンド側でこの対応をハードコードして二重管理しない。
+CALLBACK_REQUEST_RESOLUTION_STATUS_LABELS_JA = {
+    CallbackRequestResolutionStatus.UNHANDLED.value: "未対応",
+    CallbackRequestResolutionStatus.IN_PROGRESS.value: "対応中",
+    CallbackRequestResolutionStatus.HANDLED.value: "対応済み",
+}
 
 
 class CallbackRequestReasonCode(str, enum.Enum):
@@ -82,6 +112,13 @@ class CallbackRequest(Base):
     service_id = Column(String(36), ForeignKey("services.id"), nullable=True)
 
     status = Column(String(20), nullable=False, default=CallbackRequestStatus.PENDING.value, index=True)
+
+    # お客様への折り返し対応そのものが完了したかどうか（オーナーがオーナー管理画面から
+    # 手動で更新する）。statusカラム（担当者への通知試行の成否）とは意味が異なるため
+    # 意図的に別カラムにしている（既存データ・既存statusの意味を一切変更しない）。
+    resolution_status = Column(
+        String(20), nullable=False, default=CallbackRequestResolutionStatus.UNHANDLED.value, index=True
+    )
 
     # 通知チャネルごとの結果（"sent" / "failed" / "skipped"（対象Emailが
     # 設定されていない等）。実際にメールを送信する仕組み自体は本フェーズでは
