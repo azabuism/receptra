@@ -264,6 +264,15 @@
                      （イベント名・状態文字列・Tool名のみ）。 -->
                 <div style="margin-top:10px; font-size:11px; color:#888;">直近イベント（最大30件）</div>
                 <div id="diagTimeline" style="margin-top:4px; background:#111; color:#9be89b; font-family:'SFMono-Regular', Consolas, monospace; font-size:11px; line-height:1.6; border-radius:10px; padding:10px; max-height:180px; overflow-y:auto; white-space:pre-wrap; word-break:break-all;"></div>
+
+                <!-- PHASE20/21/22/23（Greeting直後 Connection Failure緊急修正・最重要）:
+                     接続失敗が判定された直後・cleanupConnection()実行前の生きた状態を
+                     コピーして保存し、cleanupで全てclosed/nullになった後も表示し続ける。
+                     失敗が発生していない間は非表示。PIIは一切含めない。 -->
+                <div id="failureSnapshotBlock" style="display:none; margin-top:12px; background:#2a1414; border:1px solid #a33; border-radius:10px; padding:10px;">
+                    <div style="font-size:12px; color:#ff9d9d; font-weight:700; margin-bottom:6px;">⚠ FAILURE SNAPSHOT（cleanup直前の状態）</div>
+                    <pre id="failureSnapshotContent" style="margin:0; font-family:'SFMono-Regular', Consolas, monospace; font-size:11px; line-height:1.6; color:#ffd6d6; white-space:pre-wrap; word-break:break-all;"></pre>
+                </div>
             </details>
 
             <div class="latency-panel">
@@ -528,6 +537,32 @@
         // 目安。自動判定はしない、カウンタとして表示するのみ）。
         let playbackPauseCount = 0;
 
+        // ===== Greeting直後 Connection Failure緊急修正: 追加の観測・修正状態 =====
+
+        // PHASE10（最重要）: WebRTCのconnectionState 'disconnected'は、
+        // 'failed'/'closed'と異なり一時的な状態（ICEのconsent freshness check
+        // 失敗により発生し、ネットワークの瞬断・NAT再割り当て等で自然に
+        // 'connected'へ復帰することがある）。ブラウザはRFC 7675のconsent
+        // freshness checkをおよそ5秒間隔で行っているため、この間隔を根拠に
+        // 猶予期間を5秒とする（恣意的な数値ではなく、ICEの標準的な再確認
+        // 間隔に合わせた値）。従来はfailed/disconnected/closedを同一に扱い、
+        // 'disconnected'になった瞬間に即座にendCall()していた。Greeting音声の
+        // 再生完了でトラフィックパターンが変化するタイミングは、一時的な
+        // consent check失敗が起きやすいタイミングでもあるため、これが
+        // 「Greeting直後に接続が切れる」症状の主要因の一つと強く疑われる。
+        // 'failed'/'closed'は回復の見込みが無いため、引き続き即座にendCall()する
+        // （猶予の対象はdisconnectedのみ）。
+        const PC_DISCONNECT_GRACE_MS = 5000;
+        let disconnectGraceTimer = null;
+
+        // PHASE20/21/22/23（最重要）: 接続失敗が判定され、cleanupConnection()で
+        // pc/dc/track等がnull化・reset される直前の「生きた状態」を保存する
+        // スナップショット。cleanupConnection()実行後もそのまま画面に残す
+        // （cleanupConnection側では意図的にリセットしない。新しい通話開始
+        // 〔startCall()〕時にのみクリアする）。PIIは一切含めない
+        // （状態文字列・enum値・boolean・カウンタのみ）。
+        let failureSnapshot = null;
+
         // PHASE17: 直近の主要イベントをPIIなしで保持する簡易タイムライン
         // （最大30件。テキスト本文・電話番号・氏名・店舗名・予約内容は一切
         // 含めない。イベント名・状態文字列・Tool名のみ）。
@@ -719,6 +754,83 @@
             if (diagFailureSourceEl) {
                 setStatus(diagFailureSourceEl, failureSource, failureSource === '—' ? null : 'bad');
             }
+        }
+
+        // PHASE20/21（最重要・Greeting直後 Connection Failure緊急修正）: 接続失敗が
+        // 判定された直後・cleanupConnection()実行前に呼び出す。その時点の生きた
+        // pc/dc/track等の状態をコピーして保存する（cleanupConnection()は
+        // pc.close()・dc各種null化・remoteTrack系resetを行うため、その後に
+        // 状態を見てもpc.connectionState='closed'等、既に何もかも終わった状態
+        // しか見えず、本当の原因が失われてしまう。必ずcleanup前に呼ぶこと）。
+        // PIIは一切含めない（状態文字列・enum値・boolean・カウンタのみ）。
+        function captureFailureSnapshot(source, failureReason) {
+            const localTrack = localStream ? localStream.getAudioTracks()[0] : null;
+            failureSnapshot = {
+                capturedAt: new Date().toLocaleTimeString('ja-JP', { hour12: false }),
+                source: source || '不明',
+                failureReason: failureReason || '(理由未設定)',
+                failureSource: failureSource,
+                pcConnectionState: pc ? pc.connectionState : '(pc無し)',
+                pcIceConnectionState: pc ? pc.iceConnectionState : '(pc無し)',
+                pcSignalingState: pc ? pc.signalingState : '(pc無し)',
+                dataChannelReadyState: dc ? dc.readyState : '(dc無し)',
+                remoteTrackReadyState: remoteTrackReadyState,
+                remoteTrackMuted: remoteTrackMuted,
+                localTrackReadyState: localTrack ? localTrack.readyState : '(track無し)',
+                localTrackMuted: localTrack ? localTrack.muted : null,
+                localTrackEnabled: localTrack ? localTrack.enabled : null,
+                responseState: responseState,
+                userVadState: userVadState,
+                aiAudioOutputActive: aiAudioOutputActive,
+                greetingSource: greetingSource,
+                zeroWaitState: zeroWaitEnabled ? zeroWaitState : 'not_applicable',
+                lastInterruptionInfo: lastInterruptionInfo,
+                currentToolLabel: lastToolLabel,
+            };
+            pushTimelineEvent('FAILURE SNAPSHOT取得 (source=' + source + ')');
+            updateFailureSnapshotPanel();
+            // PHASE23: debug=1の場合のみ、音声診断パネルを強制的に開いた状態にする
+            // （iPhone単体でスクリーンショットを撮る際に、タップして展開する手間を
+            // 無くすため）。通常お客様には#debugPanels自体が非表示のため影響しない。
+            if (debugMode) {
+                const panelEl = document.getElementById('audioDiagPanel');
+                if (panelEl) panelEl.open = true;
+            }
+        }
+
+        // PHASE22: failureSnapshotの内容を画面へ描画する。debugMode=falseでは
+        // 何もしない（通常お客様には表示しない）。cleanupConnection()からは
+        // 意図的に呼ばれない・クリアされない設計（cleanup後も表示し続けるため）。
+        function updateFailureSnapshotPanel() {
+            if (!debugMode) return;
+            const blockEl = document.getElementById('failureSnapshotBlock');
+            const contentEl = document.getElementById('failureSnapshotContent');
+            if (!blockEl || !contentEl) return;
+            if (!failureSnapshot) {
+                blockEl.style.display = 'none';
+                return;
+            }
+            const s = failureSnapshot;
+            contentEl.textContent = [
+                '取得時刻: ' + s.capturedAt,
+                'source: ' + s.source,
+                'failureReason: ' + s.failureReason,
+                'failureSource: ' + s.failureSource,
+                'pc.connectionState: ' + s.pcConnectionState,
+                'pc.iceConnectionState: ' + s.pcIceConnectionState,
+                'pc.signalingState: ' + s.pcSignalingState,
+                'dataChannel.readyState: ' + s.dataChannelReadyState,
+                'remoteTrack: readyState=' + s.remoteTrackReadyState + ' muted=' + s.remoteTrackMuted,
+                'localTrack: readyState=' + s.localTrackReadyState + ' muted=' + s.localTrackMuted + ' enabled=' + s.localTrackEnabled,
+                'responseState: ' + s.responseState,
+                'userVadState: ' + s.userVadState,
+                'aiAudioOutputActive: ' + s.aiAudioOutputActive,
+                'greetingSource: ' + s.greetingSource,
+                'zeroWaitState: ' + s.zeroWaitState,
+                'lastInterruptionInfo: ' + s.lastInterruptionInfo,
+                '直近Tool: ' + s.currentToolLabel,
+            ].join('\n');
+            blockEl.style.display = 'block';
         }
 
         // PHASE11/15（重要）: これはdebugMode判定を含まない。play()が実際に
@@ -2269,6 +2381,12 @@
             lastBargeInSpeechStartedAt = null;
             playbackPauseCount = 0;
             recentEvents = [];
+            // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
+            // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
+            // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。
+            failureSnapshot = null;
+            updateFailureSnapshotPanel();
+            if (disconnectGraceTimer) { clearTimeout(disconnectGraceTimer); disconnectGraceTimer = null; }
             pushTimelineEvent('startCall() 開始');
 
             startBtn.disabled = true;
@@ -2425,6 +2543,17 @@
 
                 currentSetupStep = 'peer_connection_setup';
                 pc = new RTCPeerConnection();
+                // PHASE11（cleanup競合対策）: pc.onconnectionstatechange等の
+                // イベントハンドラはouter scopeの`pc`変数（let、cleanupConnection()で
+                // null化・次の通話開始で新インスタンスに再代入される）を参照する
+                // クロージャになっている。close()後や次の通話開始後に、この古い
+                // RTCPeerConnectionインスタンスから遅延してイベントが発火した場合、
+                // ハンドラ内の`pc`は既にnull（TypeErrorの危険）か、あるいは既に
+                // 次の通話の新しいpcを指してしまっている可能性がある（＝別の通話の
+                // 状態を誤って参照・endCallしてしまう危険）。このインスタンス自身を
+                // thisPcとして固定し、outer scopeの`pc`と一致する場合のみ処理する
+                // ことで、この種のstale closureレースを防ぐ。
+                const thisPc = pc;
 
                 pc.ontrack = (ev) => {
                     logEvent('リモート音声トラック受信');
@@ -2438,6 +2567,10 @@
                         // PHASE1/4: 通話途中でリモートTrackがended/mutedになっていないかを
                         // ローカルTrackと同様に観測できるようにする（対処は行わない）。
                         remoteTrack.addEventListener('ended', () => {
+                            // PHASE11: 前の通話の（既にcleanupされた）remote trackから
+                            // 遅延してendedが届いた場合、新しい通話の状態を誤って
+                            // 汚染しないよう無視する。
+                            if (typeof pc !== 'undefined' && typeof thisPc !== 'undefined' && pc !== thisPc) return;
                             remoteTrackReadyState = 'ended';
                             logEvent('リモート音声Trackがended状態になりました');
                             // PHASE9: 通話がまだ続いている（endCall未呼び出し）のに
@@ -2447,12 +2580,14 @@
                             pushTimelineEvent('remote track ended');
                         });
                         remoteTrack.addEventListener('mute', () => {
+                            if (typeof pc !== 'undefined' && typeof thisPc !== 'undefined' && pc !== thisPc) return;
                             remoteTrackMuted = true;
                             logEvent('リモート音声Trackがmuteイベントを発火しました');
                             updateAudioDiagnosticsPanel();
                             pushTimelineEvent('remote track mute');
                         });
                         remoteTrack.addEventListener('unmute', () => {
+                            if (typeof pc !== 'undefined' && typeof thisPc !== 'undefined' && pc !== thisPc) return;
                             remoteTrackMuted = false;
                             logEvent('リモート音声Trackがunmuteイベントを発火しました');
                             updateAudioDiagnosticsPanel();
@@ -2573,8 +2708,12 @@
 
                 dc = pc.createDataChannel('oai-events');
                 dataChannelState = 'connecting';
+                // PHASE11: thisPcと同じ理由で、古い/置き換わったdcインスタンスからの
+                // 遅延イベントを無視するためのガードに使う。
+                const thisDc = dc;
                 dc.addEventListener('message', (ev) => handleDataChannelEvent(ev.data));
                 dc.addEventListener('open', () => {
+                    if (dc !== thisDc) return;
                     greetingTiming.dcOpen = performance.now();
                     logEvent('データチャネル接続 (DataChannel open, readyState=' + dc.readyState + ')');
                     dataChannelState = 'open';
@@ -2589,6 +2728,9 @@
                 // （'closing'はreadyStateの一状態であり専用イベントは無い）ため、
                 // 存在しないイベントを追加することはしない。
                 dc.addEventListener('close', () => {
+                    // PHASE11: 既にcleanupされた/別の通話に置き換わった古いdc
+                    // インスタンスからの遅延イベントは無視する。
+                    if (dc !== thisDc) return;
                     logEvent('DataChannel close (readyState=' + dc.readyState + ')');
                     dataChannelState = 'closed';
                     pushTimelineEvent('DataChannel close');
@@ -2598,6 +2740,7 @@
                     updateAudioDiagnosticsPanel();
                 });
                 dc.addEventListener('error', (ev) => {
+                    if (dc !== thisDc) return;
                     const err = ev && ev.error;
                     const detail = err
                         ? (err.errorDetail || err.message || err.name || String(err))
@@ -2610,10 +2753,22 @@
                 });
 
                 pc.onconnectionstatechange = () => {
+                    // PHASE11: 既にcleanupされた/別の通話に置き換わった古いpc
+                    // インスタンスからの遅延イベントは無視する。
+                    if (pc !== thisPc) return;
                     logEvent('接続状態(connectionState): ' + pc.connectionState);
                     pushTimelineEvent('PC connectionState=' + pc.connectionState);
                     setStatus(stWebrtcEl, pc.connectionState, pc.connectionState === 'connected' ? 'ok' : null);
                     if (pc.connectionState === 'connected') {
+                        // PHASE10: disconnectedからの自然回復を含む。猶予タイマーが
+                        // 残っていれば解除する（回復したのに誤ってfailure扱いに
+                        // しないため）。
+                        if (disconnectGraceTimer) {
+                            clearTimeout(disconnectGraceTimer);
+                            disconnectGraceTimer = null;
+                            pushTimelineEvent('disconnectedから猶予期間内に回復（通話継続）');
+                            logEvent('[PHASE10] connectionStateがdisconnectedから回復しました。通話を継続します');
+                        }
                         bigMic.classList.remove('connecting');
                         bigMic.classList.add('connected');
                         statusText.textContent = '通話中';
@@ -2632,8 +2787,37 @@
                             elapsedTimerId = setInterval(updateElapsedDisplay, 1000);
                             updateElapsedDisplay();
                         }
-                    } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+                    } else if (pc.connectionState === 'disconnected') {
+                        // PHASE10（最重要）: 'disconnected'は一時的な状態であり、
+                        // 'failed'/'closed'と同一に即終了扱いしない。短い猶予期間
+                        // （PC_DISCONNECT_GRACE_MS、根拠は上の変数宣言コメント参照）
+                        // の間だけ様子を見て、その間に'connected'へ戻れば通話を継続する。
+                        setStatus(stWebrtcEl, pc.connectionState, 'warn');
+                        pushTimelineEvent('PC disconnected（' + (PC_DISCONNECT_GRACE_MS / 1000) + '秒間、回復を待ちます）');
+                        if (!disconnectGraceTimer && !ended) {
+                            disconnectGraceTimer = setTimeout(() => {
+                                disconnectGraceTimer = null;
+                                // PHASE11: このタイマー自体もthisPc固定のクロージャに
+                                // している。猶予期間中にcleanupされた/別の通話に
+                                // 置き換わった場合は何もしない。
+                                if (ended || !pc || pc !== thisPc) return;
+                                if (pc.connectionState !== 'connected') {
+                                    if (failureSource === '—') {
+                                        failureSource = (pc.iceConnectionState === 'failed') ? 'ice_failed' : 'peer_connection_failed';
+                                    }
+                                    updateAudioDiagnosticsPanel();
+                                    pushTimelineEvent('disconnectedが猶予期間内に回復しなかったため終了します(state=' + pc.connectionState + ')');
+                                    const reason = '通話が切断されました。電波状況の良い場所でもう一度おかけ直しください。';
+                                    captureFailureSnapshot('pc.onconnectionstatechange:disconnected(grace_expired,state=' + pc.connectionState + ')', reason);
+                                    if (!ended) endCall(reason, 'pc.onconnectionstatechange:disconnected(grace_expired,state=' + pc.connectionState + ')');
+                                }
+                            }, PC_DISCONNECT_GRACE_MS);
+                        }
+                    } else if (['failed', 'closed'].includes(pc.connectionState)) {
+                        // 'failed'/'closed'は回復の見込みが無いため、従来通り猶予なしで
+                        // 即座に終了する。
                         setStatus(stWebrtcEl, pc.connectionState, 'bad');
+                        if (disconnectGraceTimer) { clearTimeout(disconnectGraceTimer); disconnectGraceTimer = null; }
                         // PHASE9: 接続済みの通話が切断された場合の失敗要因分類。
                         // ICE自体がfailedならice_failed、それ以外はpeer_connection_failed
                         // として記録する（最初に確定した理由を優先し、上書きしない）。
@@ -2641,10 +2825,15 @@
                             failureSource = (pc.iceConnectionState === 'failed') ? 'ice_failed' : 'peer_connection_failed';
                         }
                         updateAudioDiagnosticsPanel();
-                        if (!ended) endCall('通話が切断されました。電波状況の良い場所でもう一度おかけ直しください。', 'pc.onconnectionstatechange:' + pc.connectionState);
+                        const reason = '通話が切断されました。電波状況の良い場所でもう一度おかけ直しください。';
+                        if (!ended) {
+                            captureFailureSnapshot('pc.onconnectionstatechange:' + pc.connectionState, reason);
+                            endCall(reason, 'pc.onconnectionstatechange:' + pc.connectionState);
+                        }
                     }
                 };
                 pc.oniceconnectionstatechange = () => {
+                    if (pc !== thisPc) return;
                     logEvent('iceConnectionState: ' + pc.iceConnectionState);
                     iceState = pc.iceConnectionState;
                     pushTimelineEvent('ICE ' + iceState);
@@ -2684,18 +2873,26 @@
                 // 分類して記録する（実機ログでの原因切り分け用。対処はしない）。
                 if (failureSource === '—') failureSource = currentSetupStep || 'unknown';
                 pushTimelineEvent('接続失敗 (failureSource=' + failureSource + ')');
+                // PHASE20/21（最重要）: cleanupConnection()でpc/dc/track等が
+                // null化される前に、この時点の状態を保存する（このcatchが
+                // 万一Greeting開始後のタイミングで発火した場合でも、原因調査の
+                // 手がかりを失わないようにする）。
+                const catchReason = (e && e.aiReceptionDisabled)
+                    ? '現在、こちらの音声AI受付はご利用いただけません。'
+                    : '接続に失敗しました。しばらくしてから、もう一度お試しください。';
+                captureFailureSnapshot('startCall:setupFailed(step=' + (currentSetupStep || 'unknown') + ',msg=' + e.message + ')', catchReason);
                 if (e && e.aiReceptionDisabled) {
                     // Human Handoff基盤: 技術的な接続失敗ではなく、店舗側がAI電話受付を
                     // OFFにしている状態であることを明確に区別して案内する
                     // （「接続に失敗しました」という誤解を招く表示にしない）。
-                    showErrorBanner('現在、こちらの音声AI受付はご利用いただけません。');
+                    showErrorBanner(catchReason);
                     statusText.textContent = 'AI受付は現在休止中です';
                     subStatusText.textContent = '';
                 } else {
                     // PHASE20（任意・ユーザー事前承認済み）: 「お電話でお問い合わせ
                     // ください」は、本製品自体がAI電話受付であるため循環的な案内に
                     // なってしまっていた。大きなUI変更を伴わない文言修正のみ行う。
-                    showErrorBanner('接続に失敗しました。しばらくしてから、もう一度お試しください。');
+                    showErrorBanner(catchReason);
                     statusText.textContent = '接続に失敗しました';
                     subStatusText.textContent = 'もう一度お試しください。';
                 }
@@ -2732,6 +2929,12 @@
             logEvent('cleanupConnection実行（呼び出し元: ' + (source || '不明') + '）');
             pushTimelineEvent('cleanupConnection (source=' + (source || '不明') + ')');
             if (maxDurationTimer) { clearTimeout(maxDurationTimer); maxDurationTimer = null; }
+            // PHASE11（cleanup競合対策）: disconnected猶予タイマーが残ったまま
+            // cleanupが実行されると、タイマー発火時にはpcが既にclose/null化済み
+            // （またはcloseされた古いpcインスタンス）になっており、意図しない
+            // 二重endCall()やnullアクセスにつながり得る。cleanup時は必ず解除する。
+            // （failureSnapshot自体はここではクリアしない＝失敗直後も画面に残す）
+            if (disconnectGraceTimer) { clearTimeout(disconnectGraceTimer); disconnectGraceTimer = null; }
             stopMicLevelMeter();
             stopStatsPolling();
             if (localStream) { localStream.getTracks().forEach((t) => t.stop()); localStream = null; }
