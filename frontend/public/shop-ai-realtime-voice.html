@@ -1555,8 +1555,18 @@
                     logEvent(`マイクTrack[${i}]: label="${track.label}" enabled=${track.enabled} `
                         + `readyState=${track.readyState} muted=${track.muted}`);
                     track.addEventListener('ended', () => {
-                        logEvent(`マイクTrack[${i}]がended状態になりました`);
+                        logEvent(`マイクTrack[${i}]がended状態になりました (readyState=${track.readyState})`);
                         setStatus(stMicTrackEl, 'ended', 'bad');
+                    });
+                    // 次フェーズ仕様書（通話切断原因調査）: mute/unmuteイベントには
+                    // 従来リスナーが存在しなかった。OSレベルでのマイクミュート・
+                    // 一時的な入力断絶などをここで確認できるようにする
+                    // （音声内容そのものは記録しない）。
+                    track.addEventListener('mute', () => {
+                        logEvent(`マイクTrack[${i}]がmuteイベントを発火しました (readyState=${track.readyState})`);
+                    });
+                    track.addEventListener('unmute', () => {
+                        logEvent(`マイクTrack[${i}]がunmuteイベントを発火しました (readyState=${track.readyState})`);
                     });
                 });
                 setStatus(stMicTrackEl, 'live', 'ok');
@@ -1621,7 +1631,24 @@
                 dc.addEventListener('message', (ev) => handleDataChannelEvent(ev.data));
                 dc.addEventListener('open', () => {
                     greetingTiming.dcOpen = performance.now();
-                    logEvent('データチャネル接続');
+                    logEvent('データチャネル接続 (DataChannel open, readyState=' + dc.readyState + ')');
+                });
+                // 次フェーズ仕様書（通話切断原因調査）: DataChannelのclose/errorには
+                // 従来イベントリスナーが存在せず、通話が途切れた際にDataChannel側で
+                // 何が起きたのか（正常close/異常error）を一切確認できなかった。
+                // 個人情報は含まれないため、readyStateとerror detailのみ記録する。
+                // 注: RTCDataChannelには仕様上"closing"というイベントは存在しない
+                // （'closing'はreadyStateの一状態であり専用イベントは無い）ため、
+                // 存在しないイベントを追加することはしない。
+                dc.addEventListener('close', () => {
+                    logEvent('DataChannel close (readyState=' + dc.readyState + ')');
+                });
+                dc.addEventListener('error', (ev) => {
+                    const err = ev && ev.error;
+                    const detail = err
+                        ? (err.errorDetail || err.message || err.name || String(err))
+                        : '(詳細不明)';
+                    logEvent('DataChannel error: ' + detail + ' (readyState=' + dc.readyState + ')');
                 });
 
                 pc.onconnectionstatechange = () => {
@@ -1648,7 +1675,7 @@
                         }
                     } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
                         setStatus(stWebrtcEl, pc.connectionState, 'bad');
-                        if (!ended) endCall('通話が切断されました。電波状況の良い場所でもう一度おかけ直しください。');
+                        if (!ended) endCall('通話が切断されました。電波状況の良い場所でもう一度おかけ直しください。', 'pc.onconnectionstatechange:' + pc.connectionState);
                     }
                 };
                 pc.oniceconnectionstatechange = () => logEvent('iceConnectionState: ' + pc.iceConnectionState);
@@ -1675,7 +1702,7 @@
                 greetingTiming.sdpAnswerSet = performance.now();
 
                 maxDurationTimer = setTimeout(() => {
-                    endCall('通話時間が上限（30分）に達したため終了しました');
+                    endCall('通話時間が上限（30分）に達したため終了しました', 'maxDurationTimer');
                 }, MAX_CALL_DURATION_MS);
             } catch (e) {
                 logEvent('エラー: ' + e.message);
@@ -1685,11 +1712,34 @@
                 bigMic.classList.remove('connecting');
                 bigMic.classList.add('error');
                 startBtn.disabled = false;
-                cleanupConnection();
+                cleanupConnection('startCall:setupFailed(' + e.message + ')');
             }
         }
 
-        function cleanupConnection() {
+        // 次フェーズ仕様書（通話切断原因調査）: 「誰が・何を理由に通話終了処理を
+        // 実行したのか」を追跡できるよう、cleanupConnection/endCallの呼び出し元を
+        // 明示するsource引数を追加し、終了直前のPeerConnection/DataChannel/
+        // 音声トラックの状態を1行のスナップショットとして記録する。
+        // 個人の音声内容・電話番号・メール等は一切含めない（技術的な状態値のみ）。
+        function logConnectionSnapshot(label) {
+            try {
+                const pcState = pc
+                    ? ('connectionState=' + pc.connectionState + ' iceConnectionState=' + pc.iceConnectionState
+                        + ' iceGatheringState=' + pc.iceGatheringState + ' signalingState=' + pc.signalingState)
+                    : '(pcは既にnull)';
+                const dcState = dc ? ('readyState=' + dc.readyState) : '(dcは既にnull)';
+                const trackState = localStream
+                    ? localStream.getAudioTracks().map((t, i) =>
+                        `[${i}]readyState=${t.readyState},enabled=${t.enabled},muted=${t.muted}`).join(' ')
+                    : '(localStreamは既にnull)';
+                logEvent('[状態スナップショット:' + label + '] PC(' + pcState + ') DC(' + dcState + ') Track(' + trackState + ')');
+            } catch (snapErr) {
+                logEvent('状態スナップショット取得に失敗しました: ' + snapErr.message);
+            }
+        }
+
+        function cleanupConnection(source) {
+            logEvent('cleanupConnection実行（呼び出し元: ' + (source || '不明') + '）');
             if (maxDurationTimer) { clearTimeout(maxDurationTimer); maxDurationTimer = null; }
             stopMicLevelMeter();
             if (localStream) { localStream.getTracks().forEach((t) => t.stop()); localStream = null; }
@@ -1702,9 +1752,10 @@
             setStatus(stAiSpeakEl, '待機', null);
         }
 
-        function endCall(reason) {
+        function endCall(reason, source) {
             if (ended) return;
             ended = true;
+            logConnectionSnapshot('endCall直前（呼び出し元: ' + (source || '不明') + '）');
             // Phase2.6: 通話終了時点のusage合計を確定させる（cleanupConnectionより前に
             // 実施し、状態表示のリセットの影響を受けないようにする）。
             if (callStartedAt && !callEndedAt) {
@@ -1713,24 +1764,24 @@
                 updateElapsedDisplay();
                 logFinalUsageSummary();
             }
-            cleanupConnection();
+            cleanupConnection('endCall(' + (source || '不明') + ')');
             bigMic.classList.remove('connecting', 'connected', 'ai-speaking');
             statusText.textContent = '通話終了';
             subStatusText.textContent = reason || '';
             startBtn.style.display = 'inline-block';
             startBtn.disabled = false;
             endBtn.style.display = 'none';
-            if (reason) logEvent(reason);
+            if (reason) logEvent('終了理由: ' + reason + '（呼び出し元: ' + (source || '不明') + '）');
         }
 
         startBtn.addEventListener('click', () => {
             ended = false;
             startCall();
         });
-        endBtn.addEventListener('click', () => endCall('通話を終了しました'));
+        endBtn.addEventListener('click', () => endCall('通話を終了しました', 'endBtn.click'));
 
         window.addEventListener('beforeunload', () => {
-            cleanupConnection();
+            cleanupConnection('beforeunload');
             // Phase3C.1: プリロード用に確保したObjectURLをページ離脱時に解放する
             // （通話中の再利用に備え、通話終了(endCall)のたびには解放しない）。
             if (zeroWaitObjectUrl) {
