@@ -1328,6 +1328,71 @@
             }
         }
 
+        // ===== Human Handoff基盤: request_callback =====
+        //
+        // 重要（バグ修正）: このToolはapp.services.realtime_voice_ai側の
+        // _REALTIME_TOOLSに8番目のToolとして追加済みだったが、このページの
+        // Tool呼び出し関数・handleFunctionCallItemのディスパッチ分岐が
+        // 追加当時に更新されておらず、実際には一度も呼ばれていなかった
+        // （handleFunctionCallItemのelse分岐＝「未知のTool」として処理され、
+        // POST /tools/request-callbackへ到達せず、DB保存も行われないまま
+        // {available:false, success:false, status:'not_found', ...}という
+        // このToolの本来のレスポンス形（{success, reason_code}）とは異なる
+        // 形の function_call_output が返っていた）。Realtimeモデルが期待する
+        // 形と異なる結果を受け取ったことが、実際の音声テストで観測された
+        // 「電話番号確認後にAIが無言になる」現象の原因である可能性が高い。
+        //
+        // 設計方針（create_reservation/set_conversation_languageと同じパターン）:
+        // - shop_idはAIの引数に含めない（URLパス由来）。
+        // - call_idはAIの引数ではなく、handleFunctionCallItemがOpenAI Realtimeの
+        //   function_callイベント本体(item.call_id)から読み取った値をそのまま
+        //   転送する（AI自身にcall_idを生成させない。create_reservationと同じ）。
+        // - session_id（voiceSessionId）もこのページのJS変数からのみ付与する
+        //   （他のToolと同じパターン。AIはどの通話かを指定できない）。
+        // - fetch失敗・タイムアウト・不正レスポンス等、どんな失敗であっても
+        //   「担当者から折り返します」を合成してはならない。必ず
+        //   success:false + reason_code（invalid_request/temporarily_unavailable）
+        //   のみを返す（このToolのレスポンス形はsuccess/reason_codeの2フィールドのみ。
+        //   他のToolのavailable/status等のフィールドを混ぜない）。
+        async function callRequestCallbackTool(args, callId) {
+            const body = {
+                customer_name: args && args.customer_name,
+                customer_phone: args && args.customer_phone,
+                inquiry_text: args && args.inquiry_text,
+                call_id: callId,
+                session_id: voiceSessionId,
+            };
+            if (args && args.desired_date) body.desired_date = args.desired_date;
+            if (args && args.desired_time) body.desired_time = args.desired_time;
+            if (args && args.party_size) body.party_size = args.party_size;
+            if (args && args.service_id) body.service_id = args.service_id;
+            if (args && args.reason_code) body.reason_code = args.reason_code;
+
+            try {
+                const res = await fetchToolWithTimeout('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/request-callback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || typeof data.success !== 'boolean') {
+                    // check_availability/create_reservationと同じ方針: HTTP 422
+                    // （FastAPI自身のリクエストバリデーションエラー）はinvalid_request、
+                    // それ以外（429レート制限・5xx・不正レスポンス等）はtemporarily_unavailable。
+                    return {
+                        success: false,
+                        reason_code: (res.status === 422) ? 'invalid_request' : 'temporarily_unavailable',
+                    };
+                }
+                return data;
+            } catch (e) {
+                // fetch自体が例外を投げるのはネットワーク断・タイムアウト等のみのため、
+                // 入力の誤りではなくtemporarily_unavailable。
+                logEvent('request_callback Tool呼び出しに失敗' + describeToolFetchError(e));
+                return { success: false, reason_code: 'temporarily_unavailable' };
+            }
+        }
+
         async function handleFunctionCallItem(item) {
             const callId = item.call_id;
             if (!callId) return;
@@ -1366,11 +1431,17 @@
             } else if (item.name === 'set_conversation_language') {
                 logEvent('Tool呼び出し受信: set_conversation_language ' + JSON.stringify(args));
                 output = await callSetConversationLanguageTool(args || {});
+            } else if (item.name === 'request_callback') {
+                // バグ修正: これまでこの分岐が存在せず、request_callbackが
+                // 常にelse（未知のTool）へ落ちていた（詳細はcallRequestCallbackTool
+                // の直前のコメント参照）。
+                logEvent('Tool呼び出し受信: request_callback ' + JSON.stringify(args));
+                output = await callRequestCallbackTool(args || {}, callId);
             } else {
-                // Phase5Aまでで宣言しているToolはcheck_availability /
-                // create_reservation / get_shop_info / find_customer /
-                // confirm_customer_identity / get_customer_context /
-                // set_conversation_languageの7つのみ。
+                // 現在宣言しているToolはcheck_availability / create_reservation /
+                // get_shop_info / find_customer / confirm_customer_identity /
+                // get_customer_context / set_conversation_language /
+                // request_callbackの8つ。
                 // 未知の関数名が来た場合も、応答せずに放置するとAIが待ち続けて
                 // しまうため、安全側の失敗として返す。
                 logEvent('未知のTool呼び出し: ' + item.name);
