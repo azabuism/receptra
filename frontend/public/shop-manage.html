@@ -80,6 +80,22 @@
         .accordion-toggle[aria-expanded="true"] .accordion-caret { transform: rotate(180deg); }
         .accordion-body { padding: 14px; border-top: 2px solid #eee; }
         .accordion-body[hidden] { display: none; }
+        /* PHASE5-A: 「未設定/対応/非対応/条件付き」等のselectを、スマホで
+           押しやすいセグメント型ボタン群に置き換えるためのスタイル。
+           値・データの意味は一切変更せず、見た目のみを変更する
+           （app.models.shop_knowledgeの3〜4値設計はそのまま維持）。 */
+        .seg-control { display: flex; flex-wrap: wrap; gap: 8px; }
+        .seg-btn {
+            flex: 1 1 auto; min-width: 72px; min-height: 44px;
+            padding: 10px 12px; border: 2px solid #eee; border-radius: 10px;
+            background: var(--white); color: var(--dark); font-family: inherit;
+            font-size: 14px; font-weight: 700; cursor: pointer; text-align: center;
+            transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+        }
+        .seg-btn:hover { border-color: var(--primary); }
+        .seg-btn.active { background: var(--primary); border-color: var(--primary); color: var(--white); }
+        .seg-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+        @media (max-width: 480px) { .seg-btn { flex: 1 1 40%; } }
         .faq-item { padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
         .faq-item:last-child { border-bottom: none; }
         .faq-item .faq-question { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
@@ -1169,7 +1185,19 @@
             <div id="notification-history-list"><p class="empty-hint">読み込み中...</p></div>
         </div>
 
-        <div class="card">
+        <!-- PHASE5-B: 「全体を保存」。基本情報・店舗情報・AIスタッフ設定・通知設定の
+             4フォームをまとめて保存する。FAQ・クーポン・テーブル・スタッフ・予約・
+             口コミ等の一覧管理機能（追加/削除が個別に完結する）は対象外。
+             削除ボタン（店舗・事業所の削除）とは別カード・大きな余白・色で
+             視覚的にはっきり分離し、誤クリックを防ぐ。 -->
+        <div class="card" id="save-all-card" style="border: 2px solid var(--primary); margin-top: 36px; margin-bottom: 36px;">
+            <h2>まとめて保存</h2>
+            <p class="hint">基本情報・店舗情報・AIスタッフ設定・通知設定を、まとめて保存します。FAQ・クーポン・テーブル・スタッフ・予約・口コミは、それぞれの一覧画面で個別に保存されるため対象外です。</p>
+            <button type="button" class="btn" id="save-all-btn" style="width: 100%; padding: 16px; font-size: 16px;">全体を保存</button>
+            <div class="msg" id="save-all-msg" style="margin-top: 14px;"></div>
+        </div>
+
+        <div class="card" style="margin-top: 36px;">
             <h2>店舗・事業所の削除</h2>
             <p class="hint">この店舗・事業所と、登録されている写真・メニュー・営業時間などをすべて削除します。この操作は取り消せません。</p>
             <button type="button" class="btn-outline btn-danger" id="delete-shop-btn">この店舗・事業所を削除する</button>
@@ -1222,6 +1250,10 @@
             window.location.href = 'owner-login.html';
         } else {
             document.getElementById('app').style.display = 'block';
+            // PHASE5-A: 店舗情報フォームのselect群をセグメント型ボタンへ変換する。
+            // loadShopKnowledge()（init()内）がel.valueへ値を設定する前に
+            // 必ず実行する（変換後のhidden inputが値を受け取れるようにするため）。
+            convertSkSelectsToSegControls();
             init();
         }
 
@@ -2419,10 +2451,12 @@
         }
 
         // ---------- 基本情報 ----------
-        document.getElementById('basic-form').addEventListener('submit', async function (event) {
-            event.preventDefault();
-            const msg = document.getElementById('basic-msg');
-            const btn = document.getElementById('basic-save-btn');
+        // PHASE5-B: 「全体を保存」からも個別の保存ボタンからも同じロジックを
+        // 使うよう、実際の通信部分だけを共通コア関数として切り出す。
+        // コア関数はfetchと結果判定のみを行い、msg表示・btn制御などのDOM副作用は
+        // 呼び出し側（個別submitハンドラ／全体保存ハンドラ）に残すことで、
+        // 個別保存ボタンの既存の挙動・表示文言は一切変更しない（純粋なリファクタリング）。
+        async function _saveBasicInfoCore() {
             const payload = {
                 name: document.getElementById('edit-name').value.trim(),
                 category: document.getElementById('edit-category').value,
@@ -2432,20 +2466,29 @@
                 website: document.getElementById('edit-website').value.trim() || null,
                 description: document.getElementById('edit-description').value.trim() || null
             };
+            const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId), {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+                const errData = await res.json().catch(function () { return {}; });
+                return { ok: false, error: _extractErrorMessage(errData, '保存に失敗しました') };
+            }
+            const shop = await res.json();
+            document.getElementById('shop-name-title').textContent = shop.name + ' の管理';
+            updateServiceStaffVisibility(shop.business_type);
+            return { ok: true };
+        }
+
+        document.getElementById('basic-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('basic-msg');
+            const btn = document.getElementById('basic-save-btn');
             btn.disabled = true;
             try {
-                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId), {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if (!res.ok) {
-                    const errData = await res.json().catch(function () { return {}; });
-                    throw new Error(_extractErrorMessage(errData, '保存に失敗しました'));
-                }
-                const shop = await res.json();
-                document.getElementById('shop-name-title').textContent = shop.name + ' の管理';
-                updateServiceStaffVisibility(shop.business_type);
+                const result = await _saveBasicInfoCore();
+                if (!result.ok) throw new Error(result.error);
                 showMsg(msg, '保存しました', 'success');
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
@@ -2916,10 +2959,8 @@
             }
         }
 
-        document.getElementById('ai-staff-form').addEventListener('submit', async function (event) {
-            event.preventDefault();
-            const msg = document.getElementById('ai-staff-msg');
-            const btn = document.getElementById('ai-staff-save-btn');
+        // PHASE5-B: AIスタッフ設定のコア保存関数。
+        async function _saveAiStaffCore() {
             const payload = {
                 staff_name: document.getElementById('ai-staff-name').value.trim() || null,
                 voice: document.getElementById('ai-staff-voice').value || null,
@@ -2930,17 +2971,26 @@
                 greeting: document.getElementById('ai-staff-greeting').value.trim() || null,
                 custom_instructions: document.getElementById('ai-staff-custom-instructions').value.trim() || null
             };
+            const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/ai-staff-settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+                const errData = await res.json().catch(function () { return {}; });
+                return { ok: false, error: _extractErrorMessage(errData, '保存に失敗しました') };
+            }
+            return { ok: true };
+        }
+
+        document.getElementById('ai-staff-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('ai-staff-msg');
+            const btn = document.getElementById('ai-staff-save-btn');
             btn.disabled = true;
             try {
-                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/ai-staff-settings', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if (!res.ok) {
-                    const errData = await res.json().catch(function () { return {}; });
-                    throw new Error(_extractErrorMessage(errData, '保存に失敗しました'));
-                }
+                const result = await _saveAiStaffCore();
+                if (!result.ok) throw new Error(result.error);
                 showMsg(msg, '保存しました。次回の通話から反映されます。', 'success');
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
@@ -2948,6 +2998,74 @@
                 btn.disabled = false;
             }
         });
+
+        // ---------- PHASE5-A: 店舗情報のselectをセグメント型ボタンへ変換 ----------
+        // 目的（次フェーズ仕様書 セクション1・重要事項）:
+        // ・「未設定/対応/非対応/条件付き」等の値・意味は一切変更しない。
+        // ・<select>の各<option>をそのままDOMから読み取ってボタンを生成するため、
+        //   文言・値の手動転記を一切行わない（転記ミスによる意味変化を防ぐ設計）。
+        // ・生成したhidden inputは元のselectと同じid(sk-*)を持つため、
+        //   loadShopKnowledge()・submitハンドラ・アコーディオンのhasValue判定など
+        //   既存コードは一切変更不要（すべて.valueの読み書きのみに依存しているため）。
+        // ・hidden inputの.valueにObject.definePropertyでgetter/setterを仕込み、
+        //   既存コードがel.value = "yes"のように書き込むだけで、対応するボタンの
+        //   選択状態（.active）が自動的に追従するようにする。
+        // ・未設定を含むすべての選択肢はDOM上のoptionそのままなので、
+        //   「未設定」ボタンが必ず存在し、既存店舗の値（null/""含む）もそのまま
+        //   表示・保存される（自動でnoへ変換されることはない）。
+        function convertSkSelectsToSegControls() {
+            document.querySelectorAll('select[id^="sk-"]').forEach(function (select) {
+                const id = select.id;
+                const options = Array.from(select.options).map(function (o) {
+                    return { value: o.value, text: o.textContent };
+                });
+                if (options.length === 0) return;
+
+                const hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.id = id;
+                hidden.setAttribute('data-seg-field', id);
+
+                const wrap = document.createElement('div');
+                wrap.className = 'seg-control';
+                wrap.setAttribute('role', 'radiogroup');
+                const labelEl = document.querySelector('label[for="' + id + '"]');
+                if (labelEl) wrap.setAttribute('aria-label', labelEl.textContent.trim());
+
+                let currentValue = select.value || '';
+
+                function render() {
+                    Array.from(wrap.children).forEach(function (btn) {
+                        const active = btn.getAttribute('data-value') === currentValue;
+                        btn.classList.toggle('active', active);
+                        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+                    });
+                }
+
+                options.forEach(function (opt) {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'seg-btn';
+                    btn.setAttribute('data-value', opt.value);
+                    btn.textContent = opt.text;
+                    btn.addEventListener('click', function () {
+                        hidden.value = opt.value; // setterがrender()も呼ぶ
+                    });
+                    wrap.appendChild(btn);
+                });
+
+                // 既存コード（loadShopKnowledge等）がel.valueへ代入・参照するだけで
+                // 見た目のボタン選択状態が自動的に追従するようにする。
+                Object.defineProperty(hidden, 'value', {
+                    get: function () { return currentValue; },
+                    set: function (v) { currentValue = (v === null || v === undefined) ? '' : String(v); render(); },
+                    configurable: true,
+                });
+
+                select.replaceWith(hidden, wrap);
+                render();
+            });
+        }
 
         // ---------- Phase3D: 店舗情報（Shop Knowledge） ----------
         // 「未設定」と「なし（明確にNo）」を区別する設計(app.models.shop_knowledge参照)
@@ -3019,10 +3137,14 @@
             }
         }
 
-        document.getElementById('shop-knowledge-form').addEventListener('submit', async function (event) {
-            event.preventDefault();
-            const msg = document.getElementById('shop-knowledge-msg');
-            const btn = document.getElementById('shop-knowledge-save-btn');
+        // PHASE5-B: shop-knowledge-formのコア保存関数。
+        // 重要: SHOP_KNOWLEDGE_FIELD_IDSの各値は、PHASE5-Aのセグメント型ボタンに
+        // 置き換わった後もel.valueがそのまま"","yes","no","conditional"を返すため
+        // （convertSkSelectsToSegControlsのgetter/setterが従来のselectと同じ文字列を
+        // 保証する）、このpayload構築ロジック自体はPHASE5-A適用前と完全に同一のまま
+        // 変更していない。「未設定のまま触っていない項目」は引き続きel.value === ''
+        // となり、ここでnullとして送られる（"no"へ化けることはない）。
+        async function _saveShopKnowledgeCore() {
             const payload = {};
             SHOP_KNOWLEDGE_FIELD_IDS.forEach(function (id) {
                 const el = document.getElementById('sk-' + id);
@@ -3035,17 +3157,26 @@
                     payload[key] = v === '' ? null : v;
                 }
             });
+            const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/knowledge', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+                const errData = await res.json().catch(function () { return {}; });
+                return { ok: false, error: _extractErrorMessage(errData, '保存に失敗しました') };
+            }
+            return { ok: true };
+        }
+
+        document.getElementById('shop-knowledge-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('shop-knowledge-msg');
+            const btn = document.getElementById('shop-knowledge-save-btn');
             btn.disabled = true;
             try {
-                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/knowledge', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if (!res.ok) {
-                    const errData = await res.json().catch(function () { return {}; });
-                    throw new Error(_extractErrorMessage(errData, '保存に失敗しました'));
-                }
+                const result = await _saveShopKnowledgeCore();
+                if (!result.ok) throw new Error(result.error);
                 showMsg(msg, '保存しました。次回の通話から反映されます。', 'success');
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
@@ -3067,40 +3198,46 @@
             }
         }
 
-        document.getElementById('notification-settings-form').addEventListener('submit', async function (event) {
-            event.preventDefault();
-            const msg = document.getElementById('notification-settings-msg');
-            const btn = document.getElementById('notification-settings-save-btn');
+        // PHASE5-B: 通知設定のコア保存関数。
+        // クライアント側の事前チェック（ON時に電話番号必須）も含めてコア関数に
+        // 含めることで、「全体を保存」からもこの検証が同様に効くようにする。
+        async function _saveNotificationCore() {
             const phoneEl = document.getElementById('notification-phone');
             const enabledEl = document.getElementById('notification-enabled');
             const phone = phoneEl.value.trim();
 
-            // サーバー側でも同じチェックを行うが、往復せずすぐ気づけるよう
-            // クライアント側でも先に案内する（「保存できたのかわからない」を防ぐ）。
             if (enabledEl.checked && !phone) {
-                showMsg(msg, '通知をONにするには、先に電話番号を入力してください。', 'error');
-                return;
+                return { ok: false, error: '通知をONにするには、先に電話番号を入力してください。' };
             }
 
+            const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/notification-settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    reservation_notification_phone: phone === '' ? null : phone,
+                    reservation_phone_notification_enabled: enabledEl.checked
+                })
+            });
+            const data = await res.json().catch(function () { return {}; });
+            if (!res.ok) {
+                return { ok: false, error: _extractErrorMessage(data, '保存に失敗しました') };
+            }
+            // 保存後の実際の状態（サーバー側でONが自動的にOFFへ戻された場合等）を
+            // フォームに反映し、画面の表示と保存済みデータが必ず一致するようにする。
+            phoneEl.value = data.reservation_notification_phone || '';
+            enabledEl.checked = !!data.reservation_phone_notification_enabled;
+            return { ok: true };
+        }
+
+        document.getElementById('notification-settings-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('notification-settings-msg');
+            const btn = document.getElementById('notification-settings-save-btn');
             btn.disabled = true;
             showMsg(msg, '保存中…', 'info');
             try {
-                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/notification-settings', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        reservation_notification_phone: phone === '' ? null : phone,
-                        reservation_phone_notification_enabled: enabledEl.checked
-                    })
-                });
-                const data = await res.json().catch(function () { return {}; });
-                if (!res.ok) {
-                    throw new Error(_extractErrorMessage(data, '保存に失敗しました'));
-                }
-                // 保存後の実際の状態（サーバー側でONが自動的にOFFへ戻された場合等）を
-                // フォームに反映し、画面の表示と保存済みデータが必ず一致するようにする。
-                phoneEl.value = data.reservation_notification_phone || '';
-                enabledEl.checked = !!data.reservation_phone_notification_enabled;
+                const result = await _saveNotificationCore();
+                if (!result.ok) throw new Error(result.error);
                 showMsg(msg, '保存しました。', 'success');
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
@@ -3108,6 +3245,80 @@
                 btn.disabled = false;
             }
         });
+
+        // ---------- PHASE5-B: 「全体を保存」 ----------
+        // 対象は基本情報／店舗情報／AIスタッフ設定／通知設定の4フォームのみ
+        // （FAQ・クーポン・テーブル・スタッフ・予約・口コミ等の一覧管理機能は、
+        // 追加・削除がそれぞれ個別に完結する性質のため対象外）。
+        // 新しい一括保存APIは追加せず、既存の4つのPUT/PATCH APIを順番に
+        // 呼び出すだけのクライアント側オーケストレーションとする
+        // （複数テーブルをまたぐ真のトランザクションではない点に注意。
+        // 一部だけ失敗した場合は、どこが成功しどこが失敗したかを明示する）。
+        // 二重送信防止: 実行中はsaveAllInProgressで再入を防ぎ、「全体を保存」
+        // ボタン自身に加えて4つの個別保存ボタンも無効化する
+        // （同じフォームが個別ボタン経由でも同時に保存されることを防ぐため）。
+        let saveAllInProgress = false;
+
+        async function handleSaveAll() {
+            if (saveAllInProgress) return;
+            saveAllInProgress = true;
+
+            const saveAllBtn = document.getElementById('save-all-btn');
+            const saveAllMsg = document.getElementById('save-all-msg');
+            const individualBtns = [
+                document.getElementById('basic-save-btn'),
+                document.getElementById('shop-knowledge-save-btn'),
+                document.getElementById('ai-staff-save-btn'),
+                document.getElementById('notification-settings-save-btn')
+            ].filter(Boolean);
+
+            saveAllBtn.disabled = true;
+            individualBtns.forEach(function (b) { b.disabled = true; });
+            showMsg(saveAllMsg, '保存中…', 'info');
+
+            const sections = [
+                { label: '基本情報', run: _saveBasicInfoCore },
+                { label: '店舗情報', run: _saveShopKnowledgeCore },
+                { label: 'AIスタッフ設定', run: _saveAiStaffCore },
+                { label: '通知設定', run: _saveNotificationCore }
+            ];
+
+            const results = [];
+            for (const section of sections) {
+                try {
+                    const result = await section.run();
+                    results.push({ label: section.label, ok: !!(result && result.ok), error: result && result.error });
+                } catch (err) {
+                    results.push({ label: section.label, ok: false, error: (err && err.message) || '保存に失敗しました' });
+                }
+            }
+
+            const succeeded = results.filter(function (r) { return r.ok; }).map(function (r) { return r.label; });
+            const failed = results.filter(function (r) { return !r.ok; });
+
+            if (failed.length === 0) {
+                showMsg(saveAllMsg, '保存しました。', 'success');
+            } else if (succeeded.length === 0) {
+                showMsg(
+                    saveAllMsg,
+                    '保存に失敗しました（' + failed.map(function (f) { return f.label + ': ' + (f.error || '不明なエラー'); }).join(' / ') + '）',
+                    'error'
+                );
+            } else {
+                showMsg(
+                    saveAllMsg,
+                    succeeded.join('・') + 'は保存できましたが、' +
+                        failed.map(function (f) { return f.label + 'の保存に失敗しました（' + (f.error || '不明なエラー') + '）'; }).join('、') + '。',
+                    'error'
+                );
+            }
+
+            individualBtns.forEach(function (b) { b.disabled = false; });
+            saveAllBtn.disabled = false;
+            saveAllInProgress = false;
+        }
+
+        document.getElementById('save-all-btn').addEventListener('click', handleSaveAll);
 
         // Phase 1.5: 「電話ではAIスタッフ『○○』がお知らせします」の表示。
         // AIStaffSettingsをSingle Source of Truthとして読み取り専用で参照するのみで、
