@@ -636,22 +636,25 @@
         // は実機/サーバー側の挙動に依存し断定できないため、ここでは送信を
         // 止めず観測のみ行う（既存の応答フロー自体は変更しない）。
         function sendResponseCreate(reason) {
+            // PHASE8（会話停止調査）: タイムラインの表記をRESPONSE_CREATE_REQUESTED
+            // という統一名に揃える（reasonで区別する）。挙動・送信内容は一切
+            // 変更しない。ログ文言のみの変更。
             if (!dc || dc.readyState !== 'open') {
-                pushTimelineEvent('response.create送信スキップ (dc未接続, reason=' + reason + ')');
+                pushTimelineEvent('RESPONSE_CREATE_SKIPPED (dc未接続, reason=' + reason + ')');
                 logEvent('response.create送信スキップ: DataChannel未接続 (reason=' + reason + ')');
                 return false;
             }
             if (responseState === 'active') {
-                pushTimelineEvent('[要確認] response.create多重送信の可能性 (reason=' + reason + ')');
+                pushTimelineEvent('[要確認] RESPONSE_CREATE多重送信の可能性 (reason=' + reason + ')');
                 logEvent('[要確認] response.createを送信しますが、直前のresponseがまだ完了していません'
                     + '(responseState=active, reason=' + reason + ')。多重応答の可能性があります（観測のみ・送信は継続します）');
             }
             try {
                 dc.send(JSON.stringify({ type: 'response.create' }));
-                pushTimelineEvent('response.create送信 (reason=' + reason + ')');
+                pushTimelineEvent('RESPONSE_CREATE_REQUESTED (reason=' + reason + ')');
                 return true;
             } catch (e) {
-                pushTimelineEvent('response.create送信失敗 (reason=' + reason + '): ' + e.message);
+                pushTimelineEvent('RESPONSE_CREATE_FAILED (reason=' + reason + '): ' + e.message);
                 throw e;
             }
         }
@@ -2228,11 +2231,16 @@
             }
             processedToolCallIds.add(callId);
 
-            // PHASE14: Tool Timeline。Tool名+状態のみを記録し、引数・結果内容
-            // （電話番号・氏名・予約内容等）は一切含めない（PII厳禁）。
+            // PHASE14/PHASE8（会話停止調査）: Tool Timeline。Tool名+状態のみを
+            // 記録し、引数・結果内容（電話番号・氏名・予約内容等）は一切
+            // 含めない（PII厳禁）。TOOL_CALL_RECEIVED/TOOL_FETCH_STARTED/
+            // TOOL_FETCH_SUCCESS(ERROR)/TOOL_OUTPUT_SENT/TOOL_CONTINUATION_REQUESTED
+            // という統一名で記録し、実機テストでcheck_availability等の
+            // Tool Calling continuationの各段階が実際に到達しているかを
+            // 確定できるようにする（挙動そのものは一切変更しない）。
             lastToolLabel = (item.name || '(不明)') + ': requested';
             updateAudioDiagnosticsPanel();
-            pushTimelineEvent('Tool requested: ' + (item.name || '(不明)'));
+            pushTimelineEvent('TOOL_CALL_RECEIVED (tool=' + (item.name || '(不明)') + ')');
 
             let args = null;
             try {
@@ -2246,6 +2254,7 @@
             lastToolFetchOutcome = null;
             lastToolLabel = (item.name || '(不明)') + ': fetching';
             updateAudioDiagnosticsPanel();
+            pushTimelineEvent('TOOL_FETCH_STARTED (tool=' + (item.name || '(不明)') + ')');
 
             let output;
             if (item.name === 'check_availability') {
@@ -2295,7 +2304,8 @@
                 : (isToolOutputFailure(output) ? 'error' : 'success');
             lastToolLabel = (item.name || '(不明)') + ': ' + toolResultState;
             updateAudioDiagnosticsPanel();
-            pushTimelineEvent('Tool ' + toolResultState + ': ' + (item.name || '(不明)'));
+            pushTimelineEvent((toolResultState === 'success' ? 'TOOL_FETCH_SUCCESS' : 'TOOL_FETCH_ERROR')
+                + ' (tool=' + (item.name || '(不明)') + (toolResultState === 'success' ? '' : ', outcome=' + toolResultState) + ')');
 
             logEvent('Tool結果送信: ' + JSON.stringify(output));
             dc.send(JSON.stringify({
@@ -2308,7 +2318,9 @@
             }));
             lastToolLabel = (item.name || '(不明)') + ': output_sent';
             updateAudioDiagnosticsPanel();
+            pushTimelineEvent('TOOL_OUTPUT_SENT (tool=' + (item.name || '(不明)') + ')');
             sendResponseCreate('tool_result:' + (item.name || 'unknown'));
+            pushTimelineEvent('TOOL_CONTINUATION_REQUESTED (tool=' + (item.name || '(不明)') + ')');
             lastToolLabel = (item.name || '(不明)') + ': continuation_requested';
             updateAudioDiagnosticsPanel();
         }
@@ -2354,11 +2366,11 @@
             if (type === 'output_audio_buffer.started') {
                 aiAudioOutputActive = true;
                 lastAiAudioEventAt = performance.now();
-                pushTimelineEvent('AI音声出力 started');
+                pushTimelineEvent('AI_AUDIO_STARTED');
             } else if (type === 'output_audio_buffer.stopped') {
                 aiAudioOutputActive = false;
                 lastAiAudioEventAt = performance.now();
-                pushTimelineEvent('AI音声出力 stopped');
+                pushTimelineEvent('AI_AUDIO_STOPPED');
             } else if (type === 'output_audio_buffer.cleared') {
                 lastAiAudioEventAt = performance.now();
                 // 無言化調査用: サーバー側がAIの音声出力バッファを破棄した
@@ -2380,7 +2392,7 @@
                         + (sinceSpeechMs !== null ? '、直近speech_startedから' + sinceSpeechMs + 'ms' : '') + ')';
                     updateAudioDiagnosticsPanel();
                 }
-                pushTimelineEvent('AI音声出力 cleared (直前aiAudioOutputActive=' + aiAudioOutputActive + ')');
+                pushTimelineEvent('AI_AUDIO_CLEARED (直前aiAudioOutputActive=' + aiAudioOutputActive + ')');
                 aiAudioOutputActive = false;
             } else if (type === 'conversation.item.truncated') {
                 // 無言化調査用: AIの発話アイテムが（割り込み等により）途中で
@@ -2410,6 +2422,22 @@
                     }
                 }
                 maybeSendInitialGreeting().catch((e) => logEvent('第一声処理中にエラー: ' + e.message));
+            } else if (type === 'input_audio_buffer.committed') {
+                // PHASE8（会話停止調査・重要）: ユーザーの発話がinput_audio_bufferから
+                // 実際にコミットされた（＝OpenAI側が発話終了を認識し、会話アイテム化
+                // する準備ができた）ことを示すイベント。speech_stoppedは検知の合図に
+                // すぎず、この後committedが来ない場合はサーバー側で発話が確定して
+                // いない可能性があるため、両者を区別して記録する（PIIなし・
+                // イベント発生の事実のみ）。
+                pushTimelineEvent('USER_AUDIO_BUFFER_COMMITTED');
+            } else if (type === 'conversation.item.created' && msg.item && msg.item.role === 'user') {
+                // PHASE8（会話停止調査・最重要）: ユーザー発話が会話アイテムとして
+                // 確定したことを示すイベント。「名前を答えた後に止まる」等の症状で、
+                // このイベント自体が来ているか（＝発話は認識・確定されているのに
+                // 応答が生成されていない）、来ていないか（＝そもそも発話が会話に
+                // 反映されていない）を切り分けるための最重要ログ。item本体の
+                // content（発話内容・電話番号・氏名等）は一切参照・記録しない。
+                pushTimelineEvent('USER_ITEM_COMMITTED');
             } else if (type === 'input_audio_buffer.speech_started') {
                 if (!initialGreetingSent) userSpokeBeforeGreeting = true;
                 // ISSUE2調査用（PIIなし）: speech_started発生時点のローカルマイク
@@ -2428,7 +2456,7 @@
                 if (aiAudioOutputActive) lastBargeInSpeechStartedAt = lastSpeechStartedAt;
                 logEvent('speech_started時点のマイク入力レベル: ' + (lastMicLevelPct === null ? '(未取得)' : lastMicLevelPct + '%')
                     + ' / AI音声出力中(aiAudioOutputActive)=' + aiAudioOutputActive);
-                pushTimelineEvent('speech_started (AI音声出力中=' + aiAudioOutputActive + ', mic=' + (lastMicLevelPct === null ? '?' : lastMicLevelPct + '%') + ')');
+                pushTimelineEvent('USER_SPEECH_STARTED (AI音声出力中=' + aiAudioOutputActive + ', mic=' + (lastMicLevelPct === null ? '?' : lastMicLevelPct + '%') + ')');
                 if (aiAudioOutputActive) {
                     // 無言化調査用（最優先A）: AIがまだ話している最中に
                     // speech_startedが発生した＝割り込み（バージイン）として
@@ -2461,7 +2489,7 @@
                     logEvent('speech_stopped: 発話継続時間=' + speechDurationMsForTimeline + 'ms'
                         + '（speech_started時点でAI音声出力中だった=' + speechStartedDuringAiOutput + '）');
                 }
-                pushTimelineEvent('speech_stopped (継続=' + (speechDurationMsForTimeline === null ? '?' : speechDurationMsForTimeline + 'ms') + ')');
+                pushTimelineEvent('USER_SPEECH_STOPPED (継続=' + (speechDurationMsForTimeline === null ? '?' : speechDurationMsForTimeline + 'ms') + ')');
                 subStatusText.textContent = 'AIが応答を準備しています…';
                 setStatus(stUserSpeakEl, '待機', null);
                 updateAudioDiagnosticsPanel();
@@ -2472,7 +2500,7 @@
                 subStatusText.textContent = 'AIが応答を生成中…';
                 responseState = 'active';
                 updateAudioDiagnosticsPanel();
-                pushTimelineEvent('response.created');
+                pushTimelineEvent('RESPONSE_CREATED');
             } else if (type === 'response.done') {
                 lastAiAudioEventAt = performance.now();
                 subStatusText.textContent = '待機中（お話しください）';
@@ -2488,7 +2516,7 @@
                 const respStatus = msg.response && msg.response.status;
                 responseState = (respStatus === 'failed') ? 'error' : 'done';
                 updateAudioDiagnosticsPanel();
-                pushTimelineEvent('response.done (status=' + (respStatus || '不明') + ')');
+                pushTimelineEvent('RESPONSE_DONE (status=' + (respStatus || '不明') + ')');
                 recordUsageEvent(msg.response);
             } else if (type === 'response.output_item.done' && msg.item && msg.item.type === 'function_call') {
                 // Phase3A: Tool Calling。応答完了(response.done)を待たず、
