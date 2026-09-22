@@ -38,7 +38,7 @@ import logging
 import time as time_module
 from typing import Optional
 
-from app.language_registry import effective_ai_languages, is_valid_language_code
+from app.language_registry import effective_ai_languages, is_valid_language_code, REQUIRED_AI_LANGUAGE
 
 logger = logging.getLogger("receptra.conversation_language")
 
@@ -76,9 +76,31 @@ def register_voice_session(shop_id: str, voice_session_id: str) -> None:
       正としてonly、以後別のshop_idからの上書きを拒否できるようになる
       （既存のget_session_language()のshop_id一致チェックと対になる、
       書き込み側のisolation強化）。
-    - language_code は未設定（None）のまま記録する。まだ一度も
-      set_conversation_languageが呼ばれていない状態と区別しない
-      （get_session_languageは従来どおりNoneを返す＝「不明」として扱う）。
+    - Phase 5B.1追記: language_code は、未設定（None）ではなく
+      REQUIRED_AI_LANGUAGE（"ja"）で初期化する。理由（仕様書Phase5B.1）:
+      RECEPTRAは通話開始時、常に日本語をデフォルト言語として応対する
+      （app.language_registry.REQUIRED_AI_LANGUAGE参照）。これは通話が
+      始まった時点で既にサーバー側が知っている事実であり、AIに
+      set_conversation_languageを呼ばせて改めて教え直させる必要はない
+      （そうするとTool Call・latencyが増え、Zero-Wait Greetingの
+      「click→即座に挨拶」体験を損なう）。
+      以前はここをNoneのまま記録していたため、通話が最初から最後まで
+      日本語のまま進み一度もset_conversation_languageが呼ばれなかった
+      場合、get_session_language()がNoneを返し続け、予約成立時に
+      CustomerMemory.last_conversation_languageへ「今回は不明」として
+      渡ってしまい、結果として前回訪問時の値（例:"en"）がそのまま
+      古い情報として残ってしまう欠陥があった（Phase5B完了報告で開示した
+      既知事項）。ここをREQUIRED_AI_LANGUAGEで初期化することで、
+      「日本語のまま進んだ通話」も「実際に使われた言語はja」として
+      正しくCustomerMemoryへ反映されるようになる
+      （app.services.customer_memory._upsert_once()の
+      `if conversation_language:` は "ja" も真として扱うため、そのまま
+      正しく上書きされる）。
+    - 一方、未対応言語（許可されていない言語）への切替リクエストは
+      set_session_language()側で拒否され、この関数が設定した状態
+      （直前の正当な言語、通常は"ja"）を一切変更しない
+      （仕様書section15「未対応言語へのstate変更禁止」を参照。この
+      関数の変更によって影響を受けない）。
     - 既に同じvoice_session_idの記録がある場合は上書きしない
       （token_urlsafe(24)の衝突は現実的に起こらないが、念のため）。
     """
@@ -87,7 +109,7 @@ def register_voice_session(shop_id: str, voice_session_id: str) -> None:
     _purge_expired()
     _session_languages.setdefault(voice_session_id, {
         "shop_id": shop_id,
-        "language_code": None,
+        "language_code": REQUIRED_AI_LANGUAGE,
         "set_at": time_module.monotonic(),
     })
 

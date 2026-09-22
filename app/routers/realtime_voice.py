@@ -733,10 +733,14 @@ async def create_reservation_tool(
         # 一切影響しない）。同じreservationに対する2回目以降の呼び出し
         # （Layer2重複検知で既存予約を返す場合を含む）は内部で自動的に
         # 無視される。
-        # Phase 5A: この通話中にset_conversation_languageで記録された言語があれば、
-        # 次回接客時のソフトなヒントとしてCustomer Memoryに書き添える。記録が無い
-        # （Toolが一度も呼ばれていない・session_id無し・有効期限切れ等）場合はNoneの
-        # まま渡し、_upsert_once側で「今回は不明」として何も上書きしない。
+        # Phase 5A: この通話で実際に使われた言語（session state）を、次回接客時の
+        # ソフトなヒントとしてCustomer Memoryに書き添える。
+        # Phase 5B.1追記: session stateはPOST /session発行時点で"ja"に初期化される
+        # ため（register_voice_session参照）、通話が最初から最後まで日本語のまま
+        # 進んだ場合も、ここで正しく"ja"が渡り、前回訪問時の値（例:"en"）が
+        # 古いまま残ることはない。session_idが無い・有効期限切れ等で本当に
+        # 状態を取得できない場合のみNoneのまま渡し、_upsert_once側で
+        # 「今回は不明」として何も上書きしない（既存の安全側フォールバックは維持）。
         conversation_language = conversation_language_state.get_session_language(
             shop_id, request.session_id
         ) if request.session_id else None
