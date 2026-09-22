@@ -396,6 +396,12 @@
         let lastSpeechStoppedAt = null;
         let aiSpeakingNow = false;
         const latencySamples = [];
+        // 無言化調査用（PHASE1/2/6）: 直近のinput_audio_buffer.speech_startedの
+        // 発生時刻と、その瞬間AI音声出力中だったかどうかのスナップショット。
+        // speech_stopped側で「発話継続時間」を計算するためだけに使う一時変数
+        // （音声内容は一切保持しない、数値のタイムスタンプとbooleanのみ）。
+        let lastSpeechStartedAt = null;
+        let speechStartedDuringAiOutput = false;
 
         function recordLatencySample(ms) {
             latencySamples.push(ms);
@@ -1542,6 +1548,13 @@
                 // 再現時に「その瞬間、実際どれくらいの音量だったか」を体感と
                 // 突き合わせられるようにする。VAD/turn_detection自体は変更しない
                 // 観測用ログの追加のみ。
+                // PHASE6相関用: この時点のタイムスタンプとAI発話中フラグを
+                // スナップショットしておき、対応するspeech_stoppedで「発話継続
+                // 時間」を計算できるようにする（人間が目視で「非常に短い時間で
+                // speech_stoppedになっているか」を判断できるようにするだけで、
+                // ここでノイズかどうかを自動判定・断定はしない）。
+                lastSpeechStartedAt = performance.now();
+                speechStartedDuringAiOutput = aiAudioOutputActive;
                 logEvent('speech_started時点のマイク入力レベル: ' + (lastMicLevelPct === null ? '(未取得)' : lastMicLevelPct + '%')
                     + ' / AI音声出力中(aiAudioOutputActive)=' + aiAudioOutputActive);
                 if (aiAudioOutputActive) {
@@ -1562,6 +1575,16 @@
                 setStatus(stUserSpeakEl, '発話中（認識中）', 'ok');
             } else if (type === 'input_audio_buffer.speech_stopped') {
                 lastSpeechStoppedAt = performance.now();
+                // PHASE6相関用（PIIなし）: 対応するspeech_startedからの経過時間
+                // （＝サーバーがユーザー発話と判定していた継続時間）を記録する。
+                // 短時間の相槌（「はい」「違います」等）も本物の短い発話として
+                // 存在するため、この数値だけで自動的にノイズと判定はしない。
+                // あくまで実機ログを人間が確認する際の判断材料。
+                if (lastSpeechStartedAt !== null) {
+                    const speechDurationMs = Math.round(performance.now() - lastSpeechStartedAt);
+                    logEvent('speech_stopped: 発話継続時間=' + speechDurationMs + 'ms'
+                        + '（speech_started時点でAI音声出力中だった=' + speechStartedDuringAiOutput + '）');
+                }
                 subStatusText.textContent = 'AIが応答を準備しています…';
                 setStatus(stUserSpeakEl, '待機', null);
             } else if (type === 'response.created') {
