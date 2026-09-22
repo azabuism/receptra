@@ -1511,13 +1511,26 @@
             // （特にiOS Safari）ユーザー操作から時間が空きすぎたと判断され、
             // マイク許可ダイアログ自体が出ないまま静かに失敗することがある。
             try {
-                // Phase3C.1 section18: Zero-Wait Greeting対象店舗でのみ、
-                // エコー（Greeting音声がスピーカー→マイクへ回り込みRealtimeの
-                // VADを誤反応させるリスク）対策として明示的にAEC等を要求する。
-                // 他店舗は既存動作（{ audio: true }）を一切変更しない。
-                const micConstraints = zeroWaitEnabled
-                    ? { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
-                    : { audio: true };
+                // Phase3C.1 section18で導入したecho対策（echoCancellation/
+                // noiseSuppression/autoGainControl）を、次フェーズ仕様書
+                // （騒音環境調査）STEP Aに基づき、Zero-Wait Greeting対象かどうかに
+                // 関わらず全店舗で要求するよう変更。
+                // 経緯: 従来はZero-Wait対象店舗（AIスタッフ設定を保存済みの店舗）に
+                // のみこれらの制約を要求しており、それ以外の店舗はブラウザの初期値
+                // 任せ（{ audio: true }）だった。この3つの制約はエコー対策として
+                // 導入されたものだが、noiseSuppression/autoGainControlは一般的な
+                // 環境音対策としても有効なはずであり、これをZero-Wait対象かどうかで
+                // 出し分ける技術的な理由はない（両者は無関係な設定軸）。また、
+                // Phase5B.2の実機テスト（環境音の誤検知＝VOICE-001）はZero-Wait対象
+                // 店舗（＝これらの制約を要求済み）でも発生しており、要求するだけでは
+                // 十分でない可能性が高いため、まずは全店舗で同じ土俵に揃えた上で、
+                // 実際にブラウザが何を採用したかを下記のgetSupportedConstraints()/
+                // getSettings()で確認できるようにする。
+                // 重要（STEP Cとの切り分け）: これはturn_detection（VAD）の設定
+                // 変更ではなく、あくまでgetUserMedia時点のマイク入力処理の要求
+                // 内容の変更に留まる。semantic_vad/server_vadの選択やeagerness等の
+                // パラメータには一切触れていない。
+                const micConstraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
                 localStream = await navigator.mediaDevices.getUserMedia(micConstraints);
             } catch (e) {
                 const friendly = describeGetUserMediaError(e);
@@ -1547,6 +1560,38 @@
                     });
                 });
                 setStatus(stMicTrackEl, 'live', 'ok');
+
+                // 次フェーズ仕様書（騒音環境調査）STEP A: 「ブラウザへ何を要求したか」
+                // と「実際に何が採用されたか」をイベントログで確認できるようにする。
+                // 個人の音声内容・電話番号・メール・CustomerMemory・医療情報等は
+                // 一切含めない（getSettings()が返す技術的な処理設定値のみを対象とし、
+                // 対象キーも明示的にホワイトリストで絞る。deviceId/groupIdのような
+                // 機器識別情報もここでは記録しない）。既存のeventLogEl自体が
+                // ?debug=1を付けた場合のみ表示される設計（本ファイル冒頭のdebugMode
+                // 参照）のため、本番のお客様向け画面にこの情報が常時大量表示される
+                // ことはない。
+                try {
+                    const supported = (navigator.mediaDevices.getSupportedConstraints
+                        && navigator.mediaDevices.getSupportedConstraints()) || {};
+                    const NOISE_RELEVANT_KEYS = ['echoCancellation', 'noiseSuppression', 'autoGainControl', 'sampleRate', 'channelCount'];
+                    const supportedSummary = NOISE_RELEVANT_KEYS
+                        .filter((k) => k in supported)
+                        .map((k) => k + '=' + supported[k])
+                        .join(', ');
+                    logEvent('getSupportedConstraints(): ' + (supportedSummary || '(取得できませんでした)'));
+
+                    audioTracks.forEach((track, i) => {
+                        const settings = (track.getSettings && track.getSettings()) || {};
+                        const actualSummary = NOISE_RELEVANT_KEYS
+                            .filter((k) => k in settings)
+                            .map((k) => k + '=' + settings[k])
+                            .join(', ');
+                        logEvent(`マイクTrack[${i}] 要求した制約: echoCancellation=true, noiseSuppression=true, autoGainControl=true`);
+                        logEvent(`マイクTrack[${i}] 実際の採用値(getSettings): ` + (actualSummary || '(取得できませんでした)'));
+                    });
+                } catch (diagErr) {
+                    logEvent('マイク制約の診断ログ取得に失敗しました: ' + (diagErr && diagErr.message));
+                }
             }
             setupMicLevelMeter(localStream);
 
