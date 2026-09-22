@@ -290,6 +290,17 @@
             document.getElementById('debugPanels').style.display = 'block';
             document.getElementById('debugBadge').style.display = 'inline-block';
         }
+        // ?noagc=1 は debug/test専用のマイク制約比較モード（Production利用者の
+        // defaultは変更しない）。autoGainControlをfalseで要求した場合に、
+        // 無音時/BGM時/雑談時/実発話時のマイクレベルやspeech_started頻度が
+        // どう変わるかを比較調査する目的のみに使う。debugMode=falseの場合は
+        // このパラメータを無視し、通常どおりautoGainControl: trueで動作する
+        // （?noagc=1単体をお客様が誤って付けても、?debug=1を伴わない限り
+        // Production挙動は一切変わらない）。
+        const noAgcMode = debugMode && params.get('noagc') === '1';
+        if (noAgcMode) {
+            logEvent('[debug] ?noagc=1: autoGainControl=falseで比較計測します（Production defaultはtrueのまま変更なし）');
+        }
 
         document.getElementById('backLink').href = shopId ? ('/shop.html?id=' + encodeURIComponent(shopId)) : '/';
 
@@ -1460,6 +1471,16 @@
             dc.send(JSON.stringify({ type: 'response.create' }));
         }
 
+        // 発話前の無言化調査用（PIIなし）: 「今AIの音声出力がアクティブか」を
+        // 表すだけのフラグ。output_audio_buffer.started で true、
+        // output_audio_buffer.stopped/cleared や response.done で false に戻す
+        // （response.doneはあくまで安全網。通常は stopped/cleared が先に来る想定）。
+        // これにより、input_audio_buffer.speech_startedが「AIがまだ話している
+        // 最中」に発生したかどうか（＝雑音等をユーザー発話と誤検知して
+        // 割り込み扱いになっている可能性のシグナル）をログだけで確認できる。
+        // 音声内容そのものは一切扱わない、true/falseのフラグのみ。
+        let aiAudioOutputActive = false;
+
         function handleDataChannelEvent(raw) {
             let msg;
             try {
@@ -1475,6 +1496,27 @@
                 // バッファが開始した時刻（第一声のケースのみB/C計測に使用する）。
                 greetingTiming.firstOutputAudioStarted = performance.now();
                 logGreetingLatenciesIfReady();
+            }
+
+            if (type === 'output_audio_buffer.started') {
+                aiAudioOutputActive = true;
+            } else if (type === 'output_audio_buffer.stopped') {
+                aiAudioOutputActive = false;
+            } else if (type === 'output_audio_buffer.cleared') {
+                // 無言化調査用: サーバー側がAIの音声出力バッファを破棄した
+                // タイミング。多くの場合、直前のspeech_started（＝ユーザー発話 or
+                // 誤検知）による割り込みの結果として発生する。この時点では
+                // 「なぜclearedになったか」は断定せず、事実（イベント名と直前の
+                // aiAudioOutputActive状態）のみを記録する。
+                logEvent('[無言化調査] output_audio_buffer.cleared を検知（直前のaiAudioOutputActive='
+                    + aiAudioOutputActive + '）。AIの音声出力が中断されました。');
+                aiAudioOutputActive = false;
+            } else if (type === 'conversation.item.truncated') {
+                // 無言化調査用: AIの発話アイテムが（割り込み等により）途中で
+                // 打ち切られたことを示すイベント。output_audio_buffer.clearedと
+                // ほぼ同時に発生することが多い。原因の断定はせず事実のみ記録。
+                logEvent('[無言化調査] conversation.item.truncated を検知（直前のaiAudioOutputActive='
+                    + aiAudioOutputActive + '）。AIの発話アイテムが途中で打ち切られました。');
             }
 
             if (type === 'session.created' || type === 'session.updated') {
@@ -1500,7 +1542,18 @@
                 // 再現時に「その瞬間、実際どれくらいの音量だったか」を体感と
                 // 突き合わせられるようにする。VAD/turn_detection自体は変更しない
                 // 観測用ログの追加のみ。
-                logEvent('speech_started時点のマイク入力レベル: ' + (lastMicLevelPct === null ? '(未取得)' : lastMicLevelPct + '%'));
+                logEvent('speech_started時点のマイク入力レベル: ' + (lastMicLevelPct === null ? '(未取得)' : lastMicLevelPct + '%')
+                    + ' / AI音声出力中(aiAudioOutputActive)=' + aiAudioOutputActive);
+                if (aiAudioOutputActive) {
+                    // 無言化調査用（最優先A）: AIがまだ話している最中に
+                    // speech_startedが発生した＝割り込み（バージイン）として
+                    // 扱われる可能性がある事象。これ自体が誤検知かどうかは
+                    // このログだけでは断定できないため、続くoutput_audio_buffer.
+                    // cleared / conversation.item.truncatedの有無と合わせて
+                    // 確認する（原因を推測で確定させない）。
+                    logEvent('[無言化調査] AI音声出力中にspeech_startedを検知しました（バージインとして扱われる可能性。'
+                        + '雑音等による誤検知かどうかはこの時点では未確認です）');
+                }
                 if (zeroWaitEnabled && zeroWaitState === 'playing') {
                     // section18: 対処は行わず観測のみ（エコーによるVAD誤反応の可能性）。
                     logEvent('[ZeroWait] 観測: Greeting再生中にspeech_startedを検知（エコー等による誤検知の可能性。対処は行わずログのみ記録）');
@@ -1518,6 +1571,10 @@
                 subStatusText.textContent = 'AIが応答を生成中…';
             } else if (type === 'response.done') {
                 subStatusText.textContent = '待機中（お話しください）';
+                // 安全網: 通常はoutput_audio_buffer.stopped/clearedで既にfalseに
+                // 戻っているはずだが、稀にそれらのイベントを取りこぼした場合でも
+                // aiAudioOutputActiveが誤ってtrueのまま残らないようにする。
+                aiAudioOutputActive = false;
                 recordUsageEvent(msg.response);
             } else if (type === 'response.output_item.done' && msg.item && msg.item.type === 'function_call') {
                 // Phase3A: Tool Calling。応答完了(response.done)を待たず、
@@ -1657,7 +1714,11 @@
                 // 変更ではなく、あくまでgetUserMedia時点のマイク入力処理の要求
                 // 内容の変更に留まる。semantic_vad/server_vadの選択やeagerness等の
                 // パラメータには一切触れていない。
-                const micConstraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
+                // ?noagc=1（debug/test専用、上部のnoAgcMode参照）が付いている場合のみ
+                // autoGainControlをfalseで比較要求する。それ以外は常にtrue
+                // （Production defaultはこれまでと完全に同じ）。
+                const requestedAutoGainControl = !noAgcMode;
+                const micConstraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: requestedAutoGainControl } };
                 localStream = await navigator.mediaDevices.getUserMedia(micConstraints);
             } catch (e) {
                 const friendly = describeGetUserMediaError(e);
@@ -1723,7 +1784,8 @@
                             .filter((k) => k in settings)
                             .map((k) => k + '=' + settings[k])
                             .join(', ');
-                        logEvent(`マイクTrack[${i}] 要求した制約: echoCancellation=true, noiseSuppression=true, autoGainControl=true`);
+                        logEvent(`マイクTrack[${i}] 要求した制約: echoCancellation=true, noiseSuppression=true, `
+                            + `autoGainControl=${requestedAutoGainControl}` + (noAgcMode ? '（?noagc=1による比較モード）' : ''));
                         logEvent(`マイクTrack[${i}] 実際の採用値(getSettings): ` + (actualSummary || '(取得できませんでした)'));
                     });
                 } catch (diagErr) {
