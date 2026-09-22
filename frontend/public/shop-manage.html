@@ -104,6 +104,16 @@
         .msg.error { background: #fee2e2; color: var(--error); display: block; }
         .msg.success { background: #d1fae5; color: #047857; display: block; }
         .msg.info { background: #eef2ff; color: #3730a3; display: block; }
+        /* Phase 5A: 対応言語のチェックボックス群（features-inputのようなカンマ区切り
+           テキスト入力にはしない。言語コードは選択式にして誤入力を防ぐ）。 */
+        .lang-checkbox-group { display: flex; flex-wrap: wrap; gap: 10px; }
+        .lang-checkbox-item {
+            display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+            border: 2px solid #eee; border-radius: 20px; font-size: 13px; cursor: pointer;
+        }
+        .lang-checkbox-item input[type="checkbox"] { width: auto; margin: 0; }
+        .lang-checkbox-item input[type="checkbox"]:disabled + span { color: #999; }
+        .lang-checkbox-item.required { background: #f5f5f5; border-color: #ddd; cursor: default; }
         .hours-edit-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }
         .hours-edit-table th { text-align: left; padding: 6px 8px; color: #888; font-weight: 700; border-bottom: 1px solid #eee; }
         .hours-edit-table td { padding: 6px 8px; border-bottom: 1px solid #f5f5f5; }
@@ -398,6 +408,28 @@
             </div>
             <button class="btn" id="features-save">保存する</button>
             <div class="msg" id="features-msg"></div>
+        </div>
+
+        <div class="card">
+            <h2>対応言語</h2>
+            <p class="hint">
+                AI電話受付が実際に応答してよい言語と、店頭スタッフが対応できる言語は別の設定です。
+                日本語はAI受付にとって無効化できない必須言語のため、常にON（変更不可）になっています。
+                AI受付の対応言語を増やすと、対応言語として選んだ言語で話しかけられた場合や、
+                その言語への切り替えを明確に希望された場合のみ、AIがその言語で応対するようになります
+                （数字やお名前などが含まれるだけでは切り替わりません）。
+            </p>
+            <div class="field">
+                <label>AI電話受付の対応言語</label>
+                <div id="ai-languages-checkboxes" class="lang-checkbox-group"></div>
+            </div>
+            <div class="field">
+                <label>店頭スタッフの対応言語</label>
+                <div id="staff-languages-checkboxes" class="lang-checkbox-group"></div>
+                <p class="hint">こちらは人間のスタッフが対応できる言語の情報です。AIが取り次ぎの案内をする際の参考として使われます。</p>
+            </div>
+            <button class="btn" id="languages-save">保存する</button>
+            <div class="msg" id="languages-msg"></div>
         </div>
 
         <div class="card">
@@ -1227,6 +1259,81 @@
             return res;
         }
 
+        // ---------- Phase 5A: 対応言語（AI受付 / 店頭スタッフ） ----------
+        // 言語コード・表示名の単一の情報源はバックエンドのapp.language_registry。
+        // taxonomy（業種・カテゴリー）と同じく、フロントエンドはこのAPIから
+        // 取得した内容をそのまま表示するだけで、言語の一覧をハードコードしない
+        // （バックエンドとフロントエンドの言語定義がずれることを防ぐため）。
+        let languageRegistry = {};
+        let requiredAiLanguage = 'ja';
+
+        async function loadLanguageRegistry() {
+            try {
+                const res = await fetch('/api/v1/languages');
+                if (res.ok) {
+                    const data = await res.json();
+                    languageRegistry = data.languages || {};
+                    requiredAiLanguage = data.required_ai_language || 'ja';
+                }
+            } catch (e) {}
+        }
+
+        // containerId: チェックボックスを描画する要素のid
+        // selected: 現在選択されている言語コードの配列
+        // requireCode: 指定された場合、その言語のチェックボックスは常にON・変更不可にする
+        //   （AI受付グループの日本語＝無効化不可の必須言語を表現するため）
+        function renderLanguageCheckboxes(containerId, selected, requireCode) {
+            const container = document.getElementById(containerId);
+            const selectedSet = new Set(selected || []);
+            if (requireCode) selectedSet.add(requireCode);
+            const codes = Object.keys(languageRegistry);
+            container.innerHTML = codes.map(function (code) {
+                const info = languageRegistry[code] || {};
+                const isRequired = code === requireCode;
+                const checked = selectedSet.has(code) ? ' checked' : '';
+                const disabled = isRequired ? ' disabled' : '';
+                const itemClass = isRequired ? 'lang-checkbox-item required' : 'lang-checkbox-item';
+                return '<label class="' + itemClass + '">' +
+                    '<input type="checkbox" value="' + escapeHtml(code) + '"' + checked + disabled + '>' +
+                    '<span>' + (info.flag || '') + ' ' + escapeHtml(info.display_name || code) +
+                    (isRequired ? '（必須）' : '') + '</span>' +
+                    '</label>';
+            }).join('');
+        }
+
+        function getCheckedLanguages(containerId, requireCode) {
+            const container = document.getElementById(containerId);
+            const codes = Array.from(container.querySelectorAll('input[type="checkbox"]'))
+                .filter(function (cb) { return cb.checked; })
+                .map(function (cb) { return cb.value; });
+            if (requireCode && codes.indexOf(requireCode) === -1) codes.push(requireCode);
+            return codes;
+        }
+
+        document.getElementById('languages-save').addEventListener('click', async function () {
+            const msg = document.getElementById('languages-msg');
+            const aiLanguages = getCheckedLanguages('ai-languages-checkboxes', requiredAiLanguage);
+            const staffLanguages = getCheckedLanguages('staff-languages-checkboxes', null);
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId), {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ai_supported_languages: aiLanguages,
+                        staff_supported_languages: staffLanguages,
+                    }),
+                });
+                if (res.ok) {
+                    showMsg(msg, '対応言語を保存しました', 'success');
+                } else {
+                    const err = await res.json().catch(function () { return {}; });
+                    showMsg(msg, err.detail || '保存に失敗しました', 'error');
+                }
+            } catch (e) {
+                showMsg(msg, '保存に失敗しました', 'error');
+            }
+        });
+
         // ---------- カテゴリー分類（業種→詳細カテゴリー） ----------
         let taxonomyGroups = [];
 
@@ -1269,12 +1376,15 @@
 
         async function init() {
             await loadTaxonomy();
+            await loadLanguageRegistry();
             try {
                 const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId));
                 if (res.ok) {
                     const shop = await res.json();
                     document.getElementById('shop-name-title').textContent = shop.name + ' の管理';
                     document.getElementById('features-input').value = (shop.features || []).join(', ');
+                    renderLanguageCheckboxes('ai-languages-checkboxes', shop.ai_supported_languages || ['ja'], requiredAiLanguage);
+                    renderLanguageCheckboxes('staff-languages-checkboxes', shop.staff_supported_languages || ['ja'], null);
 
                     document.getElementById('edit-name').value = shop.name || '';
                     if (shop.business_type) {

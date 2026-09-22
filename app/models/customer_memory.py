@@ -80,6 +80,14 @@ class CustomerMemory(Base):
     last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     visit_count = Column(Integer, nullable=False, default=1)
 
+    # Phase 5A: 直近の会話で実際に使われていた言語コード（例: "en"）。
+    # あくまで「次回そのままAIが使ってよい」という強い指示ではなく、次回接客時の
+    # ソフトなヒントに過ぎない（app.services.realtime_voice_ai参照。これだけを根拠に
+    # 国籍・民族を推測してはならない。話しかけられた言語を記録するのみ）。
+    # 予約作成時、その会話で使われていた言語が判明した場合のみ書き込む
+    # （None のままなら「記録なし」であり、日本語を意味するわけではない）。
+    last_conversation_language = Column(String(10), nullable=True)
+
     # 直近この顧客記憶に結び付いた予約（監査・将来拡張用。Reservation側には
     # 対応するrelationshipを追加しない＝Reservationへの影響ゼロ）。
     last_reservation_id = Column(

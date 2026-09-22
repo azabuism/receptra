@@ -315,6 +315,11 @@ async def build_customer_context(shop: Shop, customer_memory_id: str) -> Optiona
                 "last_service_name": None,
                 "last_service_available_now": None,
                 "last_staff_name": None,
+                # Phase 5A: 前回の会話で実際に使われていた言語コード（例: "en"）。
+                # ソフトなヒントに過ぎず、国籍・民族の推測材料にしてはならない
+                # （app.services.realtime_voice_aiの指示文で明示する）。医療系業種
+                # でも、この値自体は診療内容を示すものではないため除外の対象外とする。
+                "last_conversation_language": memory.last_conversation_language,
             }
 
             if not memory.last_reservation_id:

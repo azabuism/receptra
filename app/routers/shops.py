@@ -24,6 +24,7 @@ from app.deps import get_current_user, get_current_tenant
 from app.schemas.user import CurrentUser
 from app.models.user import Tenant
 from app.taxonomy import resolve_business_type
+from app.language_registry import effective_ai_languages, effective_languages
 
 router = APIRouter(prefix="/api/v1/shops", tags=["shops"])
 logger = logging.getLogger("receptra.shops")
@@ -38,6 +39,12 @@ def _build_shop_response(shop: Shop) -> ShopResponse:
         response.cover_image_url = f"/api/v1/media/shop-cover/{shop.id}"
     if getattr(shop, "logo_mime_type", None):
         response.logo_url = f"/api/v1/media/shop-logo/{shop.id}"
+    # Phase 5A: DB上はNone（未設定＝この機能導入前からの既存店舗）のままだが、
+    # ShopResponse上は常に「実際に有効な言語リスト」を返す（from_orm はORMの
+    # 属性値がNoneの場合、スキーマ側の default_factory を適用しないため、
+    # ここで明示的にフォールバックする）。日本語は常に含まれる。
+    response.ai_supported_languages = effective_ai_languages(shop.ai_supported_languages)
+    response.staff_supported_languages = effective_languages(shop.staff_supported_languages)
     return response
 
 
@@ -84,6 +91,8 @@ async def register_shop(
             cover_image_url=request.cover_image_url,
             features=request.features or [],
             reservation_duration_minutes=request.reservation_duration_minutes or 90,
+            ai_supported_languages=request.ai_supported_languages,
+            staff_supported_languages=request.staff_supported_languages,
             is_active=True,
             is_featured=False,
             created_at=datetime.utcnow(),

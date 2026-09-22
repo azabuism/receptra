@@ -180,6 +180,14 @@ class CreateReservationToolRequest(BaseModel):
     # AIの出力ではなく、ブラウザがOpenAI Realtimeのfunction_callイベントから
     # 直接読み取ったcall_idをそのまま転送する（AI自身にはこの値を生成させない）。
     call_id: str = Field(..., min_length=1, max_length=128, description="OpenAI Realtime APIのfunction_call call_id（ブラウザが転送。AIの引数ではない）")
+    # Phase 5A追加。find_customer等と同じくAIの引数ではなく、フロントエンドが
+    # この通話を識別するために自動的に付与する値。この予約に紐づくCustomer Memory
+    # のlast_conversation_language（次回接客時のソフトなヒント）を更新するためだけに
+    # 使う（app.services.conversation_language.get_session_language参照）。
+    # 省略された場合は単に言語のヒントを記録しないだけで、予約自体には一切影響しない。
+    session_id: Optional[str] = Field(
+        None, description="フロントエンドが付与する、この通話を識別するopaqueな値。AIの引数ではない"
+    )
 
 
 class CreateReservationToolResponse(BaseModel):
@@ -309,3 +317,42 @@ class GetCustomerContextToolResponse(BaseModel):
     last_service_name: Optional[str] = None
     last_service_available_now: Optional[bool] = None
     last_staff_name: Optional[str] = None
+    # Phase 5A追加。前回の会話で実際に使われていた言語コード（例: "en"）。
+    # あくまで次回接客時のソフトなヒントであり、これを理由にAIが自動的に
+    # 言語を切り替えてよいわけではない（instructions側で明示。国籍・民族の
+    # 推測材料にもしない）。医療系業種でも除外の対象外（診療内容を示さないため）。
+    last_conversation_language: Optional[str] = None
+
+
+# ===== Phase 5A: set_conversation_language Tool Calling用 =====
+#
+# 設計方針（重要・必ず守ること）:
+# - AIから受け取る引数はlanguage_codeのみ。shop_idはURLパス由来、
+#   voice_session_idはフロントエンドが自動転送する（find_customer等と同じ
+#   パターン）。AIはどの店舗のどの通話かを一切指定できない。
+# - language_codeはapp.language_registryに存在する既知のコードであり、
+#   かつその店舗のai_supported_languagesに実際に含まれる場合のみ受理する
+#   （app.services.conversation_language.set_session_language参照）。
+#   許可されていない言語が指定された場合は、状態を変更せずsuccess=Falseで
+#   返す（Toolとしてはエラーにせず、AIは現在の言語のまま会話を継続する）。
+# - この状態は「現在の会話で使う言語」という会話進行上のヒントに過ぎず、
+#   予約・顧客識別等の実際の処理には一切影響しない（あくまで
+#   CustomerMemory.last_conversation_languageへの参考記録・次回以降の
+#   ソフトなヒントとしてのみ使われる）。
+class SetConversationLanguageToolRequest(BaseModel):
+    """Realtime AIのset_conversation_language Toolからの引数 + フロントエンドが付与するsession_id"""
+    language_code: str = Field(
+        ..., min_length=2, max_length=10,
+        description="お客様が明確にその言語で話した、または切り替えを依頼した言語コード（例: en, zh, ko, ja）",
+    )
+    session_id: Optional[str] = Field(
+        None, description="フロントエンドが付与する、この通話を識別するopaqueな値。AIの引数ではない"
+    )
+
+
+class SetConversationLanguageToolResponse(BaseModel):
+    """Realtime AIへ返す最小レスポンス"""
+    success: bool = True
+    # accepted（実際に切り替えを記録した） / not_allowed（この店舗では許可されていない言語、
+    # またはsession_idが無く記録できなかった） / temporarily_unavailable
+    status: str = "not_allowed"

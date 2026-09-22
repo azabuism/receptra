@@ -1054,6 +1054,10 @@
                 guest_name: args && args.guest_name,
                 guest_phone: args && args.guest_phone,
                 call_id: callId,
+                // Phase 5A: AIの引数には含まれない。この通話中にset_conversation_language
+                // で記録された言語をCustomer Memoryのソフトなヒントとして残すためだけに
+                // 使う（このページのJS変数からのみ付与する。他のToolと同じパターン）。
+                session_id: voiceSessionId,
             };
             if (args && args.service_id) body.service_id = args.service_id;
             if (args && args.staff_id) body.staff_id = args.staff_id;
@@ -1249,6 +1253,38 @@
             }
         }
 
+        // ===== Phase 5A: set_conversation_language =====
+        //
+        // 設計方針（重要）:
+        // - AIが渡せる引数はargs.language_codeのみ。shop_idはこのページの
+        //   shopId（URLパス由来）、session_idはこのページのJS変数から付与する
+        //   （他のToolと同じパターン。AIはどの店舗のどの通話かを指定できない）。
+        // - Tool結果はFastAPI（app.services.conversation_language）を唯一の正とする。
+        //   fetch失敗・タイムアウト・不正レスポンス等、どんな失敗であっても
+        //   acceptedを合成してはならない。必ずnot_allowed相当で返す。
+        async function callSetConversationLanguageTool(args) {
+            const body = {
+                language_code: args && args.language_code,
+                session_id: voiceSessionId,
+            };
+
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/set-conversation-language', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || typeof data.success !== 'boolean') {
+                    return { success: false, status: 'not_allowed' };
+                }
+                return data;
+            } catch (e) {
+                logEvent('set_conversation_language Tool呼び出しに失敗: ' + e.message);
+                return { success: false, status: 'not_allowed' };
+            }
+        }
+
         async function handleFunctionCallItem(item) {
             const callId = item.call_id;
             if (!callId) return;
@@ -1284,10 +1320,14 @@
             } else if (item.name === 'get_customer_context') {
                 logEvent('Tool呼び出し受信: get_customer_context ' + JSON.stringify(args));
                 output = await callGetCustomerContextTool(args || {});
+            } else if (item.name === 'set_conversation_language') {
+                logEvent('Tool呼び出し受信: set_conversation_language ' + JSON.stringify(args));
+                output = await callSetConversationLanguageTool(args || {});
             } else {
-                // Phase4Bまでで宣言しているToolはcheck_availability /
+                // Phase5Aまでで宣言しているToolはcheck_availability /
                 // create_reservation / get_shop_info / find_customer /
-                // confirm_customer_identity / get_customer_contextの6つのみ。
+                // confirm_customer_identity / get_customer_context /
+                // set_conversation_languageの7つのみ。
                 // 未知の関数名が来た場合も、応答せずに放置するとAIが待ち続けて
                 // しまうため、安全側の失敗として返す。
                 logEvent('未知のTool呼び出し: ' + item.name);

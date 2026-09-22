@@ -35,6 +35,7 @@ from app.routers.shop_tables import router as shop_tables_router
 from app.routers.shop_closures import router as shop_closures_router
 from app.routers.shop_images import router as shop_images_router, media_router as shop_images_files_router
 from app.routers.taxonomy import router as taxonomy_router
+from app.routers.languages import router as languages_router
 from app.routers.reviews import router as reviews_router
 from app.routers.mypage import router as mypage_router
 from app.routers.coupons import router as coupons_router
@@ -335,6 +336,7 @@ def create_app() -> FastAPI:
     app.include_router(shop_images_router)
     app.include_router(shop_images_files_router)
     app.include_router(taxonomy_router)
+    app.include_router(languages_router)
     app.include_router(reviews_router)
     app.include_router(mypage_router)
     app.include_router(coupons_router)

@@ -36,6 +36,7 @@ from app.schemas.reservation import (
     FindCustomerToolRequest, FindCustomerToolResponse,
     ConfirmCustomerIdentityToolRequest, ConfirmCustomerIdentityToolResponse,
     GetCustomerContextToolRequest, GetCustomerContextToolResponse,
+    SetConversationLanguageToolRequest, SetConversationLanguageToolResponse,
     ReservationCreateRequest,
 )
 from app.schemas.shop_knowledge import GetShopInfoToolRequest
@@ -45,6 +46,7 @@ from app.services.customer_memory import (
     find_customer_candidate_record, upsert_customer_memory_for_reservation,
 )
 from app.services import customer_context
+from app.services import conversation_language as conversation_language_state
 
 logger = logging.getLogger("receptra.realtime_voice")
 
@@ -186,6 +188,29 @@ def _check_customer_context_rate_limit(shop_id: str) -> None:
     bucket = _recent_customer_context_requests.setdefault(shop_id, [])
     bucket[:] = [t for t in bucket if now - t < _CUSTOMER_CONTEXT_RATE_LIMIT_WINDOW_SECONDS]
     if len(bucket) >= _CUSTOMER_CONTEXT_RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
+
+
+# Phase 5A: set_conversation_language Tool Calling用の別バケット。
+# DB書き込みを伴わない（in-memory状態の更新のみの）操作だが、会話の途中で
+# 何度も言語が行き来する可能性を考慮し、confirm_customer_identityよりは
+# やや緩めに設定する（他のToolのクォータとは完全に独立させる）。
+_SET_CONVERSATION_LANGUAGE_RATE_LIMIT_WINDOW_SECONDS = 60
+_SET_CONVERSATION_LANGUAGE_RATE_LIMIT_MAX_REQUESTS = 30
+_recent_set_conversation_language_requests: dict[str, list] = {}
+
+
+def _check_set_conversation_language_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _recent_set_conversation_language_requests.setdefault(shop_id, [])
+    bucket[:] = [
+        t for t in bucket if now - t < _SET_CONVERSATION_LANGUAGE_RATE_LIMIT_WINDOW_SECONDS
+    ]
+    if len(bucket) >= _SET_CONVERSATION_LANGUAGE_RATE_LIMIT_MAX_REQUESTS:
         raise HTTPException(
             status_code=429,
             detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
@@ -703,11 +728,20 @@ async def create_reservation_tool(
         # 一切影響しない）。同じreservationに対する2回目以降の呼び出し
         # （Layer2重複検知で既存予約を返す場合を含む）は内部で自動的に
         # 無視される。
+        # Phase 5A: この通話中にset_conversation_languageで記録された言語があれば、
+        # 次回接客時のソフトなヒントとしてCustomer Memoryに書き添える。記録が無い
+        # （Toolが一度も呼ばれていない・session_id無し・有効期限切れ等）場合はNoneの
+        # まま渡し、_upsert_once側で「今回は不明」として何も上書きしない。
+        conversation_language = conversation_language_state.get_session_language(
+            shop_id, request.session_id
+        ) if request.session_id else None
+
         await upsert_customer_memory_for_reservation(
             shop_id=shop_id,
             reservation_id=reservation.id,
             guest_name=reservation.guest_name,
             guest_phone=reservation.guest_phone,
+            conversation_language=conversation_language,
         )
 
         return CreateReservationToolResponse(
@@ -904,6 +938,55 @@ async def get_customer_context_tool(
         # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(temporarily_unavailable)で返す。
         logger.error("get_customer_context Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
         return GetCustomerContextToolResponse(success=False, status="temporarily_unavailable")
+
+
+@router.post("/tools/set-conversation-language", response_model=SetConversationLanguageToolResponse)
+async def set_conversation_language_tool(
+    shop_id: str,
+    request: SetConversationLanguageToolRequest,
+    db: AsyncSession = Depends(get_db),
+) -> SetConversationLanguageToolResponse:
+    """
+    Phase 5A: set_conversation_language Tool Calling専用エンドポイント（認証不要）。
+
+    設計方針（重要・必ず守ること）:
+    - shop_idはURLパス由来のみを使い、リクエストボディには含めない。
+      session_idもAIの引数ではなく、フロントエンドがRealtimeセッション確立時に
+      保持しているvoice_session_idをそのまま転送したものである（find_customer等
+      と同じパターン）。AIが指定できるのはlanguage_codeのみ。
+    - 実際の検証（言語コードとして有効か・その店舗のai_supported_languagesに
+      含まれるか）は一切ここで再実装せず、必ず
+      app.services.conversation_language.set_session_language()をそのまま呼び出す。
+      許可されていない言語だった場合は状態を変更せず、status="not_allowed"で
+      返す（HTTPエラーにはしない。AIは現在の言語のまま会話を継続してよい）。
+    - この状態はあくまで「現在の会話で使ってよい言語」という会話進行上の
+      ヒントであり、予約・顧客識別等の実際の処理には一切影響しない。
+    """
+    _check_set_conversation_language_rate_limit(shop_id)
+
+    try:
+        shop = await db.get(Shop, shop_id)
+        if not shop or not shop.is_active:
+            return SetConversationLanguageToolResponse(success=False, status="temporarily_unavailable")
+
+        if not request.session_id:
+            return SetConversationLanguageToolResponse(success=True, status="not_allowed")
+
+        accepted = conversation_language_state.set_session_language(
+            shop_id=shop_id,
+            voice_session_id=request.session_id,
+            language_code=request.language_code,
+            ai_supported_languages_raw=shop.ai_supported_languages,
+        )
+        return SetConversationLanguageToolResponse(
+            success=True, status="accepted" if accepted else "not_allowed"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 例外の詳細をAIやレスポンスに漏らさず、必ず安全側(temporarily_unavailable)で返す。
+        logger.error("set_conversation_language Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
+        return SetConversationLanguageToolResponse(success=False, status="temporarily_unavailable")
 
 
 @router.post("/tools/get-shop-info")

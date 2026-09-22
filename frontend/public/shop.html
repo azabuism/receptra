@@ -268,6 +268,14 @@
                     <span id="rating-text"></span>
                 </div>
                 <div class="feature-tags" id="feature-tags" style="display:none;"></div>
+                <div id="language-info-block" style="display:none; margin-top: 10px;">
+                    <div style="font-size:12px; color:#999; margin-bottom:4px;">AI電話予約対応言語</div>
+                    <div class="feature-tags" id="ai-language-tags"></div>
+                    <div id="staff-language-info-block" style="display:none; margin-top: 8px;">
+                        <div style="font-size:12px; color:#999; margin-bottom:4px;">店頭スタッフ対応言語</div>
+                        <div class="feature-tags" id="staff-language-tags"></div>
+                    </div>
+                </div>
                 <div class="cta-row">
                     <a href="#" class="cta-primary" id="call-btn">電話で問い合わせる</a>
                     <a href="#" class="cta-secondary" id="map-btn" target="_blank" rel="noopener">地図で見る</a>
@@ -411,6 +419,45 @@
             return div.innerHTML;
         }
 
+        // Phase 5A: 対応言語の表示名・国旗絵文字は、バックエンドの
+        // app.language_registry を単一の情報源とする（shop-manage.htmlと同じ
+        // 考え方。フロントエンドに言語一覧をハードコードしてバックエンドと
+        // ずれることを防ぐ）。
+        let languageRegistryCache = null;
+        async function getLanguageRegistry() {
+            if (languageRegistryCache) return languageRegistryCache;
+            try {
+                const res = await fetch('/api/v1/languages');
+                if (res.ok) {
+                    const data = await res.json();
+                    languageRegistryCache = data.languages || {};
+                    return languageRegistryCache;
+                }
+            } catch (e) {}
+            return {};
+        }
+
+        function renderLanguageTagsInto(containerId, codes, registry) {
+            const el = document.getElementById(containerId);
+            if (!codes || codes.length === 0) {
+                el.innerHTML = '';
+                return false;
+            }
+            el.innerHTML = codes.map(function (code) {
+                const info = registry[code] || {};
+                return '<span class="feature-tag">' + (info.flag || '') + ' ' + escapeHtml(info.display_name || code) + '</span>';
+            }).join('');
+            return true;
+        }
+
+        async function renderLanguageInfo(shop) {
+            const registry = await getLanguageRegistry();
+            const aiShown = renderLanguageTagsInto('ai-language-tags', shop.ai_supported_languages, registry);
+            const staffShown = renderLanguageTagsInto('staff-language-tags', shop.staff_supported_languages, registry);
+            document.getElementById('staff-language-info-block').style.display = staffShown ? 'block' : 'none';
+            document.getElementById('language-info-block').style.display = aiShown ? 'block' : 'none';
+        }
+
         async function loadShop() {
             const params = new URLSearchParams(window.location.search);
             const id = params.get('id');
@@ -497,6 +544,8 @@
                 }).join('');
                 tagsEl.style.display = 'flex';
             }
+
+            renderLanguageInfo(shop);
 
             if (shop.shop_hours && shop.shop_hours.length > 0) {
                 const sorted = shop.shop_hours.slice().sort(function (a, b) { return a.day_of_week - b.day_of_week; });

@@ -30,6 +30,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.shop import Shop, ShopHours
 from app.models.ai_staff_settings import AIStaffSettings
+from app.language_registry import (
+    REQUIRED_AI_LANGUAGE, display_name_for, effective_ai_languages, effective_languages,
+)
 
 logger = logging.getLogger("receptra.realtime_voice_ai")
 
@@ -156,7 +159,8 @@ _REALTIME_TOOLS = [
             "お客様が実際に来店予約を確定したいときにのみ呼び出してください。"
             "呼び出す前に必ず、来店日時・人数・お名前・電話番号（該当する場合は"
             "サービス内容・スタッフ指名）を一つずつお客様と確認し、特に電話番号は"
-            "お客様からうかがった番号をそのまま1桁ずつ日本語で読み上げて復唱し、"
+            "お客様からうかがった番号をそのまま1桁ずつ、今話している言語の発音で"
+            "読み上げて復唱し、"
             "間違いがないか確認してください（推測や聞き取れなかった桁の補完は"
             "絶対にしないでください）。\n"
             "その上で、電話番号や日時など個別項目への「合っています」等の返事とは"
@@ -417,6 +421,10 @@ _REALTIME_TOOLS = [
             "よっては前回のサービス内容・担当者名がそもそも含まれません"
             "（意図的な仕様です。含まれていないことを不審に思わず、単に"
             "「以前のご利用があります」程度の案内に留めてください）。\n"
+            "last_conversation_language（前回の会話で使われていた言語）が"
+            "含まれている場合でも、それは次回接客時の軽い参考情報に過ぎません。"
+            "この値だけを根拠に、お客様に確認せず言語を自動的に切り替えたり、"
+            "国籍・出身を推測したりすることは絶対にしないでください。\n"
             "statusがno_contextの場合は、本人確認はできたものの参照できる"
             "利用履歴が無いという意味です。新規のお客様と同様に通常どおり"
             "受付を続けてください。"
@@ -425,6 +433,43 @@ _REALTIME_TOOLS = [
             "type": "object",
             "properties": {},
             "required": [],
+        },
+    },
+    # ===== Phase 5A: set_conversation_language =====
+    #
+    # 設計方針（重要・必ず守ること）:
+    # - AIが指定できる引数はlanguage_codeのみ。shop_idはURLパス由来、
+    #   session_idはフロントエンドが自動転送する（他のToolと同じパターン）。
+    # - 実際にその言語がこの店舗で許可されているかの検証はサーバー側
+    #   （app.services.conversation_language.set_session_language）でのみ
+    #   行う。AIの自己申告だけで「切り替え成功」を判断させない。
+    # - 呼び出し自体は会話の進行を記録するための内部処理であり、成功しても
+    #   失敗しても、お客様にこのToolの存在自体を明かす必要はない
+    #   （_build_language_rules_section()の指示文と対応）。
+    {
+        "type": "function",
+        "name": "set_conversation_language",
+        "description": (
+            "会話の中で実際に言語を切り替えた（または、お客様の明示的な希望に"
+            "応じて切り替えた）と判断したタイミングでのみ呼び出してください。"
+            "language_codeには、切り替えた後の言語のコード（例: en, zh, ko, ja）を"
+            "指定してください。日本語に戻した場合もja付きで呼び出して構いません。\n"
+            "この店舗で許可されていない言語を指定した場合、statusは"
+            "not_allowedになりますが、エラーではありません。その場合は"
+            "「言語ルール」に従って対応できる言語が限られている旨をお客様に"
+            "伝え、切り替えずに会話を続けてください。\n"
+            "この関数はあくまで内部的な記録のためのものであり、呼び出したこと"
+            "自体をお客様に説明する必要はありません。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "language_code": {
+                    "type": "string",
+                    "description": "切り替えた後の言語コード（例: en, zh, ko, ja）",
+                },
+            },
+            "required": ["language_code"],
         },
     },
 ]
@@ -514,29 +559,160 @@ _CORE_RULES_TEMPLATE = """\
 - お客様が言い直した場合（例:「3人、いや4人です」）は、最後に言った内容を
   正として自然に応じてください。聞き返して確認しても構いません。
 
-# 言語ルール（最重要・絶対に守ってください）
-- この通話の基本言語は日本語です。お客様が日本語で話している間は、
-  通話が終わるまで日本語を維持してください。通話の途中で勝手に英語や
-  他の言語に切り替えることは絶対にしないでください。
-- 電話番号・数字・日付・時刻・金額を読み上げるときも、英語の発音や
-  英単語（"zero" "nine" "September" "hundred" 等）を使わないでください。
-  文字としては半角数字（090-1234-5678等）で渡されていても、それを
-  英語として読むのではなく、日本語の発音として自然に読んでください。
-- 電話番号は1桁ずつ、日本語で区切って読み上げてください。
-  例:「090-1234-5678」→「ゼロキューゼロ、イチニサンヨン、
-  ゴーロクナナハチ」のように読みます。
-- 日付・時刻は「9月25日の19時」「9月25日の夜7時」のように自然な日本語
-  で話してください。「September twenty-fifth」のような英語表現は
-  禁止です。
-- 金額は「5,500円」を「ごせんごひゃくえん」のように、日本語の金額表現
-  として話してください。
-- 言語を切り替えてよいのは、お客様が明確に英語（または他の言語）で
-  話しかけてきた場合、または「英語でお願いします」のように明示的に
-  言語の変更を希望した場合だけです。数字や固有名詞が含まれるという
-  理由だけで言語を切り替えないでください。
-- 一度英語などに切り替えた後でも、お客様が日本語で話しかけ直したら、
-  自然に日本語へ戻ってください。\
+{language_rules_section}\
 """
+
+# Phase 5A: 多言語AI受付。以前はここに固定文言の「言語ルール」ブロックを
+# 直接埋め込んでいたが、店舗ごとに許可されたAI対応言語（Shop.ai_supported_languages）
+# に応じて内容を変える必要が生じたため、_build_language_rules_section()による
+# 動的生成に置き換えた（build_realtime_instructions側で_CORE_RULES_TEMPLATEの
+# {language_rules_section}へ差し込む）。
+#
+# 重要（既存の安全策を壊さないこと）:
+# - Phase1〜4Bで検証済みの「数字・固有名詞・電話番号が含まれるという理由だけで
+#   言語を切り替えない」という誤トリガー防止ガードは、許可言語の数に関わらず
+#   常に含める。
+# - 日本語（ja）は必ずai_languagesに含まれている前提で呼ばれる
+#   （app.language_registry.effective_ai_languages()が保証する）。
+# - 許可言語が日本語のみの店舗（既存店舗のデフォルト）では、以前のように
+#   「英語などへ自由に切り替えてよい」とはせず、OpenAI公式のプロンプトガイドが
+#   推奨する"Unsupported Language"redirectパターン（切り替えずに、対応言語が
+#   限られている旨を丁寧に伝えて日本語での継続をお願いする）を使う。これは
+#   既存の「日本語固定」という安全策を弱めるものではなく、むしろ「店舗が
+#   明示的に許可していない言語には切り替えない」という、より厳密な安全策への
+#   強化である。
+_LANGUAGE_RULES_HEADER = "# 言語ルール（最重要・絶対に守ってください）"
+
+
+def _build_language_rules_section(ai_languages: list, staff_languages: Optional[list] = None) -> str:
+    """
+    店舗のAI対応言語リスト（日本語を必ず含む）から、動的に「言語ルール」
+    セクションを生成する。表示に使う言語名はapp.language_registryの
+    display_name_for()のみを経由し、DBに保存される値（言語コード）と
+    表示名を混同しない。
+    """
+    ai_languages = list(ai_languages or [REQUIRED_AI_LANGUAGE])
+    if REQUIRED_AI_LANGUAGE not in ai_languages:
+        ai_languages = [REQUIRED_AI_LANGUAGE] + ai_languages
+    only_japanese = ai_languages == [REQUIRED_AI_LANGUAGE]
+    ai_list_str = "・".join(display_name_for(c) for c in ai_languages)
+
+    lines = [_LANGUAGE_RULES_HEADER]
+
+    if only_japanese:
+        lines.append(
+            "- この店舗のAI受付が対応できる言語は日本語のみです。この通話の基本"
+            "言語は日本語です。お客様が日本語で話している間は、通話が終わるまで"
+            "日本語を維持してください。"
+        )
+    else:
+        lines.append(
+            f"- この店舗のAI受付が対応できる言語は{ai_list_str}です。この通話の"
+            "基本言語は日本語です。お客様が日本語で話している間は、通話が終わる"
+            "まで日本語を維持してください。"
+        )
+
+    lines.append(
+        "- 電話番号・数字・日付・時刻・金額を読み上げるときは、今話している言語に"
+        "かかわらず、英語の発音や英単語（\"zero\" \"nine\" \"September\" \"hundred\"等）"
+        "だけに頼らず、その言語として自然な発音で読んでください。文字としては"
+        "半角数字（090-1234-5678等）で渡されていても、それをそのまま英語として"
+        "読むのではありません。"
+    )
+    lines.append(
+        "- 電話番号は1桁ずつ、今話している言語で区切って読み上げてください。"
+        "日本語の場合の例:「090-1234-5678」→「ゼロキューゼロ、イチニサンヨン、"
+        "ゴーロクナナハチ」のように読みます。"
+    )
+    lines.append(
+        "- 日付・時刻・金額は、今話している言語として自然な表現で話してください"
+        "（日本語なら「9月25日の19時」「5,500円」のように）。"
+    )
+
+    if only_japanese:
+        lines.append(
+            "- 数字や固有名詞（お客様の名前・ブランド名など）が話の中に含まれて"
+            "いるという理由だけで、日本語以外に切り替えないでください。"
+        )
+        lines.append(
+            "- お客様が明確に日本語以外の言語で話しかけてきた場合、または"
+            "「英語でお願いします」のように言語の変更を明示的に希望した場合でも、"
+            "この店舗のAI受付は日本語のみに対応しています。切り替えずに、"
+            "「申し訳ございませんが、こちらは日本語でのご案内のみとなります」"
+            "という趣旨を日本語のまま丁寧に伝え、日本語での会話の継続をお願い"
+            "するか、必要であれば店頭スタッフへの取り次ぎ・後ほどの折り返しを"
+            "ご案内してください。"
+        )
+    else:
+        lines.append(
+            f"- 言語を切り替えてよいのは、お客様が明確に対応言語（{ai_list_str}）の"
+            "いずれかで話しかけてきた場合、またはそのいずれかへの切り替えを明示的に"
+            "希望した場合だけです。数字や固有名詞（お客様の名前・ブランド名など）が"
+            "含まれるという理由だけで言語を切り替えないでください。"
+        )
+        lines.append(
+            f"- お客様が対応言語（{ai_list_str}）のいずれにも含まれない言語で話し"
+            "かけてきた場合、または対応していない言語への切り替えを希望された場合は、"
+            "切り替えずに、対応できる言語が限られている旨を（今話している言語の"
+            f"まま）丁寧に伝え、{ai_list_str}のいずれかでの会話の継続をお願いして"
+            "ください。"
+        )
+        lines.append(
+            "- 一度、対応言語の中の別の言語に切り替えた後でも、お客様が別の対応"
+            "言語（日本語を含む）で話しかけ直したら、自然にそちらへ戻ってください。"
+        )
+        lines.append(
+            "- 実際に言語を切り替えた（または切り替えを求められて切り替えた）と"
+            "判断したタイミングで、set_conversation_language ツールを呼び出し、"
+            "language_code引数にその言語のコード（例: en, zh, ko, ja）を指定して"
+            "ください。これは会話の進行を記録するためだけの内部的な処理であり、"
+            "このツールを呼び出したこと自体をお客様に伝える必要はありません。"
+        )
+
+    normalized_staff = list(staff_languages) if staff_languages else [REQUIRED_AI_LANGUAGE]
+    if normalized_staff and normalized_staff != [REQUIRED_AI_LANGUAGE]:
+        staff_list_str = "・".join(display_name_for(c) for c in normalized_staff)
+        lines.append(
+            f"- なお、この店舗の店頭スタッフが対応できる言語は{staff_list_str}です。"
+            "これはあなた（AI受付）自身が話してよい言語のリストとは別の情報です。"
+            "お客様を店頭スタッフへ取り次ぐ場面の参考情報としてのみ使ってください。"
+        )
+
+    return "\n".join(lines)
+
+
+def _build_language_example_line(ai_languages: list) -> str:
+    """
+    _EXAMPLES_TEMPLATEの末尾（言語切り替えの見本）を、店舗の対応言語に
+    応じて動的に生成する。日本語のみの店舗で「英語を希望されたら切り替える」
+    という見本を残すと、_build_language_rules_section()が生成した
+    「日本語のみ対応・切り替えない」というルールと矛盾するため、必ず両者を
+    整合させる。
+    """
+    ai_languages = list(ai_languages or [REQUIRED_AI_LANGUAGE])
+    if ai_languages == [REQUIRED_AI_LANGUAGE]:
+        return (
+            '客:「My name is John. English please.」\n'
+            'AI:（この店舗のAI受付は日本語のみに対応しているため切り替えず、'
+            '日本語のまま「申し訳ございませんが、こちらは日本語でのご案内のみと'
+            'なります」という趣旨を丁寧に伝える）'
+        )
+    if "en" in ai_languages:
+        return (
+            '客:「My name is John. English please.」\n'
+            'AI:（英語がこの店舗の対応言語に含まれており、お客様も明示的に希望'
+            'しているため、英語に切り替えて応対する。set_conversation_language'
+            'ツールをlanguage_code="en"で呼び出す）'
+        )
+    other_code = next((c for c in ai_languages if c != REQUIRED_AI_LANGUAGE), None)
+    other_name = display_name_for(other_code) if other_code else "対応言語"
+    return (
+        f'客:（{other_name}で明確に話しかける、または{other_name}への切り替えを'
+        '明示的に希望する）\n'
+        f'AI:（{other_name}がこの店舗の対応言語に含まれているため、{other_name}に'
+        f'切り替えて応対する。set_conversation_languageツールをlanguage_code='
+        f'"{other_code}"で呼び出す）'
+    )
 
 # Phase3B追加要件: 通話コスト削減・AI受付としての役割逸脱防止のための会話範囲ルール。
 # 既存のPhase1話し方ルール・Phase2人格・Phase3安全ルールを上書きするものではなく、
@@ -602,12 +778,20 @@ _SERVICE_TERMINOLOGY_TEMPLATE = """\
 ツールの呼び出し自体（service_id等のパラメータ名）はこれまで通りで構いません。\
 """
 
-# 話し方の見本。Phase1から変更しない固定文言。
+# 話し方の見本。Phase1から冒頭部分は変更しない固定文言。
 # 元のテンプレートでは「言語ルール」の直後・店舗情報より前に配置されて
 # いたため、Phase2でもその位置関係を維持する
 # （ai_staff_settings==Noneの場合にPhase1と完全に同一のinstructions文字列
 # を生成できるようにするため）。
-_EXAMPLES_TEMPLATE = """\
+#
+# Phase 5A: 末尾の言語切り替えの見本だけは、店舗のAI対応言語によって
+# _build_language_rules_section()の内容と矛盾しうる（日本語のみの店舗に
+# 「英語を希望されたら切り替える」という見本を残すと直接矛盾する）ため、
+# _build_language_example_line()による動的な1件に置き換える
+# （build_realtime_instructions側で連結する）。それ以外の見本
+# （日時・人数・電話番号の読み上げ）は店舗の言語設定と無関係のため、
+# Phase1から完全に固定のまま変更しない。
+_EXAMPLES_TEMPLATE_BASE = """\
 # 話し方の見本（この温度感・テンポをそのまま真似てください）
 客:「今日って空いてます？」
 AI:「はい。何時頃がいいですか？」
@@ -618,9 +802,7 @@ AI:「はい、8時ですね。3名様で確認します。」
 客:「電話番号は090-1234-5678です」
 AI:「ゼロキューゼロ、イチニサンヨン、ゴーロクナナハチですね、ありがとうございます。」
 客:「料金はいくら？」
-AI:「5,500円です。」
-客:「My name is John. English please.」
-AI:（ここでは明示的に英語を希望しているため、英語に切り替えて応対する）\
+AI:「5,500円です。」\
 """
 
 # 現時点での制約。Phase3Bで内容を更新（Phase1時点の「予約機能はまだ無い」という
@@ -753,9 +935,10 @@ _BOOKING_SAFETY_TEMPLATE = """\
 - create_reservation ツールを呼び出す前に、必ず次のすべてを一つずつお客様と
   確認してください: 来店希望日時、人数、お名前、電話番号
   （該当する場合はサービス内容・スタッフ指名）。
-- 電話番号は、お客様からうかがった内容を必ず1桁ずつ日本語で読み上げて復唱し、
-  お客様に間違いがないか確認してから先に進んでください。電話番号を推測したり、
-  聞き取れなかった桁を適当に補ったりすることは絶対にしないでください。
+- 電話番号は、お客様からうかがった内容を必ず1桁ずつ、今話している言語の発音で
+  読み上げて復唱し、お客様に間違いがないか確認してから先に進んでください。
+  電話番号を推測したり、聞き取れなかった桁を適当に補ったりすることは絶対に
+  しないでください。
 
 # 「項目ごとの確認」と「予約全体の最終確認」は別物です（重要・混同禁止）
 - 電話番号・日時・人数・お名前・サービス・スタッフ指名など、個別の項目について
@@ -908,9 +1091,10 @@ def _build_custom_instructions_section(custom_instructions: str) -> str:
         "以下は店舗オーナーが設定した、この店舗独自の補助的な接客スタイルの"
         "指示です。上記の「話し方の絶対ルール」「言語ルール（最重要）」および"
         "「現時点での制約」と矛盾する内容が含まれていた場合は、必ず上記の"
-        "ルールを優先してください。特に、日本語を維持すること・電話番号や"
-        "日付や金額を日本語で読み上げること・存在しない予約状況を答えないこと"
-        "は、この補助的な指示によって変更・無効化することはできません。\n"
+        "ルールを優先してください。特に、この店舗で許可された対応言語の範囲を"
+        "守ること・電話番号や日付や金額を今話している言語で自然に読み上げること・"
+        "存在しない予約状況を答えないことは、この補助的な指示によって"
+        "変更・無効化することはできません。\n"
         "---\n"
         f"{custom_instructions}\n"
         "---"
@@ -955,13 +1139,24 @@ async def build_realtime_instructions(
     response-level instructionsを付与しない設計になったため、
     「通話開始時に自分から話し始める」という指示自体をsession instructions
     側に常時含める必要があるため）。
+
+    Phase 5A追記: Core Rules内の「言語ルール」セクションと、Examples末尾の
+    言語切り替えの見本は、shop.ai_supported_languages（未設定の既存店舗は
+    日本語のみとして扱う。app.language_registry.effective_ai_languages参照）
+    に応じて動的に生成する。日本語は必ず含まれる前提で常に先頭に来る。
     """
     hours_block = await _build_hours_block(db, shop.id)
 
+    ai_languages = effective_ai_languages(shop.ai_supported_languages)
+    staff_languages = effective_languages(shop.staff_supported_languages)
+
     sections = [
-        _CORE_RULES_TEMPLATE.format(shop_name=shop.name),
+        _CORE_RULES_TEMPLATE.format(
+            shop_name=shop.name,
+            language_rules_section=_build_language_rules_section(ai_languages, staff_languages),
+        ),
         _SCOPE_TEMPLATE,
-        _EXAMPLES_TEMPLATE,
+        _EXAMPLES_TEMPLATE_BASE + "\n" + _build_language_example_line(ai_languages),
         _SHOP_INFO_TEMPLATE.format(hours_block=hours_block, today_str=_today_str_jst()),
     ]
 

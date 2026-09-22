@@ -153,6 +153,7 @@ async def upsert_customer_memory_for_reservation(
     reservation_id: str,
     guest_name: Optional[str],
     guest_phone: Optional[str],
+    conversation_language: Optional[str] = None,
 ) -> None:
     """
     予約成立後にのみ呼び出す、安全な冪等upsert。
@@ -165,6 +166,10 @@ async def upsert_customer_memory_for_reservation(
       あれば来店回数・最終利用日時・直近予約への参照のみ更新する。名前が
       異なる場合は既存レコードを上書きせず、新規レコードとして追加する
       （仕様書section13の「田中太郎→田中花子で勝手に上書きしない」要件）。
+    - conversation_language（Phase 5A追加）: この会話で実際に使われていた言語コード
+      （app.services.conversation_language経由。サーバー側で検証済みの値のみが渡って
+      くる想定）。Noneの場合は何も書き込まない（＝既存の記録済みの値をそのまま
+      保持する。「今回は不明だった」ことを「日本語だった」と誤って上書きしない）。
     """
     if not guest_name or not guest_phone:
         return
@@ -189,7 +194,8 @@ async def upsert_customer_memory_for_reservation(
                 return
 
             await _upsert_once(
-                db, shop_id, normalized_phone, normalized_name_key, display_name, reservation_id
+                db, shop_id, normalized_phone, normalized_name_key, display_name, reservation_id,
+                conversation_language,
             )
     except Exception:
         logger.exception(
@@ -202,6 +208,7 @@ async def upsert_customer_memory_for_reservation(
 async def _upsert_once(
     db, shop_id: str, normalized_phone: str, normalized_name_key: str,
     display_name: str, reservation_id: str,
+    conversation_language: Optional[str] = None,
 ) -> None:
     now = datetime.utcnow()
     result = await db.execute(
@@ -217,6 +224,8 @@ async def _upsert_once(
         row.last_seen_at = now
         row.visit_count = (row.visit_count or 0) + 1
         row.last_reservation_id = reservation_id
+        if conversation_language:
+            row.last_conversation_language = conversation_language
         row.updated_at = now
         await db.commit()
         return
@@ -231,6 +240,7 @@ async def _upsert_once(
         last_seen_at=now,
         visit_count=1,
         last_reservation_id=reservation_id,
+        last_conversation_language=conversation_language,
     )
     db.add(row)
     try:
@@ -252,5 +262,7 @@ async def _upsert_once(
             row.last_seen_at = now
             row.visit_count = (row.visit_count or 0) + 1
             row.last_reservation_id = reservation_id
+            if conversation_language:
+                row.last_conversation_language = conversation_language
             row.updated_at = now
             await db.commit()

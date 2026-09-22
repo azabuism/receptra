@@ -9,6 +9,23 @@ from datetime import datetime, time
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.language_registry import validate_language_codes
+
+
+def _validate_shop_language_field(v, field_name: str):
+    """Shop.ai_supported_languages / staff_supported_languages 用の共通バリデーション。
+
+    未対応の言語コードが送られた場合はここで明示的に拒否する（サイレントに
+    無視して意図しない言語が有効になってしまうことを避けるため）。
+    None（未指定）はそのまま許可する（既存店舗のデフォルト動作を壊さないため）。
+    """
+    if v is None:
+        return None
+    try:
+        return validate_language_codes(v, field_name=field_name)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
 
 class ShopHoursCreate(BaseModel):
     """営業時間作成スキーマ"""
@@ -51,6 +68,22 @@ class ShopRegisterRequest(BaseModel):
     shop_hours: Optional[List[ShopHoursCreate]] = Field(None, description="営業時間リスト")
     features: Optional[List[str]] = Field(default_factory=list, description="お店の特徴タグ（例：個室あり、禁煙、駐車場あり）")
     reservation_duration_minutes: Optional[int] = Field(90, ge=15, le=600, description="1組あたりの標準滞在時間（分）")
+    ai_supported_languages: Optional[List[str]] = Field(
+        None, description="AI受付が対応してよい言語コードのリスト（例：[\"ja\", \"en\"]）。未指定の場合は日本語のみ"
+    )
+    staff_supported_languages: Optional[List[str]] = Field(
+        None, description="店頭スタッフが対応できる言語コードのリスト（例：[\"ja\", \"en\"]）。未指定の場合は日本語のみ"
+    )
+
+    @field_validator("ai_supported_languages")
+    @classmethod
+    def _validate_ai_supported_languages(cls, v):
+        return _validate_shop_language_field(v, "ai_supported_languages")
+
+    @field_validator("staff_supported_languages")
+    @classmethod
+    def _validate_staff_supported_languages(cls, v):
+        return _validate_shop_language_field(v, "staff_supported_languages")
 
 
 class ShopUpdateRequest(BaseModel):
@@ -74,6 +107,22 @@ class ShopUpdateRequest(BaseModel):
     staff_schedule_enabled: Optional[bool] = Field(
         None, description="Phase3E-2: スタッフシフト（週次シフト・日付調整）による予約可否判定をON/OFFする"
     )
+    ai_supported_languages: Optional[List[str]] = Field(
+        None, description="AI受付が対応してよい言語コードのリスト（例：[\"ja\", \"en\"]）。日本語は除外しても常に有効"
+    )
+    staff_supported_languages: Optional[List[str]] = Field(
+        None, description="店頭スタッフが対応できる言語コードのリスト（例：[\"ja\", \"en\"]）"
+    )
+
+    @field_validator("ai_supported_languages")
+    @classmethod
+    def _validate_ai_supported_languages(cls, v):
+        return _validate_shop_language_field(v, "ai_supported_languages")
+
+    @field_validator("staff_supported_languages")
+    @classmethod
+    def _validate_staff_supported_languages(cls, v):
+        return _validate_shop_language_field(v, "staff_supported_languages")
 
 
 class ShopHoursBulkUpdateRequest(BaseModel):
@@ -208,6 +257,16 @@ class ShopResponse(BaseModel):
     features: Optional[List[str]] = []
     reservation_duration_minutes: Optional[int] = 90
     logo_url: Optional[str] = None
+    # DB上はNone（未設定）でありうるため型自体はOptionalにするが、
+    # _build_shop_response()が必ずeffective_ai_languages/effective_languages
+    # で上書きするため、実際にAPIレスポンスとして外へ出る値が
+    # Noneになることは無い（app.routers.shops._build_shop_response参照）。
+    ai_supported_languages: Optional[List[str]] = Field(
+        default_factory=lambda: ["ja"], description="AI受付が実際に対応する言語コードのリスト（日本語を必ず含む）"
+    )
+    staff_supported_languages: Optional[List[str]] = Field(
+        default_factory=lambda: ["ja"], description="店頭スタッフが対応できる言語コードのリスト"
+    )
 
     class Config:
         from_attributes = True

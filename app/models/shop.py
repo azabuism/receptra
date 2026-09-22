@@ -98,6 +98,20 @@ class Shop(Base):
     # お店の特徴（タグのリスト。例: ["個室あり", "禁煙", "駐車場あり"]）
     features = Column(JSON, nullable=True, default=list)
 
+    # ★★★ Phase 5A: 多言語AI受付 ★★★
+    # AI受付（Realtime音声）が実際に応答してよい言語のコードリスト（例: ["ja", "en"]）。
+    # 言語コードの定義・検証・デフォルトへのフォールバックは app/language_registry.py を
+    # 単一の情報源として使うこと（このカラムの値だけを見て判断してはいけない）。
+    # None（未設定）はこの機能導入前からの既存店舗を表し、日本語のみとして扱われる
+    # （app.language_registry.effective_ai_languages）。日本語は無効化不可の必須言語。
+    ai_supported_languages = Column(JSON, nullable=True, default=None)
+
+    # 店頭スタッフ（人間）が対応できる言語のコードリスト（例: ["ja", "en", "zh"]）。
+    # AI受付が対応してよい言語（ai_supported_languages）とは独立した設定であり、
+    # 意味も異なる（スタッフが話せる言語であって、AIが話してよい言語ではない）。
+    # None（未設定）は日本語のみとして扱われる（app.language_registry.effective_languages）。
+    staff_supported_languages = Column(JSON, nullable=True, default=None)
+
     # 予約設定：1組あたりの標準滞在時間（分）。空き状況の計算に使用
     reservation_duration_minutes = Column(Integer, nullable=True, default=90)
 
