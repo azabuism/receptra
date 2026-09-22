@@ -208,6 +208,11 @@
             <div class="big-mic" id="bigMic">🎤</div>
             <div id="statusText">タップして通話を開始</div>
             <div id="subStatusText"></div>
+            <!-- PHASE16（Greeting直後 Connection Failure再調査）: debug=1限定で、
+                 折りたたみ診断パネルを開かなくても失敗要因が見える、失敗UI直下の
+                 簡易表示。通常のお客様には常に非表示（JS側でdebugMode=false時は
+                 display:noneのまま。failureSnapshot未取得時も非表示）。PIIなし。 -->
+            <div id="onScreenFailureInfo" style="display:none; margin-top:6px; font-size:12px; color:#b33; font-weight:600; word-break:break-all;"></div>
             <!-- PHASE11/15（Mobile Audio Reliability）: AI音声のplay()がブラウザの
                  自動再生制限で実際にブロックされた場合のみ表示する（通常時は非表示）。
                  タップ＝新しいuser gestureのため、この中でのplay()再試行は
@@ -229,6 +234,13 @@
         <!-- 以下は開発・検証用のデバッグ表示。一般のお客様には表示せず、
              URLに ?debug=1 を付けて開いた場合のみ表示する（JS側で切り替え）。 -->
         <div id="debugPanels" style="display:none;">
+            <!-- PHASE15（Greeting直後 Connection Failure再調査）: debug=1で開いた
+                 場合にのみ表示される固定バッジ。#debugPanels自体がdebug=1の
+                 ときだけJSでdisplay:blockに切り替わるため、これが見えていれば
+                 「今回のURLに?debug=1が付いていた」ことを実機のスクリーンショット
+                 だけで確認できる（次回の実機確認時、パネル自体が写っていない
+                 という問題の再発防止）。 -->
+            <div id="debugModeIndicator" style="background:#333; color:#ffd54f; font-size:11px; font-weight:700; padding:4px 8px; border-radius:6px; display:inline-block; margin-bottom:8px;">🐛 DEBUG MODE（?debug=1で表示中）</div>
             <!-- Mobile Audio Reliability Phase（PHASE24）: スマホの小さい画面で
                  通話UIを覆ってしまわないよう、既定で折りたたんでおく。<details>は
                  iOS Safari含め広くサポートされており、追加JSなしで1タップ展開できる。 -->
@@ -256,6 +268,7 @@
                     <span class="label">AudioContext(AI音声)</span><span class="val" id="diagAudioContextRemote">未作成</span>
                     <span class="label">直近Tool</span><span class="val" id="diagTool">—</span>
                     <span class="label">Greeting Source</span><span class="val" id="diagGreetingSource">none</span>
+                    <span class="label">Audio Source（実際に鳴った音声）</span><span class="val" id="diagAudioSource">none</span>
                     <span class="label">直近の割り込み</span><span class="val" id="diagLastInterruption">—</span>
                     <span class="label">直近の失敗要因</span><span class="val" id="diagFailureSource">—</span>
                 </div>
@@ -513,6 +526,16 @@
         // PHASE3: このセッションのGreetingがどこから発生したか。
         // 'none' | 'zero_wait' | 'realtime_initial' | 'realtime_fallback'
         let greetingSource = 'none';
+        // PHASE12（Greeting直後 Connection Failure再調査）: greetingSourceは
+        // 「どちらの経路を使うと決定したか」（通話開始直後、まだ実際の音声が
+        // 出る前に確定する）を表す。それに対しaudioSourceは「実際にどちらの
+        // 音声トラックがアクティブになったかを事後的に観測した結果」を表す
+        // 別軸の値。zero_wait決定でも実際の再生('playing'イベント)に至る前に
+        // 通話が終了した場合はgreetingSource='zero_wait'のままaudioSourceは
+        // 'none'のままとなり得るため、両者を分けて記録することで「実際に
+        // ユーザーが聞いた音声がZero-WaitとRealtimeのどちらだったか」を
+        // より正確に区別できる。'none' | 'zero_wait' | 'realtime'
+        let audioSource = 'none';
         // PHASE6: 直近のAI発話中断（バージイン疑い）の簡潔な説明。無ければ'—'。
         let lastInterruptionInfo = '—';
         // PHASE9: 直近の接続失敗要因。無ければ'—'。
@@ -633,6 +656,7 @@
             const diagAiOutputEl = document.getElementById('diagAiOutput');
             const diagToolEl = document.getElementById('diagTool');
             const diagGreetingSourceEl = document.getElementById('diagGreetingSource');
+            const diagAudioSourceEl = document.getElementById('diagAudioSource');
             const diagLastInterruptionEl = document.getElementById('diagLastInterruption');
             const diagFailureSourceEl = document.getElementById('diagFailureSource');
 
@@ -746,6 +770,11 @@
             if (diagGreetingSourceEl) {
                 setStatus(diagGreetingSourceEl, greetingSource, null);
             }
+            // PHASE12: 実際にどちらの音声トラックが鳴ったかの事後観測結果
+            // （GREETING SOURCEとは別軸。決定時点ではなく実際の再生確認時点）。
+            if (diagAudioSourceEl) {
+                setStatus(diagAudioSourceEl, audioSource, null);
+            }
             // PHASE6: 直近のAI発話中断（バージイン疑い）の簡潔な説明。
             if (diagLastInterruptionEl) {
                 setStatus(diagLastInterruptionEl, lastInterruptionInfo, lastInterruptionInfo === '—' ? null : 'warn');
@@ -783,12 +812,21 @@
                 userVadState: userVadState,
                 aiAudioOutputActive: aiAudioOutputActive,
                 greetingSource: greetingSource,
+                audioSource: audioSource,
                 zeroWaitState: zeroWaitEnabled ? zeroWaitState : 'not_applicable',
                 lastInterruptionInfo: lastInterruptionInfo,
                 currentToolLabel: lastToolLabel,
+                // PHASE3: このスナップショットが取得された通話の世代番号。
+                // 次の通話がこのスナップショット取得後に始まっていないかを
+                // 事後的に確認できるようにする。
+                callGenerationAtCapture: callGeneration,
             };
             pushTimelineEvent('FAILURE SNAPSHOT取得 (source=' + source + ')');
             updateFailureSnapshotPanel();
+            // PHASE16（Greeting直後 Connection Failure再調査）: debug=1限定で、
+            // 折りたたみパネルの外（失敗画面自体の直下）にもFailure Source /
+            // Failure Reasonを表示する。PIIは含まない（enum値・短い技術説明のみ）。
+            updateOnScreenFailureInfo();
             // PHASE23: debug=1の場合のみ、音声診断パネルを強制的に開いた状態にする
             // （iPhone単体でスクリーンショットを撮る際に、タップして展開する手間を
             // 無くすため）。通常お客様には#debugPanels自体が非表示のため影響しない。
@@ -826,11 +864,31 @@
                 'userVadState: ' + s.userVadState,
                 'aiAudioOutputActive: ' + s.aiAudioOutputActive,
                 'greetingSource: ' + s.greetingSource,
+                'audioSource（実際に鳴った音声）: ' + s.audioSource,
                 'zeroWaitState: ' + s.zeroWaitState,
                 'lastInterruptionInfo: ' + s.lastInterruptionInfo,
                 '直近Tool: ' + s.currentToolLabel,
+                'callGeneration(取得時点): ' + s.callGenerationAtCapture,
             ].join('\n');
             blockEl.style.display = 'block';
+        }
+
+        // PHASE16（Greeting直後 Connection Failure再調査・重要）: debug=1の場合
+        // のみ、失敗画面自体の直下（折りたたみパネルを開かなくても見える場所）に
+        // Failure Source / Failure Reasonを表示する。PHASE15のDEBUG MODE
+        // インジケーターと同様、通常のお客様には一切表示しない
+        // （#onScreenFailureInfo自体がdebugPanels配下でない場合に備え、
+        // ここでもdebugMode判定を明示的に行う）。
+        function updateOnScreenFailureInfo() {
+            const el = document.getElementById('onScreenFailureInfo');
+            if (!el) return;
+            if (!debugMode || !failureSnapshot) {
+                el.style.display = 'none';
+                return;
+            }
+            el.textContent = 'Failure Source: ' + failureSnapshot.failureSource
+                + ' / Failure Reason: ' + failureSnapshot.failureReason;
+            el.style.display = 'block';
         }
 
         // PHASE11/15（重要）: これはdebugMode判定を含まない。play()が実際に
@@ -982,6 +1040,20 @@
         let ended = false;
         let maxDurationTimer = null;
         const MAX_CALL_DURATION_MS = 30 * 60 * 1000; // 30分（テスト中の暴走・コスト安全装置。恒久的な上限ではない）
+
+        // PHASE1-4（最重要・Greeting直後 Connection Failure再調査）: 「接続に
+        // 失敗しました」表示後に「待機中（お話しください）」等へ書き戻される
+        // 実機不具合の対策。startCall()ごとにインクリメントする世代番号。
+        // DataChannelメッセージ・Zero-Wait audio要素のイベント等、非同期に
+        // 遅延して届くコールバックが、(a) 既にfatal failure確定済み（ended=true）
+        // の同一世代、または(b) 既に新しい通話が開始された別世代、である場合に、
+        // UIの状態表示（「待機中」「通話中」等）を書き戻さないようにするための
+        // 判定に使う。'disconnected'のgrace期間中はended=falseのままなので、
+        // このガードの対象にはならない（fatal確定＝endCall()実行後のみ対象）。
+        let callGeneration = 0;
+        function isStaleCallEvent(eventGeneration) {
+            return ended || callGeneration !== eventGeneration;
+        }
 
         // ===== Outbound AI Phase 4B: Customer Context用のsession状態 =====
         // voiceSessionId: /session発行時にサーバーから受け取る、この通話を
@@ -1240,17 +1312,38 @@
             pushTimelineEvent('ZeroWait started');
             zeroWaitAudioEl.currentTime = 0;
             const playCalledAt = greetingTiming.callStart;
+            // PHASE1/3（Greeting直後 Connection Failure再調査・最重要）: この
+            // startZeroWaitGreeting()はstartCall()内でcallGeneration確定
+            // 直後に同期的に呼ばれるため、ここで捕捉するcallGenerationの値が
+            // そのままこの通話のmyGenerationとなる。onPlaying/onEndedは
+            // {once:true}のイベントリスナーであり、通話がfatal failureに
+            // 至った後（ended=true）や、既に次の通話が始まった後
+            // （callGenerationが進んでいる後）に遅延して発火する可能性が
+            // あるため、UIを書き換える行のみをisStaleCallEvent()で保護する
+            // （zeroWaitState更新・KPIログ・タイムライン記録・
+            // zeroWaitOutcomeResolveはデバッグ上有用なため無条件のまま）。
+            const myGeneration = callGeneration;
 
             const onPlaying = () => {
                 zeroWaitAudioEl.removeEventListener('playing', onPlaying);
                 zeroWaitState = 'playing';
+                // PHASE12: 実際にZero-Wait音声要素の再生が開始したことを
+                // 事後的に確認できた時点でのみAUDIO SOURCEを確定する
+                // （generation不一致等でUI表示自体はskipする場合でも、この
+                // 事実の記録＝audioSource設定自体は常に行う。デバッグ上の
+                // 事実観測であり、ユーザー向けUIの書き換えではないため）。
+                audioSource = 'zero_wait';
                 zeroWaitTiming.playingEventAt = performance.now();
                 logEvent('[ZeroWait] KPI-1 通話開始→Greeting実際の再生開始 = '
                     + Math.round(zeroWaitTiming.playingEventAt - playCalledAt) + 'ms');
                 pushTimelineEvent('ZeroWait playing');
-                bigMic.classList.add('ai-speaking');
-                statusText.textContent = '通話中';
-                subStatusText.textContent = '（ご案内音声を再生中）';
+                if (isStaleCallEvent(myGeneration)) {
+                    pushTimelineEvent('ZeroWait playing: stale event, UI更新skip (generation=' + myGeneration + ')');
+                } else {
+                    bigMic.classList.add('ai-speaking');
+                    statusText.textContent = '通話中';
+                    subStatusText.textContent = '（ご案内音声を再生中）';
+                }
                 zeroWaitOutcomeResolve('success');
             };
             const onEnded = () => {
@@ -1258,7 +1351,6 @@
                 zeroWaitState = 'ended';
                 zeroWaitTiming.endedAt = performance.now();
                 pushTimelineEvent('ZeroWait ended');
-                bigMic.classList.remove('ai-speaking');
                 if (zeroWaitTiming.realtimeReadyAt !== null) {
                     logEvent('[ZeroWait] KPI-3 Greeting終了→Realtime準備完了 = '
                         + Math.round(zeroWaitTiming.realtimeReadyAt - zeroWaitTiming.endedAt) + 'ms'
@@ -1266,7 +1358,17 @@
                 } else {
                     logEvent('[ZeroWait] Greeting再生終了。Realtimeはまだ準備中です（KPI-3はRealtime準備完了時に記録されます）');
                 }
-                subStatusText.textContent = '待機中（お話しください）';
+                // PHASE1（最重要）: このonEndedが、fatal failure確定後（ended=true）
+                // または既に新しい通話が開始された後（世代不一致）に遅延発火した
+                // 場合、無条件に「待機中（お話しください）」へ書き戻していたことが
+                // 「接続に失敗しました」表示との同時表示バグの2つの原因候補の
+                // 一つだった。isStaleCallEventで保護する。
+                if (isStaleCallEvent(myGeneration)) {
+                    pushTimelineEvent('ZeroWait ended: stale event, UI書き戻しskip (generation=' + myGeneration + ')');
+                } else {
+                    bigMic.classList.remove('ai-speaking');
+                    subStatusText.textContent = '待機中（お話しください）';
+                }
             };
             zeroWaitAudioEl.addEventListener('playing', onPlaying, { once: true });
             zeroWaitAudioEl.addEventListener('ended', onEnded, { once: true });
@@ -2075,6 +2177,13 @@
         // 割り込み扱いになっている可能性のシグナル）をログだけで確認できる。
         // 音声内容そのものは一切扱わない、true/falseのフラグのみ。
         let aiAudioOutputActive = false;
+        // PHASE5/6（Greeting直後 Connection Failure再調査）: AI音声出力関連の
+        // イベント（output_audio_buffer.started/stopped/cleared、response.done）
+        // が最後に観測された時刻。END_CALL_REQUESTED/CLEANUP_STARTEDのタイム
+        // ライン記録時に「直前のAI音声イベントからの経過時間」を計算し、
+        // Greeting終了トリガーによる切断なのか、それ以外（ネットワーク切断等）
+        // による切断なのかを区別する材料とする。PIIは含まない。
+        let lastAiAudioEventAt = null;
 
         function handleDataChannelEvent(raw) {
             let msg;
@@ -2091,15 +2200,22 @@
                 // バッファが開始した時刻（第一声のケースのみB/C計測に使用する）。
                 greetingTiming.firstOutputAudioStarted = performance.now();
                 logGreetingLatenciesIfReady();
+                // PHASE12: Realtime側の音声出力が実際に開始したことの事後観測。
+                // Zero-Waitのonplayingと同じ役割（実際にどちらの音声が
+                // 鳴ったかの事実記録）。
+                audioSource = 'realtime';
             }
 
             if (type === 'output_audio_buffer.started') {
                 aiAudioOutputActive = true;
+                lastAiAudioEventAt = performance.now();
                 pushTimelineEvent('AI音声出力 started');
             } else if (type === 'output_audio_buffer.stopped') {
                 aiAudioOutputActive = false;
+                lastAiAudioEventAt = performance.now();
                 pushTimelineEvent('AI音声出力 stopped');
             } else if (type === 'output_audio_buffer.cleared') {
+                lastAiAudioEventAt = performance.now();
                 // 無言化調査用: サーバー側がAIの音声出力バッファを破棄した
                 // タイミング。多くの場合、直前のspeech_started（＝ユーザー発話 or
                 // 誤検知）による割り込みの結果として発生する。この時点では
@@ -2213,6 +2329,7 @@
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('response.created');
             } else if (type === 'response.done') {
+                lastAiAudioEventAt = performance.now();
                 subStatusText.textContent = '待機中（お話しください）';
                 // 安全網: 通常はoutput_audio_buffer.stopped/clearedで既にfalseに
                 // 戻っているはずだが、稀にそれらのイベントを取りこぼした場合でも
@@ -2328,6 +2445,14 @@
             });
             resetGreetingState();
             greetingTiming.callStart = performance.now();
+            // PHASE3（Greeting直後 Connection Failure再調査・重要）: この通話の
+            // 世代番号を確定する。startZeroWaitGreeting()やDataChannel
+            // messageリスナーなど、この通話に属するすべての非同期callbackは
+            // ここで確定したmyGenerationをクロージャで保持し、後から
+            // isStaleCallEvent(myGeneration)で「既にfatal確定済みの同一世代」
+            // または「既に新しい通話が開始された別世代」かどうかを判定する。
+            callGeneration += 1;
+            const myGeneration = callGeneration;
             // Phase3C.1 section9相当（重要）: Zero-Wait Greetingの再生開始と
             // Realtime接続（この後に続く一連の処理）は並行に開始する。
             // ここではawaitを挟まず、下のgetUserMedia呼び出しへ同期的に進む
@@ -2373,6 +2498,7 @@
             iceState = 'new';
             dataChannelState = '未接続';
             greetingSource = 'none';
+            audioSource = 'none';
             lastInterruptionInfo = '—';
             failureSource = '—';
             currentSetupStep = 'idle';
@@ -2386,6 +2512,7 @@
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。
             failureSnapshot = null;
             updateFailureSnapshotPanel();
+            updateOnScreenFailureInfo();
             if (disconnectGraceTimer) { clearTimeout(disconnectGraceTimer); disconnectGraceTimer = null; }
             pushTimelineEvent('startCall() 開始');
 
@@ -2711,7 +2838,21 @@
                 // PHASE11: thisPcと同じ理由で、古い/置き換わったdcインスタンスからの
                 // 遅延イベントを無視するためのガードに使う。
                 const thisDc = dc;
-                dc.addEventListener('message', (ev) => handleDataChannelEvent(ev.data));
+                // PHASE1/3（Greeting直後 Connection Failure再調査・最重要）:
+                // response.done/speech_started/speech_stopped/response.created等、
+                // DataChannel経由で届くすべてのイベントの唯一の入口をここで
+                // 一元的にガードする。fatal failure確定後（ended=true）や、
+                // 既に新しい通話が開始された後（callGeneration不一致）に
+                // 遅延して届いたメッセージは、handleDataChannelEvent自体を
+                // 一切呼ばない（=中でsubStatusText等を書き戻すこともなく、
+                // sendResponseCreate()経由でdc.send()することも無い）。
+                dc.addEventListener('message', (ev) => {
+                    if (isStaleCallEvent(myGeneration)) {
+                        pushTimelineEvent('DataChannel message: stale event, 処理skip (generation=' + myGeneration + ')');
+                        return;
+                    }
+                    handleDataChannelEvent(ev.data);
+                });
                 dc.addEventListener('open', () => {
                     if (dc !== thisDc) return;
                     greetingTiming.dcOpen = performance.now();
@@ -2927,6 +3068,15 @@
 
         function cleanupConnection(source) {
             logEvent('cleanupConnection実行（呼び出し元: ' + (source || '不明') + '）');
+            // PHASE5（Greeting直後 Connection Failure再調査・重要）: cleanup開始の
+            // 事実そのものをタイムラインに明示的な固定文字列で記録する。直前の
+            // AI音声イベント（output_audio_buffer.started/stopped/cleared、
+            // response.done）からの経過時間を併記することで、「Greeting終了に
+            // 連動した切断」なのか「それとは無関係なタイミングでの切断（＝
+            // ネットワーク切断等の可能性が高い）」なのかを後から区別できるようにする。
+            const gapSinceAiAudioMs = (lastAiAudioEventAt !== null) ? Math.round(performance.now() - lastAiAudioEventAt) : null;
+            pushTimelineEvent('CLEANUP_STARTED (source=' + (source || '不明')
+                + ', gapSinceLastAiAudioEvent=' + (gapSinceAiAudioMs === null ? '不明(AI音声イベント未観測)' : gapSinceAiAudioMs + 'ms') + ')');
             pushTimelineEvent('cleanupConnection (source=' + (source || '不明') + ')');
             if (maxDurationTimer) { clearTimeout(maxDurationTimer); maxDurationTimer = null; }
             // PHASE11（cleanup競合対策）: disconnected猶予タイマーが残ったまま
@@ -2960,6 +3110,15 @@
         }
 
         function endCall(reason, source) {
+            // PHASE5（Greeting直後 Connection Failure再調査・重要）: endCall()が
+            // 呼ばれた事実そのものを、ended状態のガードより前に記録する
+            // （既にended=trueで即returnする多重呼び出しも含めて全て記録する。
+            // 「誰が・いつ・何を理由にendCallを要求したか」の完全な履歴を残すため）。
+            const gapSinceAiAudioMsAtRequest = (lastAiAudioEventAt !== null) ? Math.round(performance.now() - lastAiAudioEventAt) : null;
+            pushTimelineEvent('END_CALL_REQUESTED (source=' + (source || '不明')
+                + ', reason=' + (reason ? '有' : '無')
+                + ', alreadyEnded=' + ended
+                + ', gapSinceLastAiAudioEvent=' + (gapSinceAiAudioMsAtRequest === null ? '不明(AI音声イベント未観測)' : gapSinceAiAudioMsAtRequest + 'ms') + ')');
             if (ended) return;
             ended = true;
             pushTimelineEvent('endCall (source=' + (source || '不明') + ', reason=' + (reason ? '有' : '無') + ')');
