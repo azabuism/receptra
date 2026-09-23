@@ -482,11 +482,7 @@
                 日をまたぐ営業時間（例：18:00〜翌3:00）の店舗で、休憩の開始・終了が「翌日」側の時刻になる場合は、それぞれ「翌日」にチェックを入れてください。
             </p>
             <form id="break-time-form">
-                <div class="row-3">
-                    <div class="field">
-                        <label for="break-day">曜日</label>
-                        <select id="break-day"></select>
-                    </div>
+                <div class="row-2">
                     <div class="field">
                         <label for="break-start">開始時刻 *</label>
                         <input type="time" id="break-start" required>
@@ -500,7 +496,11 @@
                     <div class="field"><label><input type="checkbox" id="break-start-nextday"> 開始が翌日</label></div>
                     <div class="field"><label><input type="checkbox" id="break-end-nextday"> 終了が翌日</label></div>
                 </div>
-                <button type="submit" class="btn" id="break-time-add-btn">この休憩時間を登録</button>
+                <div class="field">
+                    <label>適用する曜日（複数選択可）</label>
+                    <div class="lang-checkbox-group" id="break-day-checkboxes"></div>
+                </div>
+                <button type="submit" class="btn" id="break-time-add-btn">選択した曜日に一括登録</button>
                 <div class="msg" id="break-time-msg"></div>
             </form>
             <div id="break-time-list" style="margin-top: 18px;"></div>
@@ -1452,6 +1452,122 @@
         const DAY_NAMES = ['月', '火', '水', '木', '金', '土', '日'];
         const STATUS_LABELS = { pending: '確認待ち', confirmed: '確定', cancelled: 'キャンセル', no_show: '無断キャンセル', completed: '来店済み' };
 
+        // ---------- Owner Page UX Improvement: 支払い方法（ブランド別）を
+        // checkboxへ変換 ----------
+        // 対象は「未設定/対応/非対応/条件付き」の4択selectのうち、ブランド単位の
+        // 詳細設定（クレジットカード/QRコード決済/電子マネーの各アコーディオン内、
+        // 計19項目）。現金・クレジットカード・デビットカード・QRコード決済・
+        // 電子マネーそのもの（sk-payment-cash等、上位カテゴリ5項目）は
+        // 「利用可/利用不可/未設定」の3択でconditionalを持たず、対象外のまま
+        // 維持する（本フェーズは本丸3項目＝休憩時間・声の試聴・支払い方法の
+        // うち、仕様書セクション27が明示するブランド単位の例(PayPay/au PAY/
+        // d払い/楽天ペイ)に対応する範囲に絞る。カテゴリ構造自体は削除しない
+        // ＝セクション33）。
+        //
+        // 重要（セクション28/29 — legacy値の保護）:
+        // オーナーが実際にこのcheckboxをクリックするまでは、サーバーから
+        // 読み込んだ生の値（""=未設定 / "conditional"=条件付き含む）を
+        // 一切書き換えない。ページを開いただけ、あるいは他のcheckboxだけを
+        // 操作して「全体を保存」を押しただけでは、触れていないブランドの
+        // 値は完全に元のまま送信される。
+        // オーナーが明示的にこのcheckboxを変更した場合のみ、
+        //   checked   → "yes"（対応）
+        //   unchecked → "no"（非対応）
+        // として確定させる（セクション31の仕様通り。Section29のOption A:
+        // 「Owner UIだけ二値化し、legacy値は保存変更まで保持」を採用）。
+        //
+        // 生成したhidden inputは元のselectと同じid(sk-payment-*)を持つため、
+        // loadShopKnowledge()・_saveShopKnowledgeCore()・SHOP_KNOWLEDGE_FIELD_IDS
+        // は一切変更不要（convertSkSelectsToSegControlsと同じ設計方針。
+        // すべて.valueの読み書きのみに依存しているため）。
+        // このcheckbox変換は、後続のconvertSkSelectsToSegControls()が
+        // querySelectorAll('select[id^="sk-"]')で対象selectを見つける前に
+        // 実行する必要がある（既にselectを置き換え済みのidは、その時点で
+        // 単にDOM上に一致するselectが存在しなくなるため、追加の除外処理なしで
+        // 自然にスキップされる）。
+        //
+        // このconst/functionは、token/shopIdの認証ゲート内でinit()より前に
+        // 早期呼び出しされる（convertSkSelectsToSegControlsと同じ理由。
+        // loadShopKnowledge()がel.valueへ値を設定する前に変換済みでなければ
+        // ならない）ため、呼び出し箇所より後ろで定義すると、呼び出し時点で
+        // まだ`const`が未初期化（TDZ）のままReferenceErrorになる。そのため
+        // ファイル先頭付近のこの位置で定義する。
+        const PAYMENT_BRAND_CHECKBOX_IDS = [
+            'sk-payment-credit-visa', 'sk-payment-credit-mastercard', 'sk-payment-credit-jcb',
+            'sk-payment-credit-amex', 'sk-payment-credit-diners', 'sk-payment-credit-other',
+            'sk-payment-qr-paypay', 'sk-payment-qr-au-pay', 'sk-payment-qr-d-barai',
+            'sk-payment-qr-rakuten-pay', 'sk-payment-qr-merpay', 'sk-payment-qr-other',
+            'sk-payment-emoney-transit-ic', 'sk-payment-emoney-id', 'sk-payment-emoney-quicpay',
+            'sk-payment-emoney-rakuten-edy', 'sk-payment-emoney-waon', 'sk-payment-emoney-nanaco',
+            'sk-payment-emoney-other'
+        ];
+
+        function convertPaymentBrandSelectsToCheckboxes() {
+            PAYMENT_BRAND_CHECKBOX_IDS.forEach(function (id) {
+                const select = document.getElementById(id);
+                if (!select || select.tagName !== 'SELECT') return;
+
+                const labelEl = document.querySelector('label[for="' + id + '"]');
+                const labelText = labelEl ? labelEl.textContent.trim() : id;
+
+                const hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.id = id;
+
+                let rawValue = select.value || '';
+                let touched = false;
+
+                const wrap = document.createElement('label');
+                wrap.className = 'lang-checkbox-item payment-brand-checkbox-item';
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                // 素のcheckboxはvalue属性を指定しない場合"on"がデフォルト値になり、
+                // .checked状態に関係なく常に非空になる。アコーディオンの
+                // 「何か設定済みなら自動で開く」判定(hasValue、body内のselect/
+                // textarea/inputを横断してel.value !== ''を見る既存ロジック)が
+                // このcheckbox自身を拾って誤って常にtrueにならないよう、
+                // 判定は下のhidden input（rawValue/touchedを反映する.value）だけに
+                // 委ねる。
+                checkbox.value = '';
+
+                const textSpan = document.createElement('span');
+                textSpan.textContent = labelText;
+
+                wrap.appendChild(checkbox);
+                wrap.appendChild(textSpan);
+                wrap.appendChild(hidden);
+
+                function renderChecked() {
+                    checkbox.checked = (rawValue === 'yes' || rawValue === 'conditional');
+                }
+                renderChecked();
+
+                checkbox.addEventListener('change', function () {
+                    touched = true;
+                    rawValue = checkbox.checked ? 'yes' : 'no';
+                });
+
+                // loadShopKnowledge()はel.value = <サーバーの値>という代入だけを
+                // 行うため、このgetter/setterがconvertSkSelectsToSegControlsと
+                // 同じ役割を果たす。setterが呼ばれる＝サーバーからの再読み込みで
+                // あり、オーナー操作ではないため、touchedをfalseへ戻す
+                // （＝表示だけをrawValueに合わせ、保存内容は書き換えない）。
+                Object.defineProperty(hidden, 'value', {
+                    get: function () { return touched ? (checkbox.checked ? 'yes' : 'no') : rawValue; },
+                    set: function (v) {
+                        rawValue = (v === null || v === undefined) ? '' : String(v);
+                        touched = false;
+                        renderChecked();
+                    },
+                    configurable: true,
+                });
+
+                if (labelEl) labelEl.style.display = 'none';
+                select.replaceWith(wrap);
+            });
+        }
+
         // Phase3H Workstream A: 業種（Shop.business_type）に応じて、Owner画面に
         // 表示する「サービス」の呼び方をまとめて管理するmetadata。
         // 内部のService/service_id等のモデル・API・変数名は一切変更せず、
@@ -1486,6 +1602,14 @@
             window.location.href = 'owner-login.html';
         } else {
             document.getElementById('app').style.display = 'block';
+            // Owner Page UX Improvement: 支払い方法（ブランド別）のselectを
+            // checkboxへ変換する。これは、続くconvertSkSelectsToSegControls()の
+            // querySelectorAll('select[id^="sk-"]')が対象selectを拾ってしまう前に
+            // 必ず実行する（同じidの<select>が2つの変換関数によって二重に
+            // 変換されることを防ぐため。置き換え後は元のselectがDOM上に
+            // 存在しなくなるので、後続のconvertSkSelectsToSegControls()は
+            // 自然にこれらを対象外とする）。
+            convertPaymentBrandSelectsToCheckboxes();
             // PHASE5-A: 店舗情報フォームのselect群をセグメント型ボタンへ変換する。
             // loadShopKnowledge()（init()内）がel.valueへ値を設定する前に
             // 必ず実行する（変換後のhidden inputが値を受け取れるようにするため）。
@@ -2040,11 +2164,16 @@
         }
 
         // ---------- 休憩・予約停止時間 ----------
-        (function initBreakDaySelect() {
-            const select = document.getElementById('break-day');
-            if (!select) return;
-            select.innerHTML = DAY_NAMES.map(function (label, day) {
-                return '<option value="' + day + '">' + label + '曜</option>';
+        // Owner Page UX Improvementフェーズ: 曜日を1つずつdropdownで選ぶ方式から、
+        // 複数曜日を一度にチェックできる方式へ変更（同じ時間帯を曜日数分入力し直す
+        // 手間をなくす）。既存のlang-checkbox-item/-groupスタイル（対応言語選択で
+        // 既に使われているチップ型checkbox）をそのまま再利用し、新しいCSSは
+        // 追加していない。
+        (function initBreakDayCheckboxes() {
+            const container = document.getElementById('break-day-checkboxes');
+            if (!container) return;
+            container.innerHTML = DAY_NAMES.map(function (label, day) {
+                return '<label class="lang-checkbox-item"><input type="checkbox" class="break-day-checkbox" value="' + day + '"><span>' + label + '曜</span></label>';
             }).join('');
         })();
 
@@ -2076,41 +2205,88 @@
             }
         }
 
+        // Owner Page UX Improvementフェーズ: 複数曜日への一括登録。
+        // 既存API（1 request = 1 weekday）はそのまま使い、選択された曜日数分だけ
+        // 順番に呼び出すクライアント側オーケストレーション（新しいbulk APIは
+        // 追加しない。DB schema/既存APIのsemanticsも一切変更していない）。
+        // 「全体を保存」(handleSaveAll)と同じ、成功/失敗を曜日単位で分けて
+        // 表示する方式を踏襲し、一部の曜日だけ失敗した場合に「登録しました」と
+        // 誤表示しないようにする。
         document.getElementById('break-time-form').addEventListener('submit', async function (event) {
             event.preventDefault();
             const msg = document.getElementById('break-time-msg');
             const btn = document.getElementById('break-time-add-btn');
-            const dayOfWeek = parseInt(document.getElementById('break-day').value, 10);
             const startTime = document.getElementById('break-start').value;
             const endTime = document.getElementById('break-end').value;
             const startNextDay = document.getElementById('break-start-nextday').checked;
             const endNextDay = document.getElementById('break-end-nextday').checked;
+            const dayCheckboxes = Array.from(document.querySelectorAll('.break-day-checkbox'));
+            const selectedDays = dayCheckboxes
+                .filter(function (cb) { return cb.checked; })
+                .map(function (cb) { return parseInt(cb.value, 10); });
+
             if (!startTime || !endTime) return;
-            btn.disabled = true;
-            try {
-                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/break-times', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        day_of_week: dayOfWeek,
-                        start_time: startTime,
-                        end_time: endTime,
-                        start_next_day: startNextDay,
-                        end_next_day: endNextDay
-                    })
-                });
-                if (!res.ok) {
-                    const errData = await res.json().catch(function () { return {}; });
-                    throw new Error(_extractErrorMessage(errData, '登録に失敗しました'));
-                }
-                showMsg(msg, '休憩時間を登録しました', 'success');
-                document.getElementById('break-time-form').reset();
-                loadBreakTimes();
-            } catch (err) {
-                showMsg(msg, typeof err.message === 'string' ? err.message : '登録に失敗しました', 'error');
-            } finally {
-                btn.disabled = false;
+            if (selectedDays.length === 0) {
+                showMsg(msg, '休憩時間を設定する曜日を選択してください', 'error');
+                return;
             }
+
+            btn.disabled = true;
+            showMsg(msg, '登録中…', 'info');
+            const succeededDays = [];
+            const failedDays = [];
+            for (const dayOfWeek of selectedDays) {
+                try {
+                    const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/break-times', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            day_of_week: dayOfWeek,
+                            start_time: startTime,
+                            end_time: endTime,
+                            start_next_day: startNextDay,
+                            end_next_day: endNextDay
+                        })
+                    });
+                    if (!res.ok) {
+                        const errData = await res.json().catch(function () { return {}; });
+                        failedDays.push({ day: dayOfWeek, error: _extractErrorMessage(errData, '登録に失敗しました') });
+                    } else {
+                        succeededDays.push(dayOfWeek);
+                    }
+                } catch (err) {
+                    failedDays.push({ day: dayOfWeek, error: (err && typeof err.message === 'string') ? err.message : '登録に失敗しました' });
+                }
+            }
+
+            // 成功した曜日だけチェックを外す（失敗した曜日は再試行しやすいよう
+            // チェックしたまま残す）。
+            dayCheckboxes.forEach(function (cb) {
+                if (succeededDays.indexOf(parseInt(cb.value, 10)) !== -1) cb.checked = false;
+            });
+
+            if (failedDays.length === 0) {
+                showMsg(msg, succeededDays.map(function (d) { return DAY_NAMES[d] + '曜'; }).join('・') + 'に休憩時間を登録しました', 'success');
+                document.getElementById('break-start').value = '';
+                document.getElementById('break-end').value = '';
+                document.getElementById('break-start-nextday').checked = false;
+                document.getElementById('break-end-nextday').checked = false;
+            } else if (succeededDays.length === 0) {
+                showMsg(
+                    msg,
+                    failedDays.map(function (f) { return DAY_NAMES[f.day] + '曜: ' + f.error; }).join(' / '),
+                    'error'
+                );
+            } else {
+                showMsg(
+                    msg,
+                    succeededDays.map(function (d) { return DAY_NAMES[d] + '曜'; }).join('・') + 'は登録できましたが、' +
+                        failedDays.map(function (f) { return DAY_NAMES[f.day] + '曜: ' + f.error; }).join('、') + 'は登録できませんでした。',
+                    'error'
+                );
+            }
+            loadBreakTimes();
+            btn.disabled = false;
         });
 
         async function deleteBreakTime(breakTimeId) {
@@ -4359,15 +4535,49 @@
         // Web Audio APIで生成した「無音のローカルトラック」を送信する。
         // これにより、管理画面で試聴ボタンを押しただけでマイク許可
         // ダイアログが出るという不自然な体験を避けている。
+        //
+        // Owner Page UX Improvementフェーズで発見・修正したバグ（実機iPhoneで
+        // 複数ボタンが「再生中…」のまま残る不具合の原因。推測ではなく、
+        // このコードを読んで発見した）:
+        // stopVoicePreview()はグローバルなRTCPeerConnection/audio要素/timerだけを
+        // 破棄しており、「今どのボタンが再生中か」をどこにも保持していなかった。
+        // そのため、Aの再生中にBの試聴ボタンを押すと、previewVoice(B)の先頭で
+        // stopVoicePreview()がAの接続を切断するが、Aのボタン自身（btn変数は
+        // previewVoice(A)呼び出し時のローカルクロージャの中）は誰からもリセット
+        // されず、「再生中…」のまま無効化された状態で永久に残ってしまう
+        // （Aの'response.done'やタイムアウトのコールバックはstopVoicePreview()
+        // 内でclearTimeoutされ、二度と発火しないため、Aのボタンをidleへ戻す
+        // 経路が一切実行されない）。
+        //
+        // 修正: 「現在再生中のボタン」をモジュールスコープで1つだけ保持し、
+        // 新しい試聴を開始する際は必ず前のボタンをidleへ戻す
+        // （resetPreviewButton経由。Section20の「Cを停止→CのUIを試聴へ戻す→
+        // Dを再生」という要求を満たす）。
         let previewPc = null;
         let previewAudioEl = null;
         let previewSilentCtx = null;
         let previewTimer = null;
+        let previewActiveBtn = null;
+        let previewActiveLabel = null;
+
+        function resetPreviewButton() {
+            if (previewActiveBtn) {
+                previewActiveBtn.disabled = false;
+                previewActiveBtn.textContent = previewActiveLabel || '試聴';
+            }
+            previewActiveBtn = null;
+            previewActiveLabel = null;
+        }
 
         function stopVoicePreview() {
             if (previewTimer) { clearTimeout(previewTimer); previewTimer = null; }
             if (previewPc) { try { previewPc.close(); } catch (e) {} previewPc = null; }
-            if (previewAudioEl) { try { previewAudioEl.remove(); } catch (e) {} previewAudioEl = null; }
+            if (previewAudioEl) {
+                try { previewAudioEl.pause(); } catch (e) {}
+                try { previewAudioEl.srcObject = null; } catch (e) {}
+                try { previewAudioEl.remove(); } catch (e) {}
+                previewAudioEl = null;
+            }
             if (previewSilentCtx) { try { previewSilentCtx.close(); } catch (e) {} previewSilentCtx = null; }
         }
 
@@ -4380,10 +4590,29 @@
                 showMsg(msg, '試聴するvoiceを選択してください', 'error');
                 return;
             }
+            // 別のボタンが再生中だった場合、その接続を止めた上で
+            // 必ずidle表示へ戻す（同時に複数の「再生中…」が残らないようにする）。
             stopVoicePreview();
-            btn.disabled = true;
+            resetPreviewButton();
+
             const originalLabel = btn.textContent;
-            btn.textContent = '再生中…';
+            previewActiveBtn = btn;
+            previewActiveLabel = originalLabel;
+            btn.disabled = true;
+            btn.textContent = '読み込み中…';
+
+            function finishThisPreview() {
+                stopVoicePreview();
+                // 別のボタンへの割り込みで既にpreviewActiveBtnが入れ替わっている
+                // 場合は、このボタンを勝手に上書きしない。
+                if (previewActiveBtn === btn) {
+                    resetPreviewButton();
+                } else {
+                    btn.disabled = false;
+                    btn.textContent = originalLabel;
+                }
+            }
+
             try {
                 const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/ai-staff-settings/voice-preview', {
                     method: 'POST',
@@ -4396,6 +4625,10 @@
                 }
                 const session = await res.json();
 
+                // previewVoice実行中に別のボタンから割り込まれていないか確認
+                // （awaitの間に別クリックがあった場合、この呼び出しは中断する）。
+                if (previewActiveBtn !== btn) return;
+
                 // マイク許可を求めないための無音ローカルトラック
                 previewSilentCtx = new (window.AudioContext || window.webkitAudioContext)();
                 const destination = previewSilentCtx.createMediaStreamDestination();
@@ -4406,7 +4639,22 @@
                     previewAudioEl = document.createElement('audio');
                     previewAudioEl.autoplay = true;
                     previewAudioEl.srcObject = ev.streams[0];
+                    previewAudioEl.onerror = function () {
+                        showMsg(msg, '試聴の再生に失敗しました', 'error');
+                        finishThisPreview();
+                    };
                     document.body.appendChild(previewAudioEl);
+                    // Safari等でautoplay属性だけでは再生が拒否される場合があるため、
+                    // play()を明示的に呼び、rejectされた場合はidleへ戻す
+                    // （再生を強制する自動再生回避ハックではなく、既に発生している
+                    // 再生失敗を検知してUIを正しい状態へ戻すだけ）。
+                    const playResult = previewAudioEl.play();
+                    if (playResult && typeof playResult.catch === 'function') {
+                        playResult.catch(function () {
+                            showMsg(msg, '試聴の再生がブロックされました。もう一度お試しください', 'error');
+                            finishThisPreview();
+                        });
+                    }
                 };
                 silentStream.getTracks().forEach(function (track) { previewPc.addTrack(track, silentStream); });
 
@@ -4421,11 +4669,7 @@
                         const evt = JSON.parse(ev.data);
                         if (evt.type === 'response.done') {
                             // 発話が終わったら少し待って切断（余韻を切らないため）
-                            previewTimer = setTimeout(function () {
-                                stopVoicePreview();
-                                btn.disabled = false;
-                                btn.textContent = originalLabel;
-                            }, 1500);
+                            previewTimer = setTimeout(finishThisPreview, 1500);
                         }
                     } catch (e) {}
                 });
@@ -4444,20 +4688,18 @@
                 if (!sdpResponse.ok) {
                     throw new Error('試聴の接続に失敗しました');
                 }
+                if (previewActiveBtn !== btn) return;
                 const answerSdp = await sdpResponse.text();
                 await previewPc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+                if (previewActiveBtn !== btn) return;
+
+                btn.textContent = '再生中…';
 
                 // 万一response.doneが取得できない場合の保険（最大10秒で強制終了）
-                previewTimer = setTimeout(function () {
-                    stopVoicePreview();
-                    btn.disabled = false;
-                    btn.textContent = originalLabel;
-                }, 10000);
+                previewTimer = setTimeout(finishThisPreview, 10000);
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '試聴に失敗しました', 'error');
-                stopVoicePreview();
-                btn.disabled = false;
-                btn.textContent = originalLabel;
+                finishThisPreview();
             }
         }
     </script>
