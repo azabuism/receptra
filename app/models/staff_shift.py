@@ -11,7 +11,7 @@ Base.metadata.create_all()で自動作成される（ai_staff_settings/shop_know
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, String, DateTime, Date, Time, ForeignKey, Index, Integer
+from sqlalchemy import Column, String, DateTime, Date, Time, ForeignKey, Index, Integer, Boolean
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -30,6 +30,11 @@ class StaffWeeklyShift(Base):
     day_of_week = Column(Integer, nullable=False)
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
+
+    # ★★★ Reservation Intelligence Phase D-1: 日跨ぎ勤務（例: 18:00〜翌03:00）を
+    # 明示的に表現するためのフラグ。app.models.shop.ShopHours.closes_next_dayと
+    # 同じ設計思想（暗黙推論しない・デフォルトFalseで既存データを完全に維持）。
+    ends_next_day = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -64,6 +69,11 @@ class StaffShiftOverride(Base):
     override_type = Column(String(20), nullable=False)
     start_time = Column(Time, nullable=True)
     end_time = Column(Time, nullable=True)
+    # ★★★ Reservation Intelligence Phase D-1: override_type="hours"/"unavailable"で
+    # start_time/end_timeが日跨ぎ（例: 18:00〜翌03:00の時間変更、または
+    # 23:00〜翌01:00の部分的な不在）であることを示す。day_offでは常にFalseのまま
+    # 無視される。StaffWeeklyShift.ends_next_dayと同じ設計思想。
+    ends_next_day = Column(Boolean, nullable=False, default=False)
     note = Column(String(255), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

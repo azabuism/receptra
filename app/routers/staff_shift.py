@@ -49,6 +49,7 @@ async def create_weekly_shift(
         day_of_week=request.day_of_week,
         start_time=_parse_hhmm(request.start_time),
         end_time=_parse_hhmm(request.end_time),
+        ends_next_day=request.ends_next_day,
         created_at=now,
         updated_at=now,
     )
@@ -107,6 +108,7 @@ async def create_shift_override(
         override_type=request.override_type,
         start_time=_parse_hhmm(request.start_time) if request.start_time else None,
         end_time=_parse_hhmm(request.end_time) if request.end_time else None,
+        ends_next_day=request.ends_next_day,
         note=request.note,
         created_at=now,
         updated_at=now,

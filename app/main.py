@@ -352,6 +352,35 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ reservations.duration_minutes カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # Reservation Intelligence Phase D-1: 日跨ぎ営業時間・日跨ぎ勤務を
+            # 明示的なBooleanで表現する（「closing<openingなら自動的に翌日」という
+            # 暗黙推論は採用しない）。全てデフォルトFalseで追加するため、既存の
+            # shop_hours/staff_weekly_shifts/staff_shift_overrides行の意味・挙動は
+            # 一切変化しない（後方互換性維持。詳細は各モデルのコメント参照）。
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE shop_hours ADD COLUMN IF NOT EXISTS closes_next_day BOOLEAN NOT NULL DEFAULT false"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE shop_hours ADD COLUMN IF NOT EXISTS last_order_next_day BOOLEAN NOT NULL DEFAULT false"
+                ))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ shop_hours の日跨ぎ用カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE staff_weekly_shifts ADD COLUMN IF NOT EXISTS ends_next_day BOOLEAN NOT NULL DEFAULT false"
+                ))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ staff_weekly_shifts.ends_next_day カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE staff_shift_overrides ADD COLUMN IF NOT EXISTS ends_next_day BOOLEAN NOT NULL DEFAULT false"
+                ))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ staff_shift_overrides.ends_next_day カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 

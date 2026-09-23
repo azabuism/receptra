@@ -7,7 +7,7 @@ import re
 import unicodedata
 from datetime import datetime, time
 from typing import Optional, List
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 from app.language_registry import validate_language_codes
 
@@ -34,6 +34,73 @@ class ShopHoursCreate(BaseModel):
     closing_time: time = Field(..., description="営業終了時刻")
     is_closed: bool = Field(default=False, description="定休日フラグ")
     last_order_time: Optional[time] = Field(None, description="ラストオーダー時刻")
+    # Reservation Intelligence Phase D-1: 日跨ぎ営業時間の明示的フラグ。
+    # 「closing_time < opening_timeなら自動的に翌日」という暗黙推論は採用しない
+    # （入力ミスと意図的な日跨ぎ営業を区別できなくする、というユーザー承認済みの
+    # 設計判断）。デフォルトFalseで、既存データ・既存クライアントの挙動を完全に
+    # 維持する。矛盾する組み合わせは_validate_overnight_consistency()で拒否する。
+    closes_next_day: bool = Field(default=False, description="閉店時刻が翌日か（日跨ぎ営業）")
+    last_order_next_day: bool = Field(default=False, description="ラストオーダー時刻が翌日か")
+
+    @model_validator(mode="after")
+    def _validate_overnight_consistency(self):
+        """
+        Phase D-1: closing_time/opening_time/closes_next_day/last_order_time/
+        last_order_next_dayの組み合わせに矛盾がないかを検証する。
+
+        定休日（is_closed=True）の行は、時刻フィールド自体が意味を持たない
+        （従来の挙動と同じ。check_single_slot_availability等もis_closed=Trueの
+        時点で以降の時刻判定を行わずshop_closedとして扱う）ため、この検証は
+        スキップする。
+
+        判定方針（ユーザー承認済み仕様）:
+        1. closes_next_day は「closing_timeがopening_time以前（同日内には
+           収まらない）ときに限りTrue」でなければならない。この対称性により
+           「日跨ぎのつもりが指定し忘れた」入力ミスと「日跨ぎでないのに
+           誤ってONにした」入力ミスの両方をサイレントに受理しない。
+           opening_time == closing_time は closes_next_day=True の場合のみ有効
+           （＝24時間営業。opening==closingを自動的に24時間営業と解釈すること
+           はせず、あくまでオーナーが明示的にcloses_next_day=Trueを指定した
+           場合にのみそう解釈される）。
+        2. last_order_timeが指定されている場合、closes_next_dayと同じ考え方で
+           last_order_next_dayを解釈した上で、opening_time以降・実質的な
+           閉店時刻(closing_time、closes_next_day時は+24h)以前の範囲に
+           収まっていなければならない。
+        3. last_order_timeが未指定なのにlast_order_next_day=Trueは無意味な
+           指定のため拒否する。
+        """
+        if self.is_closed:
+            return self
+
+        opening_min = self.opening_time.hour * 60 + self.opening_time.minute
+        closing_min = self.closing_time.hour * 60 + self.closing_time.minute
+        same_day_valid = closing_min > opening_min
+
+        if self.closes_next_day == same_day_valid:
+            if self.closes_next_day:
+                raise ValueError(
+                    "closes_next_day=Trueですが、closing_timeがopening_timeより後（同日内）です。"
+                    "日跨ぎでない場合はcloses_next_day=Falseにしてください"
+                )
+            raise ValueError(
+                "closing_timeがopening_time以前です。日跨ぎ営業（翌日に閉店）の場合は"
+                "closes_next_day=Trueを指定してください"
+            )
+
+        closing_effective = closing_min + (1440 if self.closes_next_day else 0)
+
+        if self.last_order_time is not None:
+            lo_min = self.last_order_time.hour * 60 + self.last_order_time.minute
+            lo_effective = lo_min + (1440 if self.last_order_next_day else 0)
+            if not (opening_min <= lo_effective <= closing_effective):
+                raise ValueError(
+                    "last_order_timeが営業時間（opening_time〜closing_time、"
+                    "日跨ぎの場合はlast_order_next_dayも含めて）の範囲内にありません"
+                )
+        elif self.last_order_next_day:
+            raise ValueError("last_order_timeが指定されていないのにlast_order_next_day=Trueは指定できません")
+
+        return self
 
 
 class ShopHoursResponse(BaseModel):
@@ -45,6 +112,8 @@ class ShopHoursResponse(BaseModel):
     closing_time: time
     is_closed: bool
     last_order_time: Optional[time]
+    closes_next_day: bool = False
+    last_order_next_day: bool = False
     created_at: datetime
     updated_at: datetime
 

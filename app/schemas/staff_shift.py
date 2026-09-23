@@ -23,6 +23,10 @@ class WeeklyShiftCreateRequest(BaseModel):
     day_of_week: int = Field(..., ge=0, le=6, description="0=月,1=火,2=水,3=木,4=金,5=土,6=日")
     start_time: str = Field(..., description="開始時刻（HH:MM、24時間表記）")
     end_time: str = Field(..., description="終了時刻（HH:MM、24時間表記）")
+    # Reservation Intelligence Phase D-1: 日跨ぎ勤務（例: 18:00〜翌03:00）を
+    # 明示的に表現するフラグ。app.schemas.shop.ShopHoursCreate.closes_next_dayと
+    # 同じ設計思想（暗黙推論しない）。デフォルトFalseで既存の挙動を維持する。
+    ends_next_day: bool = Field(default=False, description="終了時刻が翌日か（日跨ぎ勤務）")
 
     @field_validator("start_time", "end_time")
     @classmethod
@@ -34,8 +38,11 @@ class WeeklyShiftCreateRequest(BaseModel):
     def _validate_range(self):
         start = _parse_hhmm(self.start_time)
         end = _parse_hhmm(self.end_time)
-        if end <= start:
-            raise ValueError("終了時刻は開始時刻より後にしてください")
+        same_day_valid = end > start
+        if self.ends_next_day == same_day_valid:
+            if self.ends_next_day:
+                raise ValueError("ends_next_day=Trueですが、終了時刻が開始時刻より後（同日内）です")
+            raise ValueError("終了時刻は開始時刻より後にしてください。日跨ぎ勤務の場合はends_next_day=Trueを指定してください")
         return self
 
 
@@ -45,6 +52,7 @@ class WeeklyShiftResponse(BaseModel):
     day_of_week: int
     start_time: str
     end_time: str
+    ends_next_day: bool = False
     created_at: datetime
 
     class Config:
@@ -67,6 +75,10 @@ class ShiftOverrideCreateRequest(BaseModel):
     override_type: str = Field(..., description="day_off | hours | unavailable")
     start_time: Optional[str] = Field(None, description="開始時刻（HH:MM）。day_off以外は必須")
     end_time: Optional[str] = Field(None, description="終了時刻（HH:MM）。day_off以外は必須")
+    # Reservation Intelligence Phase D-1: hours/unavailableのstart_time/end_timeが
+    # 日跨ぎ（例: この日だけ18:00〜翌03:00に変更、または23:00〜翌01:00だけ不在）
+    # であることを示す。day_offでは常にFalseのまま無視される。
+    ends_next_day: bool = Field(default=False, description="終了時刻が翌日か（day_off以外で使用）")
     note: Optional[str] = Field(None, max_length=255, description="メモ（任意）")
 
     @field_validator("override_type")
@@ -81,13 +93,18 @@ class ShiftOverrideCreateRequest(BaseModel):
         if self.override_type == "day_off":
             if self.start_time is not None or self.end_time is not None:
                 raise ValueError("day_offの場合はstart_time/end_timeを指定しないでください")
+            if self.ends_next_day:
+                raise ValueError("day_offの場合はends_next_dayを指定しないでください")
         else:
             if not self.start_time or not self.end_time:
                 raise ValueError("hours/unavailableの場合はstart_time/end_timeが必須です")
             start = _parse_hhmm(self.start_time)
             end = _parse_hhmm(self.end_time)
-            if end <= start:
-                raise ValueError("終了時刻は開始時刻より後にしてください")
+            same_day_valid = end > start
+            if self.ends_next_day == same_day_valid:
+                if self.ends_next_day:
+                    raise ValueError("ends_next_day=Trueですが、終了時刻が開始時刻より後（同日内）です")
+                raise ValueError("終了時刻は開始時刻より後にしてください。日跨ぎの場合はends_next_day=Trueを指定してください")
         return self
 
 
@@ -98,6 +115,7 @@ class ShiftOverrideResponse(BaseModel):
     override_type: str
     start_time: Optional[str] = None
     end_time: Optional[str] = None
+    ends_next_day: bool = False
     note: Optional[str] = None
     created_at: datetime
 

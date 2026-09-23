@@ -113,6 +113,9 @@ async def register_shop(
                     closing_time=hour.closing_time,
                     is_closed=hour.is_closed,
                     last_order_time=hour.last_order_time,
+                    # Reservation Intelligence Phase D-1
+                    closes_next_day=hour.closes_next_day,
+                    last_order_next_day=hour.last_order_next_day,
                     created_at=datetime.utcnow(),
                     updated_at=datetime.utcnow()
                 )
@@ -494,6 +497,9 @@ async def update_shop_hours(
             closing_time=hour.closing_time,
             is_closed=hour.is_closed,
             last_order_time=hour.last_order_time,
+            # Reservation Intelligence Phase D-1
+            closes_next_day=hour.closes_next_day,
+            last_order_next_day=hour.last_order_next_day,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
         ))

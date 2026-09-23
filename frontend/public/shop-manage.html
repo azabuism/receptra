@@ -418,10 +418,10 @@
 
         <div class="card">
             <h2>営業時間・定休日</h2>
-            <p class="hint">曜日ごとに営業時間を設定できます。「定休日」にチェックした曜日はお休みとして表示されます。</p>
+            <p class="hint">曜日ごとに営業時間を設定できます。「定休日」にチェックした曜日はお休みとして表示されます。閉店時刻が開店時刻より前の場合は「翌日に閉店」にチェックを入れてください（例：開店18:00・閉店03:00・翌日に閉店 ＝ 18:00〜翌3:00の営業）。</p>
             <table class="hours-edit-table">
                 <thead>
-                    <tr><th>曜日</th><th>定休日</th><th>開店</th><th>閉店</th><th>ラストオーダー</th></tr>
+                    <tr><th>曜日</th><th>定休日</th><th>開店</th><th>閉店</th><th>翌日に閉店</th><th>ラストオーダー</th><th>ラストオーダーも翌日</th></tr>
                 </thead>
                 <tbody id="hours-edit-body"></tbody>
             </table>
@@ -1762,12 +1762,19 @@
                 const close = h ? h.closing_time.slice(0, 5) : '22:00';
                 const lastOrder = (h && h.last_order_time) ? h.last_order_time.slice(0, 5) : '';
                 const closed = h ? h.is_closed : false;
+                // Reservation Intelligence Phase D-1: 日跨ぎ営業の明示フラグ。
+                // 「closing<openingなら自動的に翌日」という暗黙推論はしない
+                // （オーナーが必ずこのチェックボックスで明示する）。
+                const closesNextDay = h ? !!h.closes_next_day : false;
+                const lastOrderNextDay = h ? !!h.last_order_next_day : false;
                 return '<tr data-day="' + day + '">' +
                     '<td>' + label + '曜</td>' +
                     '<td><input type="checkbox" class="hours-closed" data-day="' + day + '"' + (closed ? ' checked' : '') + '></td>' +
                     '<td><input type="time" class="hours-open" data-day="' + day + '" value="' + open + '"></td>' +
                     '<td><input type="time" class="hours-close" data-day="' + day + '" value="' + close + '"></td>' +
+                    '<td><input type="checkbox" class="hours-close-nextday" data-day="' + day + '"' + (closesNextDay ? ' checked' : '') + '></td>' +
                     '<td><input type="time" class="hours-lastorder" data-day="' + day + '" value="' + lastOrder + '"></td>' +
+                    '<td><input type="checkbox" class="hours-lastorder-nextday" data-day="' + day + '"' + (lastOrderNextDay ? ' checked' : '') + '></td>' +
                     '</tr>';
             }).join('');
         }
@@ -1781,13 +1788,17 @@
                 const closed = row.querySelector('.hours-closed').checked;
                 const open = row.querySelector('.hours-open').value || '11:00';
                 const close = row.querySelector('.hours-close').value || '22:00';
+                const closesNextDay = row.querySelector('.hours-close-nextday').checked;
                 const lastOrder = row.querySelector('.hours-lastorder').value;
+                const lastOrderNextDay = row.querySelector('.hours-lastorder-nextday').checked;
                 hours.push({
                     day_of_week: day,
                     opening_time: open,
                     closing_time: close,
                     is_closed: closed,
-                    last_order_time: lastOrder || null
+                    last_order_time: lastOrder || null,
+                    closes_next_day: closesNextDay,
+                    last_order_next_day: lastOrder ? lastOrderNextDay : false
                 });
             });
             const duration = parseInt(document.getElementById('reservation-duration').value, 10) || 90;
@@ -2297,8 +2308,11 @@
             });
             const weeklyRows = sortedWeekly.length
                 ? sortedWeekly.map(function (w) {
+                    // Reservation Intelligence Phase D-1: 日跨ぎ勤務（例: 18:00〜翌03:00）を
+                    // 「翌」表記で分かりやすく表示する。
+                    const endLabel = w.ends_next_day ? '翌' + escapeHtml(w.end_time) : escapeHtml(w.end_time);
                     return '<div class="shift-row"><span>' + WEEKDAY_LABELS[w.day_of_week] + '曜　' +
-                        escapeHtml(w.start_time) + '〜' + escapeHtml(w.end_time) + '</span>' +
+                        escapeHtml(w.start_time) + '〜' + endLabel + '</span>' +
                         '<button type="button" class="btn-outline btn-danger shift-delete-btn" data-kind="weekly" data-staff-id="' + staffId + '" data-id="' + w.id + '">削除</button></div>';
                 }).join('')
                 : '<p class="empty-hint">週次シフトが未登録です（未登録の間は常に予約可能として扱われます）</p>';
@@ -2308,11 +2322,12 @@
             });
             const overrideRows = sortedOverrides.length
                 ? sortedOverrides.map(function (o) {
+                    const endLabel = o.ends_next_day ? '翌' + escapeHtml(o.end_time) : escapeHtml(o.end_time);
                     const typeLabel = o.override_type === 'day_off'
                         ? '終日休み'
                         : (o.override_type === 'hours'
-                            ? 'この日だけ ' + escapeHtml(o.start_time) + '〜' + escapeHtml(o.end_time)
-                            : '一部不在 ' + escapeHtml(o.start_time) + '〜' + escapeHtml(o.end_time));
+                            ? 'この日だけ ' + escapeHtml(o.start_time) + '〜' + endLabel
+                            : '一部不在 ' + escapeHtml(o.start_time) + '〜' + endLabel);
                     const noteText = o.note ? '（' + escapeHtml(o.note) + '）' : '';
                     return '<div class="shift-row"><span>' + escapeHtml(o.target_date) + '　' + typeLabel + noteText + '</span>' +
                         '<button type="button" class="btn-outline btn-danger shift-delete-btn" data-kind="override" data-staff-id="' + staffId + '" data-id="' + o.id + '">削除</button></div>';
@@ -2333,6 +2348,9 @@
                     '</div>' +
                     '<div class="row-2">' +
                         '<div class="field"><label>終了</label><input type="time" class="weekly-end-input" value="18:00"></div>' +
+                        '<div class="field"><label><input type="checkbox" class="weekly-nextday-input"> 翌日に終了（日跨ぎ勤務）</label></div>' +
+                    '</div>' +
+                    '<div class="row-2">' +
                         '<div class="field" style="display: flex; align-items: flex-end;">' +
                             '<button type="button" class="btn-outline weekly-add-btn">この曜日に追加</button>' +
                         '</div>' +
@@ -2352,6 +2370,9 @@
                     '<div class="row-2 override-time-fields">' +
                         '<div class="field"><label>開始</label><input type="time" class="override-start-input" value="09:00"></div>' +
                         '<div class="field"><label>終了</label><input type="time" class="override-end-input" value="18:00"></div>' +
+                    '</div>' +
+                    '<div class="row-2 override-time-fields">' +
+                        '<div class="field"><label><input type="checkbox" class="override-nextday-input"> 翌日に終了（日跨ぎ）</label></div>' +
                     '</div>' +
                     '<div class="field"><label>メモ（任意）</label><input type="text" class="override-note-input" maxlength="255" placeholder="例：私用のため"></div>' +
                     '<button type="button" class="btn-outline override-add-btn">この調整を追加</button>' +
@@ -2385,6 +2406,7 @@
             const dayOfWeek = parseInt(panel.querySelector('.weekly-day-input').value, 10);
             const startTime = panel.querySelector('.weekly-start-input').value;
             const endTime = panel.querySelector('.weekly-end-input').value;
+            const endsNextDay = panel.querySelector('.weekly-nextday-input').checked;
             if (!startTime || !endTime) {
                 showMsg(msg, '開始・終了時刻を入力してください', 'error');
                 return;
@@ -2393,7 +2415,7 @@
                 const res = await authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/weekly-shifts', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ day_of_week: dayOfWeek, start_time: startTime, end_time: endTime })
+                    body: JSON.stringify({ day_of_week: dayOfWeek, start_time: startTime, end_time: endTime, ends_next_day: endsNextDay })
                 });
                 if (!res.ok) {
                     const errData = await res.json().catch(function () { return {}; });
@@ -2436,6 +2458,7 @@
                 }
                 payload.start_time = startTime;
                 payload.end_time = endTime;
+                payload.ends_next_day = panel.querySelector('.override-nextday-input').checked;
             }
             try {
                 const res = await authFetch('/api/v1/staff/' + encodeURIComponent(staffId) + '/shift-overrides', {

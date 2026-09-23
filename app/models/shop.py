@@ -251,6 +251,26 @@ class ShopHours(Base):
     # 最後の注文受付時間
     last_order_time = Column(Time, nullable=True)
 
+    # ★★★ Reservation Intelligence Phase D-1: 日跨ぎ営業時間の明示的フラグ。
+    # 「closing_time < opening_timeなら自動的に翌日」という暗黙推論は採用しない
+    # （入力ミスと意図的な日跨ぎ営業を区別できなくなるため。ユーザー承認済みの
+    # 設計方針）。デフォルトFalseで、既存店舗・既存クライアントの挙動を完全に
+    # 維持する（Falseのままなら従来通り同日内の営業時間として扱われる）。
+    #
+    # closes_next_day: closing_timeが「翌日」の時刻であることを示す
+    #   （例: opening=18:00, closing=03:00, closes_next_day=True →
+    #   18:00〜翌03:00の営業）。
+    # last_order_next_day: last_order_timeが「翌日」の時刻であることを示す
+    #   （last_order_timeが未設定の場合は無関係）。closing_time側とは独立して
+    #   持たせる（例: 18:00〜翌03:00営業でlast_orderが当日23:00の場合と、
+    #   翌01:30の場合の両方を表現できる必要があるため）。
+    #
+    # 整合性検証はapp/schemas/shop.pyのShopHoursCreate側で行う
+    # （closing_time <= opening_timeなのにcloses_next_day=Falseのような
+    # 矛盾した組み合わせをサイレントに受理しない）。
+    closes_next_day = Column(Boolean, nullable=False, default=False)
+    last_order_next_day = Column(Boolean, nullable=False, default=False)
+
     # タイムスタンプ
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
