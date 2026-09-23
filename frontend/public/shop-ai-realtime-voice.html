@@ -246,6 +246,13 @@
                  PoC専用のテスト店舗（RECEPTRA Realtime PoC Test）+debug=1が
                  揃った場合のみENABLEDになる。通常店舗では常にDISABLED。 -->
             <div id="nameCommitPocIndicator" style="background:#333; color:#7fd8ff; font-size:11px; font-weight:700; padding:4px 8px; border-radius:6px; display:inline-block; margin-bottom:8px; margin-left:6px;">NAME Commit PoC: DISABLED</div>
+            <!-- Conversation Takeover Observation PoC（今回追加）: NAME Forced
+                 Commit Observation PoCとは別目的・別機構の観測専用PoC。debug=1の
+                 ときのみ表示する、このPoCが今回の通話で有効かどうかの
+                 インジケーター。PoC専用のテスト店舗（RECEPTRA Realtime PoC
+                 Test）+debug=1が揃った場合のみENABLEDになる。通常店舗では
+                 常にDISABLED。 -->
+            <div id="takeoverPocIndicator" style="background:#333; color:#b9f2c0; font-size:11px; font-weight:700; padding:4px 8px; border-radius:6px; display:inline-block; margin-bottom:8px; margin-left:6px;">Takeover PoC: DISABLED</div>
             <!-- Mobile Audio Reliability Phase（PHASE24）: スマホの小さい画面で
                  通話UIを覆ってしまわないよう、既定で折りたたんでおく。<details>は
                  iOS Safari含め広くサポートされており、追加JSなしで1タップ展開できる。 -->
@@ -395,6 +402,27 @@
         const NAME_COMMIT_POC_SHOP_ID = '65932cb5-97db-460e-b9d6-0471fce23d88'; // 「RECEPTRA Realtime PoC Test」（BARIYON自テナント作成・実店舗ではない）
         const nameCommitPocEnabled = debugMode && shopId === NAME_COMMIT_POC_SHOP_ID;
 
+        // ===== Conversation Takeover Observation PoC（今回追加・観測専用） =====
+        // 目的: NAME Forced Commit Observation PoCとは別目的の、独立したPoC。
+        // 「長い自由発話（症状説明・来店理由の長い説明等）が終わらない場合に、
+        // 一定時間で強制的にターンを成立させたらOpenAI Realtime側が実際に
+        // どう振る舞うか」を安全に観測する。NAME側と同じ理由
+        // （response.createの二重送信リスク・turn_detection有効時の手動commitが
+        // 公式にサポートされた組み合わせではないこと）により、こちらも
+        // input_audio_buffer.commitのみを最大1回送信する観測専用の仕組みとし、
+        // response.createは絶対に追加送信しない（詳細はmaybeSendTakeoverCommitPoc
+        // 定義部のコメント参照）。
+        //
+        // 安全条件はNAME PoCと全く同じ（両方満たす場合のみ有効化）:
+        // PoC専用テスト店舗「RECEPTRA Realtime PoC Test」のshop_id + debug=1。
+        // 既存の本番利用店舗・他テナントの店舗には一切影響しない。
+        //
+        // NAME PoCとの関係（重要・意図的な設計）: 同じshop_id定数
+        // (NAME_COMMIT_POC_SHOP_ID)を参照するが、有効化フラグ・状態変数・
+        // 関数はNAME側と完全に独立させている（1つの巨大なForced Turn
+        // Completion機構へ統合しない、という明示的な方針に基づく）。
+        const takeoverPocEnabled = debugMode && shopId === NAME_COMMIT_POC_SHOP_ID;
+
         document.getElementById('backLink').href = shopId ? ('/shop.html?id=' + encodeURIComponent(shopId)) : '/';
 
         const loadingEl = document.getElementById('loading');
@@ -446,6 +474,12 @@
             const pocIndicatorEl = document.getElementById('nameCommitPocIndicator');
             if (pocIndicatorEl) {
                 pocIndicatorEl.textContent = 'NAME Commit PoC: ' + (nameCommitPocEnabled ? 'ENABLED' : 'DISABLED');
+            }
+            // Conversation Takeover Observation PoC: NAME側と同じ表示方針
+            // （PoC専用テスト店舗+debug=1のときのみENABLED表示）。
+            const takeoverIndicatorEl = document.getElementById('takeoverPocIndicator');
+            if (takeoverIndicatorEl) {
+                takeoverIndicatorEl.textContent = 'Takeover PoC: ' + (takeoverPocEnabled ? 'ENABLED' : 'DISABLED');
             }
         }
 
@@ -633,6 +667,50 @@
         // PHASE9: 手動commit送信後に観測したい4種の反応それぞれについて、
         // 一度だけelapsed_msを記録済みかどうか（二重ログ防止）。
         let pocCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+
+        // ===== Conversation Takeover Observation PoC: 追加の最小状態（今回追加） =====
+        // 目的・設計方針の詳細はファイル冒頭のtakeoverPocEnabled定義の
+        // コメントを参照。NAME Forced Commit Observation PoCとは完全に独立した
+        // 別の状態・別の関数として実装する（両者を1つの汎用「強制ターン終了」
+        // 機構にまとめないことという明示的な指示に基づく）。
+        //
+        // 今回の監査結果（重要）: ブラウザJS側は現時点でユーザー発話の
+        // 意味内容（transcript）に一切アクセスできない
+        // （input_audio_transcriptionがsession_configで設定されておらず、
+        // フロントエンドもsession.updateで追加設定していないことをコードで
+        // 確認済み）。そのため本PoCは「発話内容の十分性」を判定する機能を
+        // 一切持たない、時間ベースかつ観測中心の限定的なPoCである
+        // （CONTENT SUFFICIENCY判定は今回実装しない）。
+        //
+        // 「発話エピソード」を識別する世代カウンタ。speech_startedのたびに
+        // +1する（NAME PoCのnameAnswerGenerationに相当する概念だが、
+        // Takeoverは「AIが特定の質問をした直後」ではなく「ユーザーが話し
+        // 始めた瞬間」を起点にするため、独立したカウンタとして持つ）。
+        let takeoverSpeechEpisodeId = 0;
+        // 現在アクティブなTakeoverタイマーのsetTimeout ID（null＝非アクティブ）。
+        let takeoverTimerId = null;
+        // このエピソードについて、既に手動commitを送信済みならそのエピソード
+        // 番号（未送信ならnull）。同一エピソードにつき手動commitは最大1回のみ。
+        let takeoverCommitSentEpisode = null;
+        // このエピソードについて、手動commitより前に正常なターン終了
+        // （speech_stopped/committed/item_created）が先に届いたかどうか。
+        // trueの場合、送信直前の最終確認で手動commitを見送る
+        // （NAME PoCのnameTurnNormalCompletionSeenと同じレース対策）。
+        let takeoverTurnNormalCompletionSeen = false;
+        // 直近の手動commit送信時刻（elapsed_ms計測の起点。performance.now()）。
+        // null＝現在手動commit送信待ち/観測対象ではない。
+        let takeoverCommitSentAt = null;
+        // その送信がどのcallGeneration（通話）で行われたかを覚えておき、
+        // 通話をまたいだ誤相関を防ぐ。
+        let takeoverCommitCallGeneration = null;
+        // 手動commit送信後に観測したい4種の反応それぞれについて、一度だけ
+        // elapsed_msを記録済みかどうか（二重ログ防止。NAME PoCと同じ構造）。
+        let takeoverCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+        // Takeoverタイマーの長さ（ms）。Intent Classificationの「約20秒は
+        // あくまで目安」という設計方針と概念的に揃えた値だが、あくまで本PoC
+        // 専用の別設定であり、Intent Classificationのプロンプト自体には
+        // 一切手を加えない。
+        const TAKEOVER_TIMER_MS = 20000;
 
         // ===== Mobile Real-Call Failure Investigation: 追加の観測状態 =====
         // すべてPIIを含まない（状態文字列・イベント名・カウンタのみ）。対処は
@@ -861,6 +939,124 @@
             if (pocCommitPendingEvents[key]) return;
             pocCommitPendingEvents[key] = true;
             pushTimelineEvent('POC_NAME_COMMIT_REACTION (' + label + ', elapsed_ms=' + Math.round(performance.now() - pocCommitSentAt) + ')');
+        }
+
+        // ===== Conversation Takeover Observation PoC: 4つの中核関数（今回追加） =====
+        // NAME Forced Commit Observation PoCの安全なパターン
+        // （startAnswerWindowIfNeeded/maybeSendNameCommitPoc/
+        // maybeLogPocReactionElapsed）を忠実に踏襲しつつ、完全に独立した
+        // 状態・関数として実装する（両者を1つの汎用機構にまとめない）。
+
+        // ユーザーが実際に話し始めた瞬間（input_audio_buffer.speech_started）に
+        // 呼び出す。Expected Answer Windowとは異なり、「直前にAIが特定の質問を
+        // したかどうか」に依存せず、NAME/PHONE/YES_NOのような短答を期待して
+        // いる場面（既存NAME PoC等と重複・競合させないための除外）以外であれば
+        // 常に開始する。これにより、雑談的な冒頭挨拶の直後にお客様が自発的に
+        // 長い症状説明を始めるケース（Expected Answer Windowが従来カバーして
+        // いなかった空白）もカバーする。
+        //
+        // 重要: このタイマーは【観測を目的とした最小限のForced Commit PoC】
+        // であり、発話内容の十分性は一切判定しない（CONTENT SUFFICIENCYは
+        // 今回未実装。監査結果を参照）。あくまで「長い自由発話でも、ある程度の
+        // 時間が経過したら安全にターンを強制成立させられるか」だけを検証する。
+        function startTakeoverTimerIfNeeded(myGeneration) {
+            if (!takeoverPocEnabled) return; // PoC専用テスト店舗+debug=1のみ
+            // 既存NAME PoC・PHONE・YES_NOの短答待ちと重複させない
+            // （それらは自身のAnswer Window/NAME PoCで既に処理される場面）。
+            if (expectedAnswerType === 'NAME' || expectedAnswerType === 'PHONE' || expectedAnswerType === 'YES_NO') return;
+            if (takeoverTimerId !== null) return; // 同一エピソード内での多重開始防止
+            takeoverSpeechEpisodeId += 1;
+            const myEpisodeId = takeoverSpeechEpisodeId;
+            takeoverTurnNormalCompletionSeen = false;
+            pushTimelineEvent('TAKEOVER_ELIGIBLE (episode=' + myEpisodeId + ', expectedAnswerType=' + expectedAnswerType + ')');
+            pushTimelineEvent('TAKEOVER_TIMER_STARTED (episode=' + myEpisodeId + ', limit_ms=' + TAKEOVER_TIMER_MS + ')');
+            const startedAt = performance.now();
+            takeoverTimerId = setTimeout(() => {
+                takeoverTimerId = null;
+                if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない
+                const elapsedMs = Math.round(performance.now() - startedAt);
+                pushTimelineEvent('TAKEOVER_TIMER_EXPIRED (episode=' + myEpisodeId + ', elapsed_ms=' + elapsedMs + ')');
+                maybeSendTakeoverCommitPoc(myEpisodeId, myGeneration);
+            }, TAKEOVER_TIMER_MS);
+        }
+
+        // 通常のVADがspeech_stoppedを検知した場合など、正常にターンが終了した
+        // ときに呼び出す。アクティブなTakeoverタイマーがあれば即キャンセルする
+        // （NAME PoCのcancelAnswerWindowと同じ役割の、独立した関数）。
+        function cancelTakeoverTimer(reason) {
+            if (takeoverTimerId === null) return;
+            clearTimeout(takeoverTimerId);
+            takeoverTimerId = null;
+            pushTimelineEvent('TAKEOVER_TIMER_CANCELLED (episode=' + takeoverSpeechEpisodeId + ', reason=' + reason + ')');
+        }
+
+        // Conversation Takeover Observation PoC（今回追加・観測専用。必ず本ファイル
+        // 冒頭のtakeoverPocEnabled定義とあわせて読むこと）:
+        //
+        // Takeoverタイマーが期限切れになった時点で、まだ正常なターン終了
+        // （speech_stopped/committed/item_created）が届いていない場合に限り、
+        // input_audio_buffer.commitを最大1回だけ手動送信する。response.createは
+        // 絶対に追加送信しない（NAME PoCと同じ理由：サーバー側semantic_vadが
+        // 既に内部的にauto-commit＋auto-responseを開始している可能性を排除
+        // できず、手動response.createを重ねると二重応答を招くリスクがあるため。
+        // 今回はその実際の挙動を安全に観測することが唯一の目的）。
+        //
+        // NAME PoCとの二重commit防止: NAME PoC自身のmaybeSendNameCommitPocは
+        // expectedAnswerType==='NAME'の場合にのみ動作し、本関数を呼び出す
+        // startTakeoverTimerIfNeededはNAME/PHONE/YES_NOの場合は最初から
+        // タイマーを開始しないため、両者が同一エピソードに対して二重にcommitを
+        // 送信することは構造的に発生しない。
+        function maybeSendTakeoverCommitPoc(myEpisodeId, myGeneration) {
+            if (!takeoverPocEnabled) return; // PoC専用テスト店舗+debug=1のみ
+            if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない（保険）
+            if (!dc || dc.readyState !== 'open') {
+                pushTimelineEvent('TAKEOVER_COMMIT_SKIPPED (episode=' + myEpisodeId + ', reason=datachannel_not_open)');
+                return;
+            }
+            if (myEpisodeId !== takeoverSpeechEpisodeId) {
+                // 既に次の発話エピソードへ進んでいる（古いタイマーの残骸）。
+                pushTimelineEvent('TAKEOVER_COMMIT_SKIPPED (episode=' + myEpisodeId + ', reason=stale_episode)');
+                return;
+            }
+            if (takeoverCommitSentEpisode === myEpisodeId) {
+                // このエピソードについては既に手動commit送信済み（最大1回/エピソード）
+                return;
+            }
+            // 送信直前にもう一度だけ、正常完了フラグがその間に立っていないか
+            // 最終確認する（NAME PoCと同じレース対策）。
+            if (takeoverTurnNormalCompletionSeen) {
+                pushTimelineEvent('TAKEOVER_COMMIT_SKIPPED (episode=' + myEpisodeId + ', reason=normal_completion_won_race)');
+                return;
+            }
+            pushTimelineEvent('TAKEOVER_COMMIT_REQUESTED (episode=' + myEpisodeId + ')');
+            try {
+                // 観測のみ: input_audio_buffer.commitのみを送信する。この直後に
+                // response.createを送ることは絶対にしない。
+                dc.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+                takeoverCommitSentEpisode = myEpisodeId;
+                takeoverCommitCallGeneration = myGeneration;
+                takeoverCommitSentAt = performance.now();
+                takeoverCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+                pushTimelineEvent('TAKEOVER_COMMIT_SENT (episode=' + myEpisodeId + ')');
+            } catch (e) {
+                // send自体が例外を投げた場合も非fatal扱い（endCall/
+                // cleanupConnectionは呼ばない）。既存のsemantic_vadに以後を委ねる。
+                pushTimelineEvent('TAKEOVER_ERROR (episode=' + myEpisodeId + ', reason=send_exception): ' + (e && e.message));
+            }
+        }
+
+        // Conversation Takeover Observation PoC: 手動commit送信後に観測したい
+        // 4種の反応（committed/item_created/response.created/AI音声開始）を、
+        // 各イベントにつき一度だけelapsed_msとしてタイムラインに記録する
+        // （NAME PoCのmaybeLogPocReactionElapsedと同じ構造）。手動commitを
+        // 送信していない通常の通話では takeoverCommitSentAt が null のままの
+        // ため、何もしない。
+        function maybeLogTakeoverReactionElapsed(key, label) {
+            if (takeoverCommitSentAt === null) return;
+            if (callGeneration !== takeoverCommitCallGeneration) return;
+            if (takeoverCommitPendingEvents[key]) return;
+            takeoverCommitPendingEvents[key] = true;
+            pushTimelineEvent('TAKEOVER_REACTION (' + label + ', elapsed_ms=' + Math.round(performance.now() - takeoverCommitSentAt) + ')');
         }
 
         // 通常のVADがspeech_stoppedを検知した場合など、正常にターンが終了した
@@ -2765,6 +2961,8 @@
                 pushTimelineEvent('AI_AUDIO_STARTED');
                 // NAME Forced Commit Observation PoC（PHASE9）
                 maybeLogPocReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
+                // Conversation Takeover Observation PoC（今回追加。NAME PoCとは独立）
+                maybeLogTakeoverReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
             } else if (type === 'output_audio_buffer.stopped') {
                 aiAudioOutputActive = false;
                 lastAiAudioEventAt = performance.now();
@@ -2836,6 +3034,9 @@
                 // 送信済みの手動commitへの反応であればelapsed_msを記録する。
                 nameTurnNormalCompletionSeen = true;
                 maybeLogPocReactionElapsed('committed', 'input_audio_buffer.committed');
+                // Conversation Takeover Observation PoC（今回追加。NAME PoCとは独立）
+                takeoverTurnNormalCompletionSeen = true;
+                maybeLogTakeoverReactionElapsed('committed', 'input_audio_buffer.committed');
             } else if (type === 'conversation.item.created' && msg.item && msg.item.role === 'user') {
                 // PHASE8（会話停止調査・最重要）: ユーザー発話が会話アイテムとして
                 // 確定したことを示すイベント。「名前を答えた後に止まる」等の症状で、
@@ -2847,6 +3048,9 @@
                 // NAME Forced Commit Observation PoC（PHASE7/9）
                 nameTurnNormalCompletionSeen = true;
                 maybeLogPocReactionElapsed('item', 'conversation.item.created');
+                // Conversation Takeover Observation PoC（今回追加。NAME PoCとは独立）
+                takeoverTurnNormalCompletionSeen = true;
+                maybeLogTakeoverReactionElapsed('item', 'conversation.item.created');
             } else if (type === 'input_audio_buffer.speech_started') {
                 if (!initialGreetingSent) userSpokeBeforeGreeting = true;
                 // ISSUE2調査用（PIIなし）: speech_started発生時点のローカルマイク
@@ -2886,6 +3090,9 @@
                 updateAudioDiagnosticsPanel();
                 // Expected Answer Window（PHASE6: 起点はユーザーの発話開始）。
                 startAnswerWindowIfNeeded(callGeneration);
+                // Conversation Takeover Observation PoC（今回追加。NAME PoCとは独立。
+                // 起点も同じくユーザーの発話開始）。
+                startTakeoverTimerIfNeeded(callGeneration);
                 // Silence Timeout: 有効なユーザー発話を検知したため即リセット
                 // （'warned'中であればここで終話をキャンセルし通常会話へ復帰する）。
                 resetSilenceTimer('user_speech_started');
@@ -2898,6 +3105,11 @@
                 // NAME Forced Commit Observation PoC（PHASE7）: 正常にターンが
                 // 終了したため、この世代についてはもう手動commitを送らない。
                 nameTurnNormalCompletionSeen = true;
+                // Conversation Takeover Observation PoC（今回追加。NAME PoCとは
+                // 独立）: 同じく正常終了したため、このエピソードの強制commitは
+                // もう不要。
+                cancelTakeoverTimer('speech_stopped_normally');
+                takeoverTurnNormalCompletionSeen = true;
                 // PHASE6相関用（PIIなし）: 対応するspeech_startedからの経過時間
                 // （＝サーバーがユーザー発話と判定していた継続時間）を記録する。
                 // 短時間の相槌（「はい」「違います」等）も本物の短い発話として
@@ -2925,6 +3137,8 @@
                 // OpenAI側が自発的にresponse.createdを送ってきた場合、観測する
                 // だけで、こちらから追加のresponse.createは絶対に送らない。
                 maybeLogPocReactionElapsed('responseCreated', 'response.created');
+                // Conversation Takeover Observation PoC（今回追加。NAME PoCとは独立）
+                maybeLogTakeoverReactionElapsed('responseCreated', 'response.created');
                 // Silence Timeout: この回の応答にfunction_callが含まれるかどうかを
                 // 新しい応答サイクルの開始時点でリセットする（response.doneで判定に使う）。
                 responseHasFunctionCall = false;
@@ -3001,6 +3215,19 @@
                     const pocErrMessage = (msg.error && msg.error.message) || null;
                     pushTimelineEvent('POC_NAME_COMMIT_ERROR (code=' + pocErrCode + ', type=' + pocErrType
                         + ', elapsed_ms=' + Math.round(performance.now() - pocCommitSentAt) + ', message=' + pocErrMessage + ')');
+                }
+                // Conversation Takeover Observation PoC（今回追加。NAME PoCとは独立）:
+                // 同じ理由で、手動commit送信後に発生したerrorを専用イベントとして
+                // 記録する。このハンドラ自体は元々fatal処理（endCall/
+                // cleanupConnection）を一切行っていないため、そのままの挙動を
+                // 維持するだけで非fatal要件を満たす。APIキー等の秘密情報は
+                // 一切含めない（code/type/messageのみ）。
+                if (takeoverCommitSentAt !== null && callGeneration === takeoverCommitCallGeneration) {
+                    const toErrCode = (msg.error && msg.error.code) || null;
+                    const toErrType = (msg.error && msg.error.type) || null;
+                    const toErrMessage = (msg.error && msg.error.message) || null;
+                    pushTimelineEvent('TAKEOVER_ERROR (code=' + toErrCode + ', type=' + toErrType
+                        + ', elapsed_ms=' + Math.round(performance.now() - takeoverCommitSentAt) + ', message=' + toErrMessage + ')');
                 }
             }
         }
@@ -3166,6 +3393,16 @@
             pocCommitSentAt = null;
             pocCommitCallGeneration = null;
             pocCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+            // Conversation Takeover Observation PoC: 新しい通話ごとに必ず
+            // リセットする（前回通話のPoC状態を持ち越さない。NAME PoCとは
+            // 独立した状態のため個別にリセットする）。
+            takeoverSpeechEpisodeId = 0;
+            if (takeoverTimerId !== null) { clearTimeout(takeoverTimerId); takeoverTimerId = null; }
+            takeoverCommitSentEpisode = null;
+            takeoverTurnNormalCompletionSeen = false;
+            takeoverCommitSentAt = null;
+            takeoverCommitCallGeneration = null;
+            takeoverCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。
