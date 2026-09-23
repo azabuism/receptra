@@ -140,7 +140,12 @@ class CheckAvailabilityResponse(BaseModel):
     # available=False の場合のみ設定。候補:
     # fully_booked / outside_business_hours / shop_closed / business_hours_not_configured /
     # temporary_closure / service_unavailable / staff_unavailable / invalid_request /
-    # time_in_past / temporarily_unavailable
+    # time_in_past / temporarily_unavailable / break_time
+    #
+    # Reservation Intelligence Phase D-2: break_time（休憩・予約停止時間との重なり）を
+    # 追加。営業時間内だが一時的に予約を受け付けない時間帯という点でoutside_business_hours
+    # とは意味が異なるため、既存コードとの互換性を保ったまま新規reason_codeとして
+    # 追加した（既存のreason_code体系・語彙は一切変更していない）。
     #
     # Phase3A当初は「入力不正」と「バックエンド側で確定できなかった」を
     # どちらもinvalid_requestに丸めていたが、ユーザー指摘により分離した:
@@ -211,8 +216,10 @@ class CreateReservationToolResponse(BaseModel):
     # success=Falseの場合のみ設定。候補:
     # invalid_request / reservation_not_enabled / shop_closed / business_hours_not_configured /
     # temporary_closure / outside_business_hours / service_unavailable / staff_unavailable /
-    # fully_booked / time_in_past / temporarily_unavailable
+    # fully_booked / time_in_past / temporarily_unavailable / break_time
     #
+    # Reservation Intelligence Phase D-2: break_time（休憩・予約停止時間との重なり）を
+    # 追加。CheckAvailabilityResponseと同じ語彙。
     # check_availability(Phase3A)と同じ語彙をそのまま再利用している（AIが新しい
     # 概念を覚える必要をなくすため）。Phase3B.1でbusiness_hours_not_configured
     # （営業時間未設定）をshop_closed（定休日）と分離した。

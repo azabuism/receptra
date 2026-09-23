@@ -434,6 +434,38 @@
         </div>
 
         <div class="card">
+            <h2>休憩・予約停止時間</h2>
+            <p class="hint">
+                営業時間の一部だけ、予約の受付を一時的に停止したい場合に登録できます（例：12:00〜13:00は休憩のため予約不可）。
+                お店は開いていますが、この時間帯だけ予約が入らないようになります。<br>
+                日をまたぐ営業時間（例：18:00〜翌3:00）の店舗で、休憩の開始・終了が「翌日」側の時刻になる場合は、それぞれ「翌日」にチェックを入れてください。
+            </p>
+            <form id="break-time-form">
+                <div class="row-3">
+                    <div class="field">
+                        <label for="break-day">曜日</label>
+                        <select id="break-day"></select>
+                    </div>
+                    <div class="field">
+                        <label for="break-start">開始時刻 *</label>
+                        <input type="time" id="break-start" required>
+                    </div>
+                    <div class="field">
+                        <label for="break-end">終了時刻 *</label>
+                        <input type="time" id="break-end" required>
+                    </div>
+                </div>
+                <div class="row-2">
+                    <div class="field"><label><input type="checkbox" id="break-start-nextday"> 開始が翌日</label></div>
+                    <div class="field"><label><input type="checkbox" id="break-end-nextday"> 終了が翌日</label></div>
+                </div>
+                <button type="submit" class="btn" id="break-time-add-btn">この休憩時間を登録</button>
+                <div class="msg" id="break-time-msg"></div>
+            </form>
+            <div id="break-time-list" style="margin-top: 18px;"></div>
+        </div>
+
+        <div class="card">
             <h2>臨時休業日</h2>
             <p class="hint">
                 天候や設備都合などで急遽休業する場合はここで登録してください。登録した期間に確認待ち・確定中の予約がある場合は自動的にキャンセルされ、理由が予約管理に記録されます。<br>
@@ -1606,6 +1638,7 @@
             loadStaff();
             loadReservations();
             loadClosures();
+            loadBreakTimes();
             loadReviewsManage();
             loadCoupons();
             loadAiStaffSettings();
@@ -1830,6 +1863,94 @@
                 btn.disabled = false;
             }
         });
+
+        // ---------- 休憩・予約停止時間 ----------
+        (function initBreakDaySelect() {
+            const select = document.getElementById('break-day');
+            if (!select) return;
+            select.innerHTML = DAY_NAMES.map(function (label, day) {
+                return '<option value="' + day + '">' + label + '曜</option>';
+            }).join('');
+        })();
+
+        async function loadBreakTimes() {
+            const container = document.getElementById('break-time-list');
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/break-times');
+                const breakTimes = await res.json();
+                if (!breakTimes.length) {
+                    container.innerHTML = '<p class="empty-hint">登録されている休憩時間はありません</p>';
+                    return;
+                }
+                const sorted = breakTimes.slice().sort(function (a, b) {
+                    return (a.day_of_week - b.day_of_week) || a.start_time.localeCompare(b.start_time);
+                });
+                container.innerHTML = sorted.map(function (b) {
+                    const startLabel = (b.start_next_day ? '翌' : '') + b.start_time.slice(0, 5);
+                    const endLabel = (b.end_next_day ? '翌' : '') + b.end_time.slice(0, 5);
+                    return '<div class="closure-item">' +
+                        '<div><span class="name">' + DAY_NAMES[b.day_of_week] + '曜　' + startLabel + '〜' + endLabel + '</span></div>' +
+                        '<button type="button" class="btn-outline btn-danger break-time-delete-btn" data-id="' + b.id + '">削除</button>' +
+                        '</div>';
+                }).join('');
+                container.querySelectorAll('.break-time-delete-btn').forEach(function (btn) {
+                    btn.addEventListener('click', function () { deleteBreakTime(btn.dataset.id); });
+                });
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        document.getElementById('break-time-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('break-time-msg');
+            const btn = document.getElementById('break-time-add-btn');
+            const dayOfWeek = parseInt(document.getElementById('break-day').value, 10);
+            const startTime = document.getElementById('break-start').value;
+            const endTime = document.getElementById('break-end').value;
+            const startNextDay = document.getElementById('break-start-nextday').checked;
+            const endNextDay = document.getElementById('break-end-nextday').checked;
+            if (!startTime || !endTime) return;
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/break-times', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        day_of_week: dayOfWeek,
+                        start_time: startTime,
+                        end_time: endTime,
+                        start_next_day: startNextDay,
+                        end_next_day: endNextDay
+                    })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(_extractErrorMessage(errData, '登録に失敗しました'));
+                }
+                showMsg(msg, '休憩時間を登録しました', 'success');
+                document.getElementById('break-time-form').reset();
+                loadBreakTimes();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '登録に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        async function deleteBreakTime(breakTimeId) {
+            if (!confirm('この休憩時間を削除しますか？')) return;
+            const msg = document.getElementById('break-time-msg');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/break-times/' + encodeURIComponent(breakTimeId), {
+                    method: 'DELETE'
+                });
+                if (!res.ok) throw new Error('削除に失敗しました');
+                loadBreakTimes();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
+            }
+        }
 
         // ---------- テーブル・席の管理 ----------
         async function loadTables() {

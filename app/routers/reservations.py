@@ -18,7 +18,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_optional_current_user
 from app.schemas.user import CurrentUser
 from app.models.reservation import Reservation, ReservationStatus
-from app.models.shop import Shop, ShopHours, ShopTable, ShopClosure
+from app.models.shop import Shop, ShopHours, ShopTable, ShopClosure, ShopBreakTime
 from app.models.service import Service
 from app.models.staff import Staff, StaffService
 from app.models.staff_shift import StaffWeeklyShift, StaffShiftOverride
@@ -163,6 +163,57 @@ async def _get_closure_for_date(db: AsyncSession, shop_id: str, target_date: dat
         )
     )
     return result.scalars().first()
+
+
+async def _get_shop_break_times(db: AsyncSession, shop_id: str, day_of_week: int) -> List[ShopBreakTime]:
+    """
+    Reservation Intelligence Phase D-2: 指定した曜日に登録されている休憩・
+    予約停止時間（ShopBreakTime）をすべて取得する。
+
+    day_of_weekは「営業セッションの帰属曜日」（Phase D-1のowning_hours.day_of_week、
+    ＝session_date.weekday()）を渡すこと。calendar dateの曜日そのものではない
+    点に注意（session_dateとcalendar dateの区別はPhase D-1の
+    _resolve_business_session()のdocstring参照）。
+
+    休憩が1件も登録されていない店舗・曜日では空リストを返し、呼び出し元は
+    従来通りの挙動になる（Phase D-2導入前と完全に同じ）。
+    """
+    result = await db.execute(
+        select(ShopBreakTime).filter(
+            ShopBreakTime.shop_id == shop_id, ShopBreakTime.day_of_week == day_of_week
+        )
+    )
+    return list(result.scalars().all())
+
+
+def _overlaps_break_time(
+    breaks: List[ShopBreakTime], session_date: date_type, start_dt: datetime, end_dt: datetime
+) -> bool:
+    """
+    Reservation Intelligence Phase D-2: 予約枠（start_dt〜end_dt）が、渡された
+    休憩時間帯（breaks）のいずれかと重なっているかどうかを判定する。
+
+    重なり判定はPhase B/C以来の予約重複判定と同じTIME-RANGE overlapの式
+    （existing_start < end and existing_end > start。触れるだけ＝境界が
+    一致する場合は重なりとは判定しない）を使う。
+
+    breaksの各行はShopBreakTime.day_of_week単位（曜日ごとの繰り返し設定）で
+    取得された「時刻」の集まりであり、実際の重なり判定には
+    session_date（営業セッションの帰属日。calendar dateではない）を使って
+    実datetimeを組み立てる。start_next_day/end_next_dayがTrueの行は、
+    session_dateの翌日側の時刻として扱う（Phase D-1のclosing_time/
+    last_order_time/ends_next_dayの日跨ぎ対応と同じ考え方）。
+    """
+    for b in breaks:
+        break_start_dt = datetime.combine(session_date, b.start_time)
+        if b.start_next_day:
+            break_start_dt += timedelta(days=1)
+        break_end_dt = datetime.combine(session_date, b.end_time)
+        if b.end_next_day:
+            break_end_dt += timedelta(days=1)
+        if break_start_dt < end_dt and break_end_dt > start_dt:
+            return True
+    return False
 
 
 def _existing_duration_minutes(existing: "Reservation", default_duration_minutes: int) -> int:
@@ -883,6 +934,16 @@ async def check_single_slot_availability(
     if boundary_reason is not None:
         return False, boundary_reason
 
+    # Reservation Intelligence Phase D-2: 休憩・予約停止時間（ShopBreakTime）との
+    # 重なりを確認する。ShopClosure（終日休業）より後、営業時間境界チェックより後、
+    # スタッフ/テーブルの空き状況チェックより前という順序（Section21・仕様書の
+    # 優先順位: 終日休業 > 営業時間外 > 休憩時間 > 満席、を維持するための位置）。
+    # day_of_weekはowning_hours.day_of_week（＝session_dateの曜日。calendar dateの
+    # 曜日ではない点に注意。_get_shop_break_times()のdocstring参照）。
+    breaks = await _get_shop_break_times(db, shop.id, owning_hours.day_of_week)
+    if breaks and _overlaps_break_time(breaks, session_date, start_dt, start_dt + timedelta(minutes=duration)):
+        return False, "break_time"
+
     # create_reservation / get_availability と同じ比較方法。Phase3E-3で
     # datetime.utcnow()からreservation_dateと同じ基準(JST-naive)の
     # _reservation_basis_now()に修正した（調査で確認した実際のタイムゾーン
@@ -1101,6 +1162,13 @@ async def get_availability(
     # Reservation Intelligence Phase B: 既存予約自身のduration_minutesがNULLの
     # 場合のみのフォールバック値。check_single_slot_availability()と同じ考え方。
     default_duration = shop.reservation_duration_minutes or 90
+    # Reservation Intelligence Phase D-2: この日（target_date自身が開始日である
+    # セッション）に登録されている休憩・予約停止時間を、ループの外で一度だけ取得する
+    # （スロット数分だけ同じクエリを繰り返さない）。休憩が1件も無い店舗・曜日では
+    # 空リストのままで、以下のoverlapチェックは常にFalseになり挙動は変化しない。
+    # get_availability()自身の既知の限定スコープ（前日から継続する日跨ぎセッションの
+    # 深夜側スロットは今回対象外。上のコメント参照）と同じtarget_date基準で扱う。
+    breaks = await _get_shop_break_times(db, shop_id, weekday)
     slots: List[AvailabilitySlot] = []
     cursor = opening_dt
     while cursor <= latest_start_dt:
@@ -1112,6 +1180,15 @@ async def get_availability(
             # そのような候補はスロット自体を生成しない（営業時間外の時刻が
             # 一覧に出ないようにする。closure/is_closedと同じ扱い）。
             if _validate_reservation_time_window(hours, target_date, cursor, duration) is not None:
+                cursor += timedelta(minutes=SLOT_INTERVAL_MINUTES)
+                continue
+            # Reservation Intelligence Phase D-2: 休憩時間と重なるスロットは、
+            # 営業時間外のスロットとは異なり一覧からは隠さず、「fully_booked」と
+            # 同様に候補として表示した上でavailable=falseにする（休憩時間は営業時間
+            # 自体の一部であり、単に今取れないだけという点で満席と同種の扱いが
+            # 自然なため）。スタッフ/テーブルの空き状況クエリは休憩中なら不要なので呼ばない。
+            if breaks and _overlaps_break_time(breaks, target_date, cursor, cursor + timedelta(minutes=duration)):
+                slots.append(AvailabilitySlot(time=cursor.strftime("%H:%M"), available=False))
                 cursor += timedelta(minutes=SLOT_INTERVAL_MINUTES)
                 continue
             if service:
@@ -1220,6 +1297,15 @@ async def create_reservation(
         )
         if boundary_reason is not None:
             raise _http_error(400, "ご指定の時間は営業時間外です", reason_code=boundary_reason)
+
+        # Reservation Intelligence Phase D-2: 休憩・予約停止時間との重なりを確認する
+        # （check_single_slot_availability()と同じ優先順位・同じ判定式。
+        # check-NG-but-create-OKのギャップを作らないため、ここでも必ず再検証する）。
+        breaks = await _get_shop_break_times(db, request.shop_id, owning_hours.day_of_week)
+        if breaks and _overlaps_break_time(
+            breaks, session_date, request.reservation_date, request.reservation_date + timedelta(minutes=duration)
+        ):
+            raise _http_error(400, "ご指定の時間は休憩時間のため予約できません", reason_code="break_time")
 
         # Reservation Intelligence Phase B: 既存予約自身のduration_minutesが
         # NULL（Phase B以前に作成された予約）の場合にのみ使うフォールバック値。
@@ -1531,6 +1617,17 @@ async def update_reservation(
             )
             if boundary_reason is not None:
                 raise HTTPException(status_code=400, detail="ご指定の時間は営業時間外のため、その日時には変更できません")
+
+            # Reservation Intelligence Phase D-2: 休憩・予約停止時間との重なりを
+            # 確認する（create_reservation()と同じ判定式。日時が実際に変更される
+            # 場合にのみこのifブロックに入るため、日時に無関係な変更では不要な
+            # 休憩時間クエリは発生しない）。
+            breaks = await _get_shop_break_times(db, reservation.shop_id, owning_hours.day_of_week)
+            if breaks and _overlaps_break_time(
+                breaks, session_date, request.reservation_date,
+                request.reservation_date + timedelta(minutes=effective_duration),
+            ):
+                raise HTTPException(status_code=400, detail="ご指定の時間は休憩時間のため、その日時には変更できません")
 
             default_duration = shop.reservation_duration_minutes or 90
 

@@ -179,6 +179,9 @@ class Shop(Base):
     # リレーション
     tenant = relationship("Tenant", foreign_keys=[tenant_id])
     shop_hours = relationship("ShopHours", back_populates="shop", cascade="all, delete-orphan")
+    # Reservation Intelligence Phase D-2: 休憩・予約停止時間。店舗削除時に一緒に削除する
+    # （shop_hours/closuresと同じcascade方針）。
+    break_times = relationship("ShopBreakTime", back_populates="shop", cascade="all, delete-orphan")
     reservations = relationship("Reservation", back_populates="shop", cascade="all, delete-orphan")
     reviews = relationship("Review", back_populates="shop", cascade="all, delete-orphan")
     promotions = relationship("Promotion", back_populates="shop", cascade="all, delete-orphan")
@@ -285,6 +288,61 @@ class ShopHours(Base):
 
     def __repr__(self):
         return f"<ShopHours(shop_id={self.shop_id}, day={self.day_of_week})>"
+
+
+class ShopBreakTime(Base):
+    """
+    休憩・予約停止時間（Reservation Intelligence Phase D-2）。
+
+    ShopHours（曜日ごとの営業時間枠）はそのままに、その営業時間内の一部だけを
+    「営業はしているが予約は受け付けない」時間帯として登録する（例: 09:00〜18:00
+    営業のうち12:00〜13:00は予約不可、18:00〜翌03:00営業のうち翌00:00〜翌00:30は
+    予約不可、等）。ShopClosure（終日・臨時休業）とは目的が異なる別テーブル。
+
+    day_of_weekはShopHours.day_of_weekと同じ規約（0=月, 6=日）だが、こちらは
+    UNIQUE制約を設けない（1日に複数回の休憩＝複数行を許容するため。
+    StaffWeeklyShiftが同じ曜日に複数行を許容するのと同じ考え方）。
+
+    start_next_day / end_next_day: Phase D-1のcloses_next_day/ends_next_dayと同じ
+    「暗黙推論しない」設計方針（closing_time<opening_timeのような値の大小関係だけで
+    翌日かどうかを推測しない）。ただし休憩時間はShopHours/シフトと異なり、開始時刻
+    自体が日跨ぎ営業セッションの翌日側に位置しうる（例: 18:00〜翌03:00営業のうち、
+    翌00:00〜翌00:30だけの休憩は開始時刻自体が既に「翌日」）。そのため終了側だけの
+    単一フラグでは表現できず、開始・終了それぞれに独立したフラグを持たせている。
+    デフォルトFalseで、日跨ぎ営業を使わない店舗・休憩を登録しない店舗の挙動には
+    一切影響しない。
+
+    実際の予約可否判定への反映は app/routers/reservations.py の
+    _get_shop_break_times() / _overlaps_break_time() が、Phase D-1の
+    「営業セッションは開始日に帰属する」というsession_dateを基準に判定する
+    （このモデル・本ファイルのCRUD APIには判定ロジックを一切持たせない）。
+    """
+
+    __tablename__ = "shop_break_times"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    shop_id = Column(String(36), ForeignKey("shops.id"), nullable=False, index=True)
+
+    # 曜日 (0=Monday, 6=Sunday)。ShopHours.day_of_weekと同じ規約。
+    day_of_week = Column(Integer, nullable=False)
+
+    start_time = Column(Time, nullable=False)
+    end_time = Column(Time, nullable=False)
+
+    start_next_day = Column(Boolean, nullable=False, default=False)
+    end_next_day = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    shop = relationship("Shop", back_populates="break_times")
+
+    __table_args__ = (
+        Index("ix_shop_break_times_shop_day", "shop_id", "day_of_week"),
+    )
+
+    def __repr__(self):
+        return f"<ShopBreakTime(shop_id={self.shop_id}, day={self.day_of_week}, {self.start_time}-{self.end_time})>"
 
 
 class ShopPhotoKind(str, enum.Enum):
