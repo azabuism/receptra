@@ -21,6 +21,7 @@ from app.schemas.staff import (
     StaffCreateRequest, StaffUpdateRequest, StaffResponse, StaffPublicResponse,
     StaffServiceAssignmentResponse
 )
+from app.routers.reservations import _reservation_basis_now
 
 router = APIRouter(prefix="/api/v1/staff", tags=["staff"])
 
@@ -244,11 +245,24 @@ async def delete_staff(
     # 今後の有効な予約がこのスタッフに割り当てられている場合は削除をブロック
     # （Staff.reservations は cascade="all, delete-orphan" のため、無条件削除だと
     #   予約履歴ごと消えてしまう）
+    #
+    # Staff Reservation Time Basis Consistencyフェーズで修正: 以前は「現在時刻」に
+    # datetime.utcnow()（真のUTC時刻）を使っていたが、reservation_date自体は
+    # JST-naiveな値として保存されている（app/routers/reservations.pyの
+    # _reservation_basis_now()のdocstring参照）。そのため日本時間の日付境界付近で
+    # 最大9時間のズレが生じ、既にJST基準では過去になった予約を「まだ未来」と
+    # 誤判定し、delete_staff()を誤ってブロックする可能性があった（shop_tables.pyの
+    # _find_future_active_table_reservations()で発見・修正した同型バグ）。
+    #
+    # 修正は、reservations.py側の既存single source of truthである
+    # _reservation_basis_now()をそのまま再利用するだけ。datetime.utcnow()をこの
+    # 関数に置き換えたこと以外、クエリの構造・status条件・staff_idでの絞り込み・
+    # 比較演算子(>=)は一切変更していない。
     upcoming = await db.execute(
         select(Reservation).filter(
             Reservation.staff_id == staff_id,
             Reservation.status.in_(["pending", "confirmed"]),
-            Reservation.reservation_date >= datetime.utcnow(),
+            Reservation.reservation_date >= _reservation_basis_now(),
         )
     )
     if upcoming.scalars().first():
