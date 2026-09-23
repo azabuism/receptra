@@ -241,6 +241,11 @@
                  だけで確認できる（次回の実機確認時、パネル自体が写っていない
                  という問題の再発防止）。 -->
             <div id="debugModeIndicator" style="background:#333; color:#ffd54f; font-size:11px; font-weight:700; padding:4px 8px; border-radius:6px; display:inline-block; margin-bottom:8px;">🐛 DEBUG MODE（?debug=1で表示中）</div>
+            <!-- NAME Forced Commit Observation PoC（今回追加）: debug=1のときのみ
+                 表示する、このPoCが今回の通話で有効かどうかのインジケーター。
+                 PoC専用のテスト店舗（RECEPTRA Realtime PoC Test）+debug=1が
+                 揃った場合のみENABLEDになる。通常店舗では常にDISABLED。 -->
+            <div id="nameCommitPocIndicator" style="background:#333; color:#7fd8ff; font-size:11px; font-weight:700; padding:4px 8px; border-radius:6px; display:inline-block; margin-bottom:8px; margin-left:6px;">NAME Commit PoC: DISABLED</div>
             <!-- Mobile Audio Reliability Phase（PHASE24）: スマホの小さい画面で
                  通話UIを覆ってしまわないよう、既定で折りたたんでおく。<details>は
                  iOS Safari含め広くサポートされており、追加JSなしで1タップ展開できる。 -->
@@ -371,6 +376,25 @@
             logEvent('[debug] ?noagc=1: autoGainControl=falseで比較計測します（Production defaultはtrueのまま変更なし）');
         }
 
+        // ===== NAME Forced Commit Observation PoC（今回追加・観測専用） =====
+        // 目的: NAME Answer Window（~5秒）到達時、正常なsemantic_vadのターン
+        // 終了（speech_stopped/committed/item_created）が間に合わなかった
+        // 場合に、input_audio_buffer.commitを最大1回だけ手動送信し、OpenAI
+        // Realtime側がその後どう振る舞うか（committed/item.created/
+        // response.created/AI音声まで自動的に進むのか、empty buffer等の
+        // errorになるのか）を実際のサーバー挙動として観測する。
+        // response.createは絶対に追加送信しない（詳細はmaybeSendNameCommitPoc
+        // 定義部のコメント参照）。
+        //
+        // 安全条件（最重要・必ず両方満たすこと）: このPoCは、今回の検証のために
+        // 新規作成した、BARIYON自身のtenant配下のテスト専用店舗
+        // 「RECEPTRA Realtime PoC Test」のshop_idと、debug=1の両方が揃った
+        // 場合にのみ有効化する。どちらか一方だけでは絶対に有効化しない。
+        // 既存の本番利用店舗・他テナントの店舗（デモクリニック・ダニエル等）には
+        // 一切影響しない。
+        const NAME_COMMIT_POC_SHOP_ID = '65932cb5-97db-460e-b9d6-0471fce23d88'; // 「RECEPTRA Realtime PoC Test」（BARIYON自テナント作成・実店舗ではない）
+        const nameCommitPocEnabled = debugMode && shopId === NAME_COMMIT_POC_SHOP_ID;
+
         document.getElementById('backLink').href = shopId ? ('/shop.html?id=' + encodeURIComponent(shopId)) : '/';
 
         const loadingEl = document.getElementById('loading');
@@ -412,6 +436,18 @@
         }
         loadingEl.style.display = 'none';
         contentEl.style.display = 'flex';
+
+        // NAME Forced Commit Observation PoC: debug=1のときのみ、今回の通話で
+        // このPoCが有効かどうかをインジケーターと簡易ログに反映する
+        // （一般のお客様向け画面には一切表示しない。#debugPanels自体が
+        // debug=1のときのみdisplay:blockになるため、このインジケーターも
+        // それに連動する）。
+        if (debugMode) {
+            const pocIndicatorEl = document.getElementById('nameCommitPocIndicator');
+            if (pocIndicatorEl) {
+                pocIndicatorEl.textContent = 'NAME Commit PoC: ' + (nameCommitPocEnabled ? 'ENABLED' : 'DISABLED');
+            }
+        }
 
         // ===== イベントログ =====
         function logEvent(text) {
@@ -573,6 +609,31 @@
         let answerWindowType = null; // 現在アクティブなタイマーが対象とするtype
         const ANSWER_WINDOW_LIMITS_MS = { NAME: 5000, PHONE: 10000, YES_NO: 5000, VISIT_REASON: 30000 };
 
+        // ===== NAME Forced Commit Observation PoC: 追加の最小状態（今回追加） =====
+        // 有効化条件・目的はファイル冒頭のnameCommitPocEnabled定義を参照。
+        // 大きな状態機械は作らず、「NAME質問1回（世代）につき手動commitは
+        // 最大1回まで」を管理する最小限の状態のみを持つ（PHASE6）。
+        //
+        // 「NAME質問1回」を識別する世代カウンタ。classifyExpectedAnswerType()
+        // でAIが新たにNAMEを尋ねたと判定するたびに+1する。
+        let nameAnswerGeneration = 0;
+        // このNAME世代について、既に手動commitを送信済みならその世代番号
+        // （未送信ならnull）。同一世代につき手動commitは最大1回のみ。
+        let pocCommitSentGeneration = null;
+        // このNAME世代について、手動commitより前に正常なターン終了
+        // （speech_stopped/committed/item_created）が先に届いたかどうか。
+        // trueの場合、送信直前の最終確認（PHASE7）で手動commitを見送る。
+        let nameTurnNormalCompletionSeen = false;
+        // 直近の手動commit送信時刻（PHASE9のelapsed_ms計測の起点。performance.now()）。
+        // null＝現在手動commit送信待ち/観測対象ではない。
+        let pocCommitSentAt = null;
+        // その送信がどのcallGeneration（通話）で行われたかを覚えておき、
+        // 通話をまたいだ誤相関を防ぐ。
+        let pocCommitCallGeneration = null;
+        // PHASE9: 手動commit送信後に観測したい4種の反応それぞれについて、
+        // 一度だけelapsed_msを記録済みかどうか（二重ログ防止）。
+        let pocCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+
         // ===== Mobile Real-Call Failure Investigation: 追加の観測状態 =====
         // すべてPIIを含まない（状態文字列・イベント名・カウンタのみ）。対処は
         // 行わず観測のみ（原因が実機ログで確定するまでVAD等は変更しない）。
@@ -691,6 +752,13 @@
             }
             if (type !== expectedAnswerType) {
                 expectedAnswerType = type;
+                if (type === 'NAME') {
+                    // NAME Forced Commit Observation PoC: 新しいNAME質問ごとに
+                    // 新しい世代として扱う（PHASE6）。この世代の「正常完了済み」
+                    // フラグもここでリセットする。
+                    nameAnswerGeneration += 1;
+                    nameTurnNormalCompletionSeen = false;
+                }
                 pushTimelineEvent('EXPECTED_ANSWER_SET (type=' + type + ')');
             }
         }
@@ -715,10 +783,84 @@
                 if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない
                 const elapsedMs = Math.round(performance.now() - startedAt);
                 pushTimelineEvent('ANSWER_WINDOW_EXPIRED (type=' + type + ', elapsed_ms=' + elapsedMs + ')');
-                // 観測のみ: ここでinput_audio_buffer.commitやresponse.createを
-                // 送信することはしない（設計方針コメント参照）。既存の
-                // semantic_vadによる通常のターン終了検知をそのまま待つ。
+                // 観測のみ: 上記の原則（OpenAIへは何も送信せず、既存の
+                // semantic_vadによる通常のターン終了検知をそのまま待つ）は
+                // PHONE/YES_NO/VISIT_REASON、および通常店舗のNAMEについては
+                // 今回も一切変更しない。
+                //
+                // NAME Forced Commit Observation PoC（今回追加）: type==='NAME'
+                // かつ、このPoC専用のテスト店舗+debug=1が揃った場合に限り、
+                // maybeSendNameCommitPoc()が改めて全条件を確認したうえで
+                // input_audio_buffer.commitを最大1回だけ送信する（詳細は
+                // 同関数のコメント参照）。それ以外の場合、この呼び出しは
+                // 内部で何もせずに戻る。
+                maybeSendNameCommitPoc(type, myGeneration);
             }, limitMs);
+        }
+
+        // NAME Forced Commit Observation PoC（今回追加・観測専用。必ず本ファイル
+        // 冒頭のnameCommitPocEnabled定義・設計方針コメントとあわせて読むこと）:
+        //
+        // NAME Answer Window（~5秒）が期限切れになった時点で、まだ正常な
+        // ターン終了（speech_stopped/committed/item_created）が届いていない
+        // 場合に限り、input_audio_buffer.commitを最大1回だけ手動送信する。
+        // response.createは絶対に追加送信しない（サーバー側のsemantic_vadが
+        // 既に内部的にauto-commit＋auto-responseを開始している可能性を排除
+        // できず、手動response.createを重ねると二重応答を招くリスクがある
+        // ため。今回はその実際の挙動を安全に観測することが唯一の目的）。
+        //
+        // 送信後にOpenAIが実際にどう反応するか（input_audio_buffer.committed/
+        // conversation.item.created/response.created/AI音声出力まで自動的に
+        // 進むのか、それとも"buffer is empty"等のerrorになるのか）は、
+        // handleDataChannelEvent側の各イベントハンドラでmaybeLogPocReactionElapsed()
+        // を通じてタイムラインに記録する。
+        function maybeSendNameCommitPoc(answerType, myGeneration) {
+            if (answerType !== 'NAME') return; // PHASE3: NAMEのみが対象
+            if (!nameCommitPocEnabled) return; // PHASE2/4: PoC専用テスト店舗+debug=1のみ
+            if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない（保険）
+            if (!dc || dc.readyState !== 'open') {
+                pushTimelineEvent('POC_COMMIT_SKIPPED (reason=datachannel_not_open)');
+                return;
+            }
+            if (pocCommitSentGeneration === nameAnswerGeneration) {
+                // このNAME世代については既に手動commit送信済み（PHASE6: 最大1回/世代）
+                return;
+            }
+            pushTimelineEvent('POC_NAME_COMMIT_ELIGIBLE (generation=' + nameAnswerGeneration + ')');
+            // PHASE7（最重要）: 送信直前にもう一度だけ、正常完了フラグが
+            // その間に立っていないか最終確認する。
+            if (nameTurnNormalCompletionSeen) {
+                pushTimelineEvent('POC_COMMIT_SKIPPED (reason=normal_completion_won_race)');
+                return;
+            }
+            pushTimelineEvent('POC_NAME_COMMIT_REQUESTED (generation=' + nameAnswerGeneration + ')');
+            try {
+                // 観測のみ: input_audio_buffer.commitのみを送信する。この直後に
+                // response.createを送ることは絶対にしない。
+                dc.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+                pocCommitSentGeneration = nameAnswerGeneration;
+                pocCommitCallGeneration = myGeneration;
+                pocCommitSentAt = performance.now();
+                pocCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+                pushTimelineEvent('POC_NAME_COMMIT_SENT (generation=' + nameAnswerGeneration + ')');
+            } catch (e) {
+                // PHASE10: send自体が例外を投げた場合も非fatal扱い（endCall/
+                // cleanupConnectionは呼ばない）。既存のsemantic_vadに以後を委ねる。
+                pushTimelineEvent('POC_NAME_COMMIT_ERROR (send_exception): ' + (e && e.message));
+            }
+        }
+
+        // NAME Forced Commit Observation PoC: 手動commit送信後に観測したい
+        // 4種の反応（committed/item_created/response.created/AI音声開始）を、
+        // 各イベントにつき一度だけelapsed_msとしてタイムラインに記録する
+        // （PHASE9）。手動commitを送信していない通常の通話・通常のNAME応答
+        // では pocCommitSentAt が null のままのため、何もしない。
+        function maybeLogPocReactionElapsed(key, label) {
+            if (pocCommitSentAt === null) return;
+            if (callGeneration !== pocCommitCallGeneration) return;
+            if (pocCommitPendingEvents[key]) return;
+            pocCommitPendingEvents[key] = true;
+            pushTimelineEvent('POC_NAME_COMMIT_REACTION (' + label + ', elapsed_ms=' + Math.round(performance.now() - pocCommitSentAt) + ')');
         }
 
         // 通常のVADがspeech_stoppedを検知した場合など、正常にターンが終了した
@@ -2621,6 +2763,8 @@
                 aiAudioOutputActive = true;
                 lastAiAudioEventAt = performance.now();
                 pushTimelineEvent('AI_AUDIO_STARTED');
+                // NAME Forced Commit Observation PoC（PHASE9）
+                maybeLogPocReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
             } else if (type === 'output_audio_buffer.stopped') {
                 aiAudioOutputActive = false;
                 lastAiAudioEventAt = performance.now();
@@ -2687,6 +2831,11 @@
                 // いない可能性があるため、両者を区別して記録する（PIIなし・
                 // イベント発生の事実のみ）。
                 pushTimelineEvent('USER_AUDIO_BUFFER_COMMITTED');
+                // NAME Forced Commit Observation PoC（PHASE7/9）: 正常完了扱いに
+                // し、まだ送信していない手動commitがあればここで見送らせる。
+                // 送信済みの手動commitへの反応であればelapsed_msを記録する。
+                nameTurnNormalCompletionSeen = true;
+                maybeLogPocReactionElapsed('committed', 'input_audio_buffer.committed');
             } else if (type === 'conversation.item.created' && msg.item && msg.item.role === 'user') {
                 // PHASE8（会話停止調査・最重要）: ユーザー発話が会話アイテムとして
                 // 確定したことを示すイベント。「名前を答えた後に止まる」等の症状で、
@@ -2695,6 +2844,9 @@
                 // 反映されていない）を切り分けるための最重要ログ。item本体の
                 // content（発話内容・電話番号・氏名等）は一切参照・記録しない。
                 pushTimelineEvent('USER_ITEM_COMMITTED');
+                // NAME Forced Commit Observation PoC（PHASE7/9）
+                nameTurnNormalCompletionSeen = true;
+                maybeLogPocReactionElapsed('item', 'conversation.item.created');
             } else if (type === 'input_audio_buffer.speech_started') {
                 if (!initialGreetingSent) userSpokeBeforeGreeting = true;
                 // ISSUE2調査用（PIIなし）: speech_started発生時点のローカルマイク
@@ -2743,6 +2895,9 @@
                 // 正常にターンが終了した（＝雑音等で長時間化していない）ため、
                 // Answer Windowの観測用タイマーは不要になる。
                 cancelAnswerWindow('speech_stopped_normally');
+                // NAME Forced Commit Observation PoC（PHASE7）: 正常にターンが
+                // 終了したため、この世代についてはもう手動commitを送らない。
+                nameTurnNormalCompletionSeen = true;
                 // PHASE6相関用（PIIなし）: 対応するspeech_startedからの経過時間
                 // （＝サーバーがユーザー発話と判定していた継続時間）を記録する。
                 // 短時間の相槌（「はい」「違います」等）も本物の短い発話として
@@ -2766,6 +2921,10 @@
                 responseState = 'active';
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('RESPONSE_CREATED');
+                // NAME Forced Commit Observation PoC（PHASE9/12）: 手動commit後に
+                // OpenAI側が自発的にresponse.createdを送ってきた場合、観測する
+                // だけで、こちらから追加のresponse.createは絶対に送らない。
+                maybeLogPocReactionElapsed('responseCreated', 'response.created');
                 // Silence Timeout: この回の応答にfunction_callが含まれるかどうかを
                 // 新しい応答サイクルの開始時点でリセットする（response.doneで判定に使う）。
                 responseHasFunctionCall = false;
@@ -2828,6 +2987,21 @@
                 responseState = 'error';
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('サーバーerrorイベント受信 (type=' + ((msg.error && msg.error.type) || '不明') + ')');
+                // NAME Forced Commit Observation PoC（PHASE8/10）: 手動commit
+                // 送信後に発生したerrorは、このPoCが観測したい重要な結果の
+                // 一つ（例: "buffer is empty"等）であるため、専用のタイムライン
+                // イベントとしても記録する。このハンドラ自体は元々fatal処理
+                // （endCall/cleanupConnection）を一切行っていないため、PoCの
+                // ためにここを非fatal化する必要はない（既存の挙動をそのまま
+                // 維持するだけでPHASE10の要件を満たす）。APIキー等の秘密情報は
+                // 一切含めない（code/type/messageのみ）。
+                if (pocCommitSentAt !== null && callGeneration === pocCommitCallGeneration) {
+                    const pocErrCode = (msg.error && msg.error.code) || null;
+                    const pocErrType = (msg.error && msg.error.type) || null;
+                    const pocErrMessage = (msg.error && msg.error.message) || null;
+                    pushTimelineEvent('POC_NAME_COMMIT_ERROR (code=' + pocErrCode + ', type=' + pocErrType
+                        + ', elapsed_ms=' + Math.round(performance.now() - pocCommitSentAt) + ', message=' + pocErrMessage + ')');
+                }
             }
         }
 
@@ -2984,6 +3158,14 @@
             silenceState = 'idle';
             responseHasFunctionCall = false;
             pendingSilenceGoodbyeHangup = false;
+            // NAME Forced Commit Observation PoC: 新しい通話ごとに必ずリセット
+            // する（前回通話のPoC状態を持ち越さない）。
+            nameAnswerGeneration = 0;
+            pocCommitSentGeneration = null;
+            nameTurnNormalCompletionSeen = false;
+            pocCommitSentAt = null;
+            pocCommitCallGeneration = null;
+            pocCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。
