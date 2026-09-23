@@ -5,6 +5,7 @@ ShopTable (テーブル・席) エンドポイント
 
 import uuid
 from datetime import datetime
+from types import SimpleNamespace
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,8 +20,41 @@ from app.models.reservation import Reservation
 from app.schemas.shop_table import (
     ShopTableCreateRequest, ShopTableUpdateRequest, ShopTableResponse
 )
+from app.routers.reservations import _validate_table_capacity
 
 router = APIRouter(prefix="/api/v1/shops", tags=["shop-tables"])
+
+# delete_table()が元々使っていた「今後の有効な予約」の定義（status=pending/confirmed
+# かつ reservation_date >= 現在時刻）。Resource Mutation Safetyでもこの定義を
+# そのまま再利用する（新しい定義を発明しない。Section4/10/11）。
+#
+# 既知の制限（今回新規に持ち込んだものではなく、delete_table()に元々あった
+# ものをそのまま引き継いでいる）: ここでの「現在時刻」はdatetime.utcnow()で
+# あり、reservation_date自体はJST-naiveな値として保存されている
+# （app/routers/reservations.pyの_reservation_basis_now()のdocstring参照）。
+# そのため、日本時間の日付境界付近では最大9時間のズレが生じ得る。
+# reservations.py側はPhase3E-3でこの不具合を_reservation_basis_now()経由で
+# 修正済みだが、shop_tables.py側のdelete_table()は元々その修正の対象外
+# だった。今回のフェーズはdelete_table()の既存定義をそのまま再利用する
+# ことが明示的に指示されているため、この既存の不整合を今回新たに修正・
+# 変更することはしない（完了報告の既知制限として記載する）。
+_ACTIVE_RESERVATION_STATUSES = ("pending", "confirmed")
+
+
+async def _find_future_active_table_reservations(db: AsyncSession, table_id: str) -> List[Reservation]:
+    """
+    指定テーブルに割り当てられた「今後の有効な予約」を返す。
+    delete_table()が元から持っていたクエリ条件をそのまま抽出しただけで、
+    判定条件は一切変更していない。
+    """
+    result = await db.execute(
+        select(Reservation).filter(
+            Reservation.table_id == table_id,
+            Reservation.status.in_(_ACTIVE_RESERVATION_STATUSES),
+            Reservation.reservation_date >= datetime.utcnow()
+        )
+    )
+    return list(result.scalars().all())
 
 
 async def _get_owned_shop(shop_id: str, current_user: CurrentUser, db: AsyncSession) -> Shop:
@@ -95,6 +129,37 @@ async def update_table(
         raise HTTPException(status_code=404, detail="テーブルが見つかりません")
 
     update_data = request.dict(exclude_unset=True)
+
+    # Resource Mutation Safety: capacityがリクエストに含まれ、かつ現在値より
+    # 減少する場合のみ、既存の今後の有効な予約と矛盾しないかを検証する。
+    # 増加・同値の場合は既存予約を壊す可能性がないため検証不要（Section6/7/15）。
+    #
+    # 検証は「どの予約を見るか」（_find_future_active_table_reservations、
+    # delete_table()と同じ定義）と「その予約人数が新capacityに収まるか」
+    # （_validate_table_capacity、Capacity Mutation Safetyフェーズと同じ
+    # source of truth）を分離したまま行う（Section14。1つの巨大なhelperへ
+    # 統合しない）。SimpleNamespaceで新capacityだけを持つ軽量なオブジェクトを
+    # 作り、_validate_table_capacity(table, party_size)の既存シグネチャ
+    # （table.capacityを参照するだけ）をそのまま再利用する。
+    #
+    # 検証はtable.capacityへの代入より前に行うため、失敗時は
+    # capacity・name等いずれのフィールドも一切適用されない（atomicity。
+    # Section17/18）。
+    if "capacity" in update_data and update_data["capacity"] is not None:
+        new_capacity = update_data["capacity"]
+        if new_capacity < table.capacity:
+            future_reservations = await _find_future_active_table_reservations(db, table_id)
+            prospective_table = SimpleNamespace(capacity=new_capacity)
+            conflicting = [
+                r for r in future_reservations
+                if _validate_table_capacity(prospective_table, r.number_of_people) is not None
+            ]
+            if conflicting:
+                raise HTTPException(
+                    status_code=400,
+                    detail="この席には、変更後の定員を超える今後の予約があるため、定員を変更できません"
+                )
+
     for field, value in update_data.items():
         setattr(table, field, value)
     table.updated_at = datetime.utcnow()
@@ -121,14 +186,10 @@ async def delete_table(
         raise HTTPException(status_code=404, detail="テーブルが見つかりません")
 
     # 今後の有効な予約がまだ割り当てられている場合は削除をブロック
-    upcoming = await db.execute(
-        select(Reservation).filter(
-            Reservation.table_id == table_id,
-            Reservation.status.in_(["pending", "confirmed"]),
-            Reservation.reservation_date >= datetime.utcnow()
-        )
-    )
-    if upcoming.scalars().first():
+    # （Resource Mutation Safetyフェーズで_find_future_active_table_reservations()
+    # へ抽出。判定条件・挙動は一切変更していない）
+    upcoming = await _find_future_active_table_reservations(db, table_id)
+    if upcoming:
         raise HTTPException(
             status_code=400,
             detail="このテーブルに割り当てられた今後の予約があるため削除できません。先に予約を確認・キャンセルしてください"
