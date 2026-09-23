@@ -154,14 +154,28 @@
         .lang-checkbox-item input[type="checkbox"] { width: auto; margin: 0; }
         .lang-checkbox-item input[type="checkbox"]:disabled + span { color: #999; }
         .lang-checkbox-item.required { background: #f5f5f5; border-color: #ddd; cursor: default; }
-        .hours-edit-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }
-        .hours-edit-table th { text-align: left; padding: 6px 8px; color: #888; font-weight: 700; border-bottom: 1px solid #eee; }
-        .hours-edit-table td { padding: 6px 8px; border-bottom: 1px solid #f5f5f5; }
-        .hours-edit-table input[type="time"] { padding: 6px; border: var(--border); border-radius: 6px; font-family: inherit; font-size: 13px; width: 110px; }
-        .hours-edit-table input[type="checkbox"] { width: 18px; height: 18px; }
-        @media (max-width: 560px) {
-            .hours-edit-table { display: block; overflow-x: auto; white-space: nowrap; }
-        }
+        /* Owner Business Hours UX Simplification フェーズ: 曜日ごとの営業時間を
+           横長テーブル（モバイルで横スクロールが必要になる）から、1曜日=1カードの
+           縦積みレイアウトへ変更。技術的なflag名（closes_next_day等）は画面に
+           出さず、開店/閉店時刻の入力だけで翌日跨ぎを自動判定する。 */
+        .hours-day-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 6px; }
+        .hours-day-card { border: var(--border); border-radius: 10px; padding: 12px 14px; }
+        .hours-day-card.is-closed { background: #fafafa; }
+        .hours-day-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+        .hours-day-card-head .day-label { font-weight: 700; font-size: 14px; }
+        .hours-day-card-head label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #666; font-weight: 400; }
+        .hours-time-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+        .hours-time-row input[type="time"] { padding: 8px; border: var(--border); border-radius: 8px; font-family: inherit; font-size: 15px; width: 120px; }
+        .hours-time-row input[type="time"]:disabled { background: #f5f5f5; color: #999; }
+        .hours-time-row .arrow { color: #999; font-size: 13px; }
+        .hours-day-card .duration-label { font-size: 12px; color: #888; margin-top: 2px; }
+        .hours-day-card .duration-warning { font-size: 12px; color: #b45309; margin-top: 2px; }
+        .checkbox-line { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #666; margin: 8px 0; }
+        .checkbox-line input[type="checkbox"] { width: 16px; height: 16px; }
+        .hours-lastorder-row { margin-top: 8px; }
+        .hours-lastorder-row label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; }
+        .hours-lastorder-row select { padding: 8px; border: var(--border); border-radius: 8px; font-family: inherit; font-size: 14px; }
+        .hours-lastorder-row input[type="time"] { padding: 8px; border: var(--border); border-radius: 8px; font-family: inherit; font-size: 14px; width: 120px; margin-top: 6px; }
         .table-item, .reservation-item {
             display: flex; justify-content: space-between; align-items: center;
             padding: 12px 14px; border: var(--border); border-radius: 10px; margin-bottom: 8px; gap: 12px; flex-wrap: wrap;
@@ -421,13 +435,8 @@
 
         <div class="card">
             <h2>営業時間・定休日</h2>
-            <p class="hint">曜日ごとに営業時間を設定できます。「定休日」にチェックした曜日はお休みとして表示されます。閉店時刻が開店時刻より前の場合は「翌日に閉店」にチェックを入れてください（例：開店18:00・閉店03:00・翌日に閉店 ＝ 18:00〜翌3:00の営業）。</p>
-            <table class="hours-edit-table">
-                <thead>
-                    <tr><th>曜日</th><th>定休日</th><th>開店</th><th>閉店</th><th>翌日に閉店</th><th>ラストオーダー</th><th>ラストオーダーも翌日</th></tr>
-                </thead>
-                <tbody id="hours-edit-body"></tbody>
-            </table>
+            <p class="hint">曜日ごとに、何時から何時まで営業するかを入力してください。「定休日」にチェックした曜日はお休みとして表示されます。閉店時刻が開店時刻より前や同じ場合は、自動的に「翌日に閉店」の営業時間として扱われます（例：開店18:00・閉店03:00 ＝ 18:00〜翌3:00の営業。入力するのは開店・閉店の時刻だけで大丈夫です）。</p>
+            <div id="hours-edit-body" class="hours-day-list"></div>
             <div class="field" style="margin-top: 14px; max-width: 320px;">
                 <label for="reservation-duration">1組あたりの標準滞在時間（分）</label>
                 <input type="number" id="reservation-duration" min="15" max="600" step="15" value="90">
@@ -459,15 +468,19 @@
                         <input type="time" id="override-close" required>
                     </div>
                 </div>
-                <div class="row-3">
-                    <div class="field"><label><input type="checkbox" id="override-close-nextday"> 翌日に閉店</label></div>
-                    <div class="field">
-                        <label for="override-lastorder">ラストオーダー</label>
-                        <input type="time" id="override-lastorder">
-                    </div>
-                    <div class="field"><label><input type="checkbox" id="override-lastorder-nextday"> ラストオーダーも翌日</label></div>
+                <div class="checkbox-line"><input type="checkbox" id="override-24h"> 24時間営業</div>
+                <div class="hours-lastorder-row">
+                    <label>ラストオーダー</label>
+                    <select id="override-lastorder-preset">
+                        <option value="none">設定しない</option>
+                        <option value="30">閉店30分前</option>
+                        <option value="60">閉店1時間前</option>
+                        <option value="90">閉店1時間30分前</option>
+                        <option value="custom">時刻を指定</option>
+                    </select>
+                    <input type="time" id="override-lastorder-custom" style="display:none;">
                 </div>
-                <button type="submit" class="btn" id="hours-override-add-btn">この日の営業時間を登録</button>
+                <button type="submit" class="btn" id="hours-override-add-btn" style="margin-top: 12px;">この日の営業時間を登録</button>
                 <button type="button" class="btn-outline" id="hours-override-cancel-edit-btn" style="display:none;">編集をキャンセル</button>
                 <div class="msg" id="hours-override-msg"></div>
             </form>
@@ -479,7 +492,7 @@
             <p class="hint">
                 営業時間の一部だけ、予約の受付を一時的に停止したい場合に登録できます（例：12:00〜13:00は休憩のため予約不可）。
                 お店は開いていますが、この時間帯だけ予約が入らないようになります。<br>
-                日をまたぐ営業時間（例：18:00〜翌3:00）の店舗で、休憩の開始・終了が「翌日」側の時刻になる場合は、それぞれ「翌日」にチェックを入れてください。
+                開始・終了の時刻を入力するだけで大丈夫です。日をまたぐ営業時間（例：18:00〜翌3:00）の店舗でも、翌日側の時刻かどうかは曜日ごとの営業時間から自動的に判定されます。
             </p>
             <form id="break-time-form">
                 <div class="row-2">
@@ -491,10 +504,6 @@
                         <label for="break-end">終了時刻 *</label>
                         <input type="time" id="break-end" required>
                     </div>
-                </div>
-                <div class="row-2">
-                    <div class="field"><label><input type="checkbox" id="break-start-nextday"> 開始が翌日</label></div>
-                    <div class="field"><label><input type="checkbox" id="break-end-nextday"> 終了が翌日</label></div>
                 </div>
                 <div class="field">
                     <label>適用する曜日（複数選択可）</label>
@@ -1950,56 +1959,337 @@
             }
         }
 
+        // ---------- 営業時間・休憩時間 共通ヘルパー（Owner Business Hours UX Simplification フェーズ） ----------
+        // オーナーには「開店・閉店は何時から何時まで」だけを入力してもらい、
+        // closes_next_day / start_next_day / end_next_day 等の技術的なflagは
+        // ここで自動計算する。バックエンドのバリデーション仕様
+        // （app/schemas/shop.py の _validate_hours_consistency、
+        // app/routers/shop_break_time.py の _effective_minutes）と
+        // 完全に同じ考え方で計算しており、DB/APIのsemanticsは一切変更していない。
+        // これらは純粋関数（DOM に触れない）にしてあり、tests/test_shop_hours_ux.js
+        // から直接抽出してテストできるようにしている。
+
+        function _timeToMinutes(timeStr) {
+            if (!timeStr || typeof timeStr !== 'string') return null;
+            const parts = timeStr.split(':');
+            if (parts.length < 2) return null;
+            const h = parseInt(parts[0], 10);
+            const m = parseInt(parts[1], 10);
+            if (isNaN(h) || isNaN(m)) return null;
+            return h * 60 + m;
+        }
+
+        function _minutesToTimeStr(mins) {
+            const normalized = ((mins % 1440) + 1440) % 1440;
+            const h = Math.floor(normalized / 60);
+            const m = normalized % 60;
+            return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
+        }
+
+        // Reservation Intelligence Phase D-1と同じ判定式（app/schemas/shop.pyの
+        // _validate_hours_consistencyのsame_day_valid = closing_min > opening_min
+        // をそのまま踏襲）。opening==closingの場合も「翌日扱い（＝24時間営業）」
+        // 側になり、バックエンドのバリデーション（opening==closingはclosesNextDay=true
+        // のときのみ有効）と矛盾しない。
+        function _computeClosesNextDay(openStr, closeStr) {
+            const openMin = _timeToMinutes(openStr);
+            const closeMin = _timeToMinutes(closeStr);
+            if (openMin === null || closeMin === null) return false;
+            return closeMin <= openMin;
+        }
+
+        function _effectiveDurationMinutes(openStr, closeStr, closesNextDay) {
+            const openMin = _timeToMinutes(openStr);
+            const closeMin = _timeToMinutes(closeStr);
+            if (openMin === null || closeMin === null) return 0;
+            const closeEff = closeMin + (closesNextDay ? 1440 : 0);
+            return closeEff - openMin;
+        }
+
+        function _formatDurationLabel(totalMinutes) {
+            if (totalMinutes === 1440) return '営業時間：24時間（24時間営業）';
+            const h = Math.floor(totalMinutes / 60);
+            const m = totalMinutes % 60;
+            if (m === 0) return '営業時間：' + h + '時間';
+            return '営業時間：' + h + '時間' + m + '分';
+        }
+
+        // 24時間営業（ちょうど1440分）は除外し、それ以外で20時間以上を「長すぎる
+        // かもしれない」の軽い確認表示の対象にする（保存を拒否するものではない）。
+        function _isLongDurationWarning(totalMinutes) {
+            return totalMinutes >= 1200 && totalMinutes !== 1440;
+        }
+
+        // 日跨ぎ営業セッション（開店openStr〜closesNextDay時は翌日側の閉店）の中で、
+        // ある時刻timeStrが「開店と同じ日」か「翌日側」かを判定する唯一のロジック。
+        // 休憩時間の開始・終了、およびラストオーダーの「時刻を指定」入力の翌日判定に
+        // 共通で使う。closesNextDay=falseの営業（日跨ぎしない）では常にfalse。
+        // closesNextDay=trueの場合、時刻の生の分数が開店時刻の分数以上なら
+        // 「開店と同じ日（＝日付が変わる前）」、それより小さければ「翌日側
+        // （＝日付が変わった後）」と判定する。これは開店時刻を境に一意に決まり、
+        // 曖昧さは生じない（Phase spec Section 15の全ての例で確認済み）。
+        function _classifyNextDayForSessionTime(timeStr, openStr, closesNextDay) {
+            if (!closesNextDay) return false;
+            const rawMin = _timeToMinutes(timeStr);
+            const openMin = _timeToMinutes(openStr);
+            if (rawMin === null || openMin === null) return false;
+            return rawMin < openMin;
+        }
+
+        // ラストオーダーの「閉店○分前」プリセットから、実際の時刻＋翌日flagを計算する。
+        // 営業時間がminutesBeforeより短い場合はnullを返す（呼び出し側でエラー扱いにする）。
+        function _computeLastOrderCandidate(openStr, closeStr, closesNextDay, minutesBefore) {
+            const openMin = _timeToMinutes(openStr);
+            const closeMin = _timeToMinutes(closeStr);
+            if (openMin === null || closeMin === null) return null;
+            const closeEff = closeMin + (closesNextDay ? 1440 : 0);
+            const candidateEff = closeEff - minutesBefore;
+            if (candidateEff < openMin) return null;
+            if (candidateEff >= 1440) {
+                return { time: _minutesToTimeStr(candidateEff - 1440), nextDay: true };
+            }
+            return { time: _minutesToTimeStr(candidateEff), nextDay: false };
+        }
+
+        // 既存に保存されているlast_order_time/last_order_next_dayが、30/60/90分前の
+        // どのプリセットとも一致しない場合は'custom'（＝「時刻を指定」）として扱う
+        // （Phase spec Section 12: 既存の任意の値を勝手に変更しない）。
+        function _matchLastOrderPreset(openStr, closeStr, closesNextDay, lastOrderStr, lastOrderNextDay) {
+            if (!lastOrderStr) return 'none';
+            const lastOrderEff = _timeToMinutes(lastOrderStr) + (lastOrderNextDay ? 1440 : 0);
+            const presets = [30, 60, 90];
+            for (let i = 0; i < presets.length; i++) {
+                const candidate = _computeLastOrderCandidate(openStr, closeStr, closesNextDay, presets[i]);
+                if (candidate) {
+                    const candidateEff = _timeToMinutes(candidate.time) + (candidate.nextDay ? 1440 : 0);
+                    if (candidateEff === lastOrderEff) return String(presets[i]);
+                }
+            }
+            return 'custom';
+        }
+
+        // app/schemas/shop.pyの_validate_hours_consistencyのlast_order範囲チェック
+        // （opening_min <= lo_effective <= closing_effective）と同じ式。保存前に
+        // フロント側で先に検知し、「ラストオーダーは営業時間内に設定してください」
+        // という分かりやすい日本語で表示するために使う（バックエンドの技術的な
+        // エラー文言をそのまま出さないため）。
+        function _validateLastOrderWithinSession(openStr, closeStr, closesNextDay, lastOrderStr, lastOrderNextDay) {
+            const openMin = _timeToMinutes(openStr);
+            const closeMin = _timeToMinutes(closeStr);
+            const loMin = _timeToMinutes(lastOrderStr);
+            if (openMin === null || closeMin === null || loMin === null) return false;
+            const closeEff = closeMin + (closesNextDay ? 1440 : 0);
+            const loEff = loMin + (lastOrderNextDay ? 1440 : 0);
+            return openMin <= loEff && loEff <= closeEff;
+        }
+
+        // 休憩時間の開始・終了それぞれについて、その曜日の営業時間（openStr起点、
+        // closesNextDay）を基準に翌日側かどうかを個別計算する（Phase spec Section 15:
+        // 単純にend<startだけでは判定しない。Section 16: 曜日ごとに個別計算する）。
+        function _computeBreakNextDayFlags(openStr, closesNextDay, startStr, endStr) {
+            return {
+                startNextDay: _classifyNextDayForSessionTime(startStr, openStr, closesNextDay),
+                endNextDay: _classifyNextDayForSessionTime(endStr, openStr, closesNextDay)
+            };
+        }
+
+        // app/routers/shop_break_time.pyの_effective_minutes + create_break_timeの
+        // 検証ロジック（正の長さ・営業時間内）と同じ式。保存前にフロント側で
+        // 先に検知し、無駄なAPI呼び出しをせずに分かりやすいエラーを出すために使う。
+        function _validateBreakTiming(openStr, closeStr, closesNextDay, startStr, endStr, startNextDay, endNextDay) {
+            const openEff = _timeToMinutes(openStr);
+            const closeEff = _timeToMinutes(closeStr) + (closesNextDay ? 1440 : 0);
+            const startEff = _timeToMinutes(startStr) + (startNextDay ? 1440 : 0);
+            const endEff = _timeToMinutes(endStr) + (endNextDay ? 1440 : 0);
+            if (endEff <= startEff) return { ok: false, reason: 'duration' };
+            if (startEff < openEff || endEff > closeEff) return { ok: false, reason: 'outside_hours' };
+            return { ok: true };
+        }
+
         // ---------- 営業時間・定休日 ----------
+        const HOURS_LASTORDER_PRESET_OPTIONS = [
+            ['none', '設定しない'], ['30', '閉店30分前'], ['60', '閉店1時間前'],
+            ['90', '閉店1時間30分前'], ['custom', '時刻を指定']
+        ];
+
+        function _hoursLastOrderPresetOptionsHtml(selected) {
+            return HOURS_LASTORDER_PRESET_OPTIONS.map(function (opt) {
+                return '<option value="' + opt[0] + '"' + (opt[0] === selected ? ' selected' : '') + '>' + opt[1] + '</option>';
+            }).join('');
+        }
+
         function renderHoursForm(shopHours) {
             const byDay = {};
             (shopHours || []).forEach(function (h) { byDay[h.day_of_week] = h; });
-            const tbody = document.getElementById('hours-edit-body');
-            tbody.innerHTML = DAY_NAMES.map(function (label, day) {
+            const body = document.getElementById('hours-edit-body');
+            body.innerHTML = DAY_NAMES.map(function (label, day) {
                 const h = byDay[day];
                 const open = h ? h.opening_time.slice(0, 5) : '11:00';
-                const close = h ? h.closing_time.slice(0, 5) : '22:00';
-                const lastOrder = (h && h.last_order_time) ? h.last_order_time.slice(0, 5) : '';
+                const closeRaw = h ? h.closing_time.slice(0, 5) : '22:00';
                 const closed = h ? h.is_closed : false;
-                // Reservation Intelligence Phase D-1: 日跨ぎ営業の明示フラグ。
-                // 「closing<openingなら自動的に翌日」という暗黙推論はしない
-                // （オーナーが必ずこのチェックボックスで明示する）。
+                // Owner Business Hours UX Simplification フェーズ: closes_next_dayは
+                // 画面上のチェックボックスとしては見せず、開店・閉店時刻から自動計算する
+                // （既存データはそのままclosesNextDayを逆変換して24時間営業判定・
+                // ラストオーダーpreset判定に使う。値そのものは書き換えない）。
                 const closesNextDay = h ? !!h.closes_next_day : false;
+                const is24h = !closed && open === closeRaw && closesNextDay;
+                const lastOrderRaw = (h && h.last_order_time) ? h.last_order_time.slice(0, 5) : '';
                 const lastOrderNextDay = h ? !!h.last_order_next_day : false;
-                return '<tr data-day="' + day + '">' +
-                    '<td>' + label + '曜</td>' +
-                    '<td><input type="checkbox" class="hours-closed" data-day="' + day + '"' + (closed ? ' checked' : '') + '></td>' +
-                    '<td><input type="time" class="hours-open" data-day="' + day + '" value="' + open + '"></td>' +
-                    '<td><input type="time" class="hours-close" data-day="' + day + '" value="' + close + '"></td>' +
-                    '<td><input type="checkbox" class="hours-close-nextday" data-day="' + day + '"' + (closesNextDay ? ' checked' : '') + '></td>' +
-                    '<td><input type="time" class="hours-lastorder" data-day="' + day + '" value="' + lastOrder + '"></td>' +
-                    '<td><input type="checkbox" class="hours-lastorder-nextday" data-day="' + day + '"' + (lastOrderNextDay ? ' checked' : '') + '></td>' +
-                    '</tr>';
+                const preset = closed ? 'none' : _matchLastOrderPreset(open, closeRaw, closesNextDay, lastOrderRaw, lastOrderNextDay);
+                return '' +
+                    '<div class="hours-day-card" data-day="' + day + '">' +
+                    '<div class="hours-day-card-head">' +
+                    '<span class="day-label">' + label + '曜日</span>' +
+                    '<label><input type="checkbox" class="hours-closed" data-day="' + day + '"' + (closed ? ' checked' : '') + '> 定休日</label>' +
+                    '</div>' +
+                    '<div class="hours-time-row hours-time-inputs">' +
+                    '<input type="time" class="hours-open" data-day="' + day + '" value="' + open + '">' +
+                    '<span class="arrow">〜</span>' +
+                    '<input type="time" class="hours-close" data-day="' + day + '" value="' + closeRaw + '"' + (is24h ? ' disabled' : '') + '>' +
+                    '</div>' +
+                    '<div class="checkbox-line"><input type="checkbox" class="hours-24h" data-day="' + day + '"' + (is24h ? ' checked' : '') + '> 24時間営業</div>' +
+                    '<div class="duration-label" data-role="duration"></div>' +
+                    '<div class="duration-warning" data-role="duration-warning" style="display:none;"></div>' +
+                    '<div class="hours-lastorder-row">' +
+                    '<label>ラストオーダー</label>' +
+                    '<select class="hours-lastorder-preset" data-day="' + day + '">' + _hoursLastOrderPresetOptionsHtml(preset) + '</select>' +
+                    '<input type="time" class="hours-lastorder-custom" data-day="' + day + '" value="' + lastOrderRaw + '"' + (preset === 'custom' ? '' : ' style="display:none;"') + '>' +
+                    '</div>' +
+                    '</div>';
             }).join('');
+
+            body.querySelectorAll('.hours-day-card').forEach(function (card) {
+                _updateHoursDayCardDisplay(card);
+            });
+        }
+
+        // 曜日カード内の「営業時間の長さ表示」「24時間営業チェック時の閉店入力の
+        // 無効化」「定休日チェック時のラストオーダー欄の非表示」をまとめて更新する。
+        // open/close/24時間/定休日のいずれかが変わるたびに呼ばれる（イベント委譲）。
+        function _updateHoursDayCardDisplay(card) {
+            const closed = card.querySelector('.hours-closed').checked;
+            const is24h = card.querySelector('.hours-24h').checked;
+            const openInput = card.querySelector('.hours-open');
+            const closeInput = card.querySelector('.hours-close');
+            const durationEl = card.querySelector('[data-role="duration"]');
+            const warningEl = card.querySelector('[data-role="duration-warning"]');
+            const lastOrderRow = card.querySelector('.hours-lastorder-row');
+
+            closeInput.disabled = is24h;
+            if (is24h) closeInput.value = openInput.value;
+
+            if (closed) {
+                card.classList.add('is-closed');
+                durationEl.textContent = '';
+                warningEl.style.display = 'none';
+                if (lastOrderRow) lastOrderRow.style.display = 'none';
+                return;
+            }
+            card.classList.remove('is-closed');
+            if (lastOrderRow) lastOrderRow.style.display = '';
+
+            const openStr = openInput.value || '11:00';
+            const closeStr = is24h ? openStr : (closeInput.value || '22:00');
+            const closesNextDay = _computeClosesNextDay(openStr, closeStr);
+            const duration = _effectiveDurationMinutes(openStr, closeStr, closesNextDay);
+            durationEl.textContent = _formatDurationLabel(duration);
+            if (_isLongDurationWarning(duration)) {
+                warningEl.textContent = '営業時間が' + Math.floor(duration / 60) + '時間になっています。入力ミスでないかご確認ください。';
+                warningEl.style.display = '';
+            } else {
+                warningEl.style.display = 'none';
+            }
+        }
+
+        function _updateHoursLastOrderCustomVisibility(card) {
+            const select = card.querySelector('.hours-lastorder-preset');
+            const customInput = card.querySelector('.hours-lastorder-custom');
+            if (!select || !customInput) return;
+            customInput.style.display = select.value === 'custom' ? '' : 'none';
+        }
+
+        document.getElementById('hours-edit-body').addEventListener('input', function (event) {
+            const card = event.target.closest('.hours-day-card');
+            if (!card) return;
+            _updateHoursDayCardDisplay(card);
+        });
+        document.getElementById('hours-edit-body').addEventListener('change', function (event) {
+            const card = event.target.closest('.hours-day-card');
+            if (!card) return;
+            if (event.target.classList.contains('hours-lastorder-preset')) {
+                _updateHoursLastOrderCustomVisibility(card);
+            }
+            _updateHoursDayCardDisplay(card);
+        });
+
+        // その曜日の営業時間（開店/閉店/closesNextDay）を、現在フォームに表示
+        // されている値から読み取る。休憩時間の一括登録で、曜日ごとに個別の
+        // 営業時間を基準に翌日flagを計算するために使う（Phase spec Section 16）。
+        function _getRowHoursByDay(day) {
+            const card = document.querySelector('#hours-edit-body .hours-day-card[data-day="' + day + '"]');
+            if (!card) return null;
+            const isClosed = card.querySelector('.hours-closed').checked;
+            const is24h = card.querySelector('.hours-24h').checked;
+            const openStr = card.querySelector('.hours-open').value || '11:00';
+            const closeStr = is24h ? openStr : (card.querySelector('.hours-close').value || '22:00');
+            const closesNextDay = _computeClosesNextDay(openStr, closeStr);
+            return { isClosed: isClosed, openStr: openStr, closeStr: closeStr, closesNextDay: closesNextDay };
         }
 
         document.getElementById('hours-save-btn').addEventListener('click', async function () {
             const msg = document.getElementById('hours-msg');
             const btn = document.getElementById('hours-save-btn');
             const hours = [];
-            document.querySelectorAll('#hours-edit-body tr').forEach(function (row) {
-                const day = parseInt(row.dataset.day, 10);
-                const closed = row.querySelector('.hours-closed').checked;
-                const open = row.querySelector('.hours-open').value || '11:00';
-                const close = row.querySelector('.hours-close').value || '22:00';
-                const closesNextDay = row.querySelector('.hours-close-nextday').checked;
-                const lastOrder = row.querySelector('.hours-lastorder').value;
-                const lastOrderNextDay = row.querySelector('.hours-lastorder-nextday').checked;
+            const validationErrors = [];
+            document.querySelectorAll('#hours-edit-body .hours-day-card').forEach(function (card) {
+                const day = parseInt(card.dataset.day, 10);
+                const closed = card.querySelector('.hours-closed').checked;
+                const is24h = card.querySelector('.hours-24h').checked;
+                const open = card.querySelector('.hours-open').value || '11:00';
+                const close = is24h ? open : (card.querySelector('.hours-close').value || '22:00');
+                const closesNextDay = _computeClosesNextDay(open, close);
+                const presetSelect = card.querySelector('.hours-lastorder-preset').value;
+                const customTime = card.querySelector('.hours-lastorder-custom').value;
+
+                let lastOrderTime = null;
+                let lastOrderNextDay = false;
+                if (!closed && presetSelect !== 'none') {
+                    if (presetSelect === 'custom') {
+                        if (customTime) {
+                            lastOrderTime = customTime;
+                            lastOrderNextDay = _classifyNextDayForSessionTime(customTime, open, closesNextDay);
+                        }
+                    } else {
+                        const candidate = _computeLastOrderCandidate(open, close, closesNextDay, parseInt(presetSelect, 10));
+                        if (candidate) {
+                            lastOrderTime = candidate.time;
+                            lastOrderNextDay = candidate.nextDay;
+                        } else {
+                            validationErrors.push(DAY_NAMES[day] + '曜日: 営業時間が短いため、選択したラストオーダーの設定が使用できません。時刻を直接指定するか、営業時間をご確認ください。');
+                        }
+                    }
+                }
+
+                if (!closed && lastOrderTime && !_validateLastOrderWithinSession(open, close, closesNextDay, lastOrderTime, lastOrderNextDay)) {
+                    validationErrors.push(DAY_NAMES[day] + '曜日: ラストオーダーは営業時間内に設定してください。');
+                }
+
                 hours.push({
                     day_of_week: day,
                     opening_time: open,
                     closing_time: close,
                     is_closed: closed,
-                    last_order_time: lastOrder || null,
+                    last_order_time: lastOrderTime,
                     closes_next_day: closesNextDay,
-                    last_order_next_day: lastOrder ? lastOrderNextDay : false
+                    last_order_next_day: lastOrderTime ? lastOrderNextDay : false
                 });
             });
+
+            if (validationErrors.length > 0) {
+                showMsg(msg, validationErrors.join(' / '), 'error');
+                return;
+            }
+
             const duration = parseInt(document.getElementById('reservation-duration').value, 10) || 90;
 
             btn.disabled = true;
@@ -2022,7 +2312,7 @@
                     const errData = await durationRes.json().catch(function () { return {}; });
                     throw new Error(_extractErrorMessage(errData, '保存に失敗しました'));
                 }
-                showMsg(msg, '保存しました', 'success');
+                showMsg(msg, '営業時間を保存しました', 'success');
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '保存に失敗しました', 'error');
             } finally {
@@ -2083,12 +2373,20 @@
             const o = list.find(function (x) { return x.target_date === dateStr; });
             if (!o) return;
             hoursOverrideEditingDate = dateStr;
+            const open = o.opening_time.slice(0, 5);
+            const closeRaw = o.closing_time.slice(0, 5);
+            const closesNextDay = !!o.closes_next_day;
+            const is24h = open === closeRaw && closesNextDay;
             document.getElementById('override-date').value = o.target_date;
-            document.getElementById('override-open').value = o.opening_time.slice(0, 5);
-            document.getElementById('override-close').value = o.closing_time.slice(0, 5);
-            document.getElementById('override-close-nextday').checked = !!o.closes_next_day;
-            document.getElementById('override-lastorder').value = o.last_order_time ? o.last_order_time.slice(0, 5) : '';
-            document.getElementById('override-lastorder-nextday').checked = !!o.last_order_next_day;
+            document.getElementById('override-open').value = open;
+            document.getElementById('override-close').value = closeRaw;
+            document.getElementById('override-close').disabled = is24h;
+            document.getElementById('override-24h').checked = is24h;
+            const lastOrderRaw = o.last_order_time ? o.last_order_time.slice(0, 5) : '';
+            const preset = _matchLastOrderPreset(open, closeRaw, closesNextDay, lastOrderRaw, !!o.last_order_next_day);
+            document.getElementById('override-lastorder-preset').value = preset;
+            document.getElementById('override-lastorder-custom').value = lastOrderRaw;
+            document.getElementById('override-lastorder-custom').style.display = preset === 'custom' ? '' : 'none';
             document.getElementById('hours-override-add-btn').textContent = 'この日の営業時間を更新';
             document.getElementById('hours-override-cancel-edit-btn').style.display = '';
             document.getElementById('override-date').scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -2097,23 +2395,61 @@
         function cancelEditHoursOverride() {
             hoursOverrideEditingDate = null;
             document.getElementById('hours-override-form').reset();
+            document.getElementById('override-close').disabled = false;
+            document.getElementById('override-lastorder-custom').style.display = 'none';
             document.getElementById('hours-override-add-btn').textContent = 'この日の営業時間を登録';
             document.getElementById('hours-override-cancel-edit-btn').style.display = 'none';
         }
 
         document.getElementById('hours-override-cancel-edit-btn').addEventListener('click', cancelEditHoursOverride);
 
+        document.getElementById('override-24h').addEventListener('change', function () {
+            const closeInput = document.getElementById('override-close');
+            closeInput.disabled = this.checked;
+            if (this.checked) closeInput.value = document.getElementById('override-open').value;
+        });
+
+        document.getElementById('override-lastorder-preset').addEventListener('change', function () {
+            document.getElementById('override-lastorder-custom').style.display = this.value === 'custom' ? '' : 'none';
+        });
+
         document.getElementById('hours-override-form').addEventListener('submit', async function (event) {
             event.preventDefault();
             const msg = document.getElementById('hours-override-msg');
             const btn = document.getElementById('hours-override-add-btn');
             const targetDate = document.getElementById('override-date').value;
+            const is24h = document.getElementById('override-24h').checked;
             const openingTime = document.getElementById('override-open').value;
-            const closingTime = document.getElementById('override-close').value;
-            const closesNextDay = document.getElementById('override-close-nextday').checked;
-            const lastOrderTime = document.getElementById('override-lastorder').value;
-            const lastOrderNextDay = document.getElementById('override-lastorder-nextday').checked;
+            const closingTime = is24h ? openingTime : document.getElementById('override-close').value;
             if (!targetDate || !openingTime || !closingTime) return;
+            const closesNextDay = _computeClosesNextDay(openingTime, closingTime);
+
+            const presetSelect = document.getElementById('override-lastorder-preset').value;
+            const customTime = document.getElementById('override-lastorder-custom').value;
+            let lastOrderTime = null;
+            let lastOrderNextDay = false;
+            if (presetSelect !== 'none') {
+                if (presetSelect === 'custom') {
+                    if (customTime) {
+                        lastOrderTime = customTime;
+                        lastOrderNextDay = _classifyNextDayForSessionTime(customTime, openingTime, closesNextDay);
+                    }
+                } else {
+                    const candidate = _computeLastOrderCandidate(openingTime, closingTime, closesNextDay, parseInt(presetSelect, 10));
+                    if (candidate) {
+                        lastOrderTime = candidate.time;
+                        lastOrderNextDay = candidate.nextDay;
+                    } else {
+                        showMsg(msg, '営業時間が短いため、選択したラストオーダーの設定が使用できません。時刻を直接指定するか、営業時間をご確認ください。', 'error');
+                        return;
+                    }
+                }
+            }
+            if (lastOrderTime && !_validateLastOrderWithinSession(openingTime, closingTime, closesNextDay, lastOrderTime, lastOrderNextDay)) {
+                showMsg(msg, 'ラストオーダーは営業時間内に設定してください。', 'error');
+                return;
+            }
+
             // 既に別の日付を編集モードにしていた状態から、日付を変えて新規登録する
             // ような操作でも混乱しないよう、送信先は常にフォーム上のtargetDateを使う
             // （upsert先はURLパスのtarget_dateで一意に決まるため、常に整合する）。
@@ -2128,8 +2464,8 @@
                             opening_time: openingTime,
                             closing_time: closingTime,
                             closes_next_day: closesNextDay,
-                            last_order_time: lastOrderTime || null,
-                            last_order_next_day: lastOrderNextDay
+                            last_order_time: lastOrderTime,
+                            last_order_next_day: lastOrderTime ? lastOrderNextDay : false
                         })
                     }
                 );
@@ -2212,14 +2548,21 @@
         // 「全体を保存」(handleSaveAll)と同じ、成功/失敗を曜日単位で分けて
         // 表示する方式を踏襲し、一部の曜日だけ失敗した場合に「登録しました」と
         // 誤表示しないようにする。
+        //
+        // Owner Business Hours UX Simplification フェーズ: 「開始が翌日」「終了が
+        // 翌日」の手動チェックボックスは廃止し、start_next_day/end_next_dayは
+        // 曜日ごとの営業時間（上の「営業時間・定休日」カードの現在の表示値）から
+        // 個別に自動計算する（Phase spec Section 15/16。1つのflagを全曜日へ
+        // コピーしない）。営業時間が未設定・定休日の曜日、営業時間外の休憩は、
+        // 無駄なAPI呼び出しをせずクライアント側で先に検知して分かりやすく
+        // エラー表示する（バックエンドの検証ロジックと同じ式を使っているため、
+        // 実際にAPIへ送っても同じ理由で拒否される）。
         document.getElementById('break-time-form').addEventListener('submit', async function (event) {
             event.preventDefault();
             const msg = document.getElementById('break-time-msg');
             const btn = document.getElementById('break-time-add-btn');
             const startTime = document.getElementById('break-start').value;
             const endTime = document.getElementById('break-end').value;
-            const startNextDay = document.getElementById('break-start-nextday').checked;
-            const endNextDay = document.getElementById('break-end-nextday').checked;
             const dayCheckboxes = Array.from(document.querySelectorAll('.break-day-checkbox'));
             const selectedDays = dayCheckboxes
                 .filter(function (cb) { return cb.checked; })
@@ -2236,6 +2579,20 @@
             const succeededDays = [];
             const failedDays = [];
             for (const dayOfWeek of selectedDays) {
+                const dayHours = _getRowHoursByDay(dayOfWeek);
+                if (!dayHours || dayHours.isClosed) {
+                    failedDays.push({ day: dayOfWeek, error: 'この曜日の営業時間が設定されていないため、休憩時間を登録できません。先に営業時間を設定してください' });
+                    continue;
+                }
+                const flags = _computeBreakNextDayFlags(dayHours.openStr, dayHours.closesNextDay, startTime, endTime);
+                const check = _validateBreakTiming(dayHours.openStr, dayHours.closeStr, dayHours.closesNextDay, startTime, endTime, flags.startNextDay, flags.endNextDay);
+                if (!check.ok) {
+                    failedDays.push({
+                        day: dayOfWeek,
+                        error: check.reason === 'duration' ? '終了時刻は開始時刻より後にしてください' : '休憩時間は営業時間の範囲内で指定してください'
+                    });
+                    continue;
+                }
                 try {
                     const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/break-times', {
                         method: 'POST',
@@ -2244,8 +2601,8 @@
                             day_of_week: dayOfWeek,
                             start_time: startTime,
                             end_time: endTime,
-                            start_next_day: startNextDay,
-                            end_next_day: endNextDay
+                            start_next_day: flags.startNextDay,
+                            end_next_day: flags.endNextDay
                         })
                     });
                     if (!res.ok) {
@@ -2269,8 +2626,6 @@
                 showMsg(msg, succeededDays.map(function (d) { return DAY_NAMES[d] + '曜'; }).join('・') + 'に休憩時間を登録しました', 'success');
                 document.getElementById('break-start').value = '';
                 document.getElementById('break-end').value = '';
-                document.getElementById('break-start-nextday').checked = false;
-                document.getElementById('break-end-nextday').checked = false;
             } else if (succeededDays.length === 0) {
                 showMsg(
                     msg,
