@@ -638,10 +638,16 @@
         // 30秒到達だけを理由に発話を打ち切ることは一切しない（このAnswer
         // Windowの仕組み自体が最初からOpenAIへ何も送信しない設計のため、
         // 自動的に「話している最中は切らない」という要件を満たす）。
-        let expectedAnswerType = 'NONE'; // 'NONE' | 'NAME' | 'PHONE' | 'YES_NO' | 'VISIT_REASON'
+        let expectedAnswerType = 'NONE'; // 'NONE' | 'NAME' | 'PHONE' | 'YES_NO' | 'SHORT_CHOICE' | 'VISIT_REASON'
         let answerWindowTimerId = null;
         let answerWindowType = null; // 現在アクティブなタイマーが対象とするtype
-        const ANSWER_WINDOW_LIMITS_MS = { NAME: 5000, PHONE: 10000, YES_NO: 5000, VISIT_REASON: 30000 };
+        // Short Choice 3-Second Turn（今回追加）: 「2択質問」（YES_NO・SHORT_CHOICE）は、
+        // NAME Forced Commit Observation PoC・Conversation Takeover Observation PoCの
+        // 実機検証で安全性を確認できたmanual input_audio_buffer.commitパターンを、
+        // 初めて全店舗（本番）へ適用する機能。約3秒はあくまで上限目安であり、
+        // 通常のsemantic_vadがそれより早くspeech_stopped→committedまで進んだ場合は
+        // 何もせずそのまま任せる（下のmaybeSendShortAnswerCommit()のコメント参照）。
+        const ANSWER_WINDOW_LIMITS_MS = { NAME: 5000, PHONE: 10000, YES_NO: 3000, SHORT_CHOICE: 3000, VISIT_REASON: 30000 };
 
         // ===== NAME Forced Commit Observation PoC: 追加の最小状態（今回追加） =====
         // 有効化条件・目的はファイル冒頭のnameCommitPocEnabled定義を参照。
@@ -667,6 +673,38 @@
         // PHASE9: 手動commit送信後に観測したい4種の反応それぞれについて、
         // 一度だけelapsed_msを記録済みかどうか（二重ログ防止）。
         let pocCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+
+        // ===== Short Choice 3-Second Turn: 追加の最小状態（今回追加。全店舗適用） =====
+        // NAME Forced Commit Observation PoC（PoC店舗+debug=1限定）・Conversation
+        // Takeover Observation PoC（同）とは異なり、これは全店舗（本番）に適用する
+        // 機能である。ただし安全パターン自体（世代管理・正常完了レースガード・
+        // commitは1世代につき最大1回・response.createは絶対に追加送信しない）は
+        // それらのPoCで実機検証済みのものをそのまま踏襲する。既存NAME/Takeover PoCの
+        // 状態・関数とは完全に独立させる（引き続き1つの汎用機構にまとめない）。
+        //
+        // 対象はexpectedAnswerType==='YES_NO'（既存の確認質問）または
+        // 'SHORT_CHOICE'（今回追加。AM/PM等、明確な2択質問）の場合のみ。
+        //
+        // 「2択質問1回」を識別する世代カウンタ。classifyExpectedAnswerType()で
+        // AIが新たにYES_NO/SHORT_CHOICEを尋ねたと判定するたびに+1する。
+        let shortChoiceAnswerGeneration = 0;
+        // この世代について、既に手動commitを送信済みならその世代番号
+        // （未送信ならnull）。同一世代につき手動commitは最大1回のみ。
+        let shortChoiceCommitSentGeneration = null;
+        // この世代について、手動commitより前に正常なターン終了
+        // （speech_stopped/committed/item_created）が先に届いたかどうか。
+        // trueの場合、送信直前の最終確認で手動commitを見送る
+        // （NAME PoCと同じレース対策）。
+        let shortChoiceTurnNormalCompletionSeen = false;
+        // 直近の手動commit送信時刻（elapsed_ms計測の起点。performance.now()）。
+        // null＝現在手動commit送信待ち/観測対象ではない。
+        let shortAnswerCommitSentAt = null;
+        // その送信がどのcallGeneration（通話）で行われたかを覚えておき、
+        // 通話をまたいだ誤相関を防ぐ。
+        let shortAnswerCommitCallGeneration = null;
+        // 手動commit送信後に観測したい4種の反応それぞれについて、一度だけ
+        // elapsed_msを記録済みかどうか（二重ログ防止。NAME PoCと同じ構造）。
+        let shortAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
 
         // ===== Conversation Takeover Observation PoC: 追加の最小状態（今回追加） =====
         // 目的・設計方針の詳細はファイル冒頭のtakeoverPocEnabled定義の
@@ -808,9 +846,10 @@
 
         // Expected Answer Window: AI自身の発話内容から、直後にお客様へ求めている
         // 回答の種類を軽量に推定する（PIIなし。判定結果のtype文字列のみ保持）。
-        // NAME/PHONE/YES_NO以外（日時・来店理由・自由回答等）は今回タイムボックス
-        // 対象としないため、キーワードが一致しない場合はNONEのままにする
-        // （大きな状態機械にしない・誤判定時は従来通りの通常VADのみで進む）。
+        // NAME/PHONE/YES_NO/SHORT_CHOICE以外（日時・来店理由・自由回答等）は
+        // 今回タイムボックス対象としないため、キーワードが一致しない場合は
+        // NONEのままにする（大きな状態機械にしない・誤判定時は従来通りの
+        // 通常VADのみで進む）。
         function classifyExpectedAnswerType(aiTranscript) {
             const t = aiTranscript || '';
             let type = 'NONE';
@@ -820,12 +859,26 @@
                 type = 'NAME';
             } else if (/よろしいですか|でよろしい|間違いない|お間違い|合っています/.test(t)) {
                 type = 'YES_NO';
+            } else if ((t.match(/ですか/g) || []).length >= 2 || /どちらですか|どちらでしょうか/.test(t)) {
+                // Short Choice 3-Second Turn（今回追加）: 「Xですか、Yですか」
+                // 「AとB、どちらですか」のような明確な2択質問を検出する。
+                // 内容（X/Yが何か）は一切見ない・保持しない、あくまで発話の
+                // "形"（ですか が同一発話内に2回、または「どちら」を伴う）だけの
+                // 軽量な判定。既存_CORE_RULES_TEMPLATEの「一度に複数のことを
+                // 質問しない」という絶対ルールにより、AIの1発話に「ですか」が
+                // 2回出てくるのは基本的に単一の2択質問（例:「午前ですか、
+                // 午後ですか？」）の場合のみであるため、この単純な形状判定でも
+                // 誤検知は少ないと判断した（PHASE1監査で確認。断定はできない
+                // ため完了報告のopen itemとして明記する）。
+                // 既存YES_NO（よろしいですか等の確認質問）の判定を優先させる
+                // ため、このelse ifはYES_NO判定より後に置いている。
+                type = 'SHORT_CHOICE';
             } else if (/ご来店の目的|ご来店について|ご希望やお悩み|ご相談内容|どのようなことでのご予約|来店理由/.test(t)) {
                 // 追加要件（Conversation Time Control）: 来店理由確認の問いかけを
-                // 検出する。NAME/PHONE/YES_NOより優先度を下げている
+                // 検出する。NAME/PHONE/YES_NO/SHORT_CHOICEより優先度を下げている
                 // （自由回答の来店理由の中に偶然「よろしいですか」等の語が
                 // 含まれていても誤ってYES_NO等に上書きされないよう、
-                // 既存3種のいずれにも一致しなかった場合にのみ判定する）。
+                // 既存のいずれにも一致しなかった場合にのみ判定する）。
                 type = 'VISIT_REASON';
             }
             if (type !== expectedAnswerType) {
@@ -838,6 +891,20 @@
                     nameTurnNormalCompletionSeen = false;
                 }
                 pushTimelineEvent('EXPECTED_ANSWER_SET (type=' + type + ')');
+            }
+            // Short Choice 3-Second Turn（今回追加）: 上のNAMEと異なり、
+            // 「type文字列が変化したときだけ」ではなく、classifyExpectedAnswerType
+            // が呼ばれてSHORT_CHOICE/YES_NOと判定されるたびに新しい世代として
+            // 扱う。これは、この関数がAIの発話完了(response.output_audio_transcript.
+            // done)ごとに1回だけ呼ばれるため（1通話中にAIが複数回、種類の異なる
+            // 2択質問を尋ねる可能性がある。例:「午前/午後」の確認の後、別の
+            // タイミングで「予約/折り返し」を尋ねる場合、どちらもtype文字列は
+            // 同じ'SHORT_CHOICE'になるため、type!==expectedAnswerTypeの比較だけでは
+            // 2問目の世代を検出できない）。この方式にすることで、2問目にも
+            // 独立してForced Commitの機会を与える。
+            if (type === 'YES_NO' || type === 'SHORT_CHOICE') {
+                shortChoiceAnswerGeneration += 1;
+                shortChoiceTurnNormalCompletionSeen = false;
             }
         }
 
@@ -863,16 +930,22 @@
                 pushTimelineEvent('ANSWER_WINDOW_EXPIRED (type=' + type + ', elapsed_ms=' + elapsedMs + ')');
                 // 観測のみ: 上記の原則（OpenAIへは何も送信せず、既存の
                 // semantic_vadによる通常のターン終了検知をそのまま待つ）は
-                // PHONE/YES_NO/VISIT_REASON、および通常店舗のNAMEについては
+                // PHONE/VISIT_REASON、および通常店舗のNAMEについては
                 // 今回も一切変更しない。
                 //
-                // NAME Forced Commit Observation PoC（今回追加）: type==='NAME'
-                // かつ、このPoC専用のテスト店舗+debug=1が揃った場合に限り、
-                // maybeSendNameCommitPoc()が改めて全条件を確認したうえで
-                // input_audio_buffer.commitを最大1回だけ送信する（詳細は
+                // NAME Forced Commit Observation PoC（PoC店舗+debug=1限定）:
+                // type==='NAME'かつ、このPoC専用のテスト店舗+debug=1が揃った
+                // 場合に限り、maybeSendNameCommitPoc()が改めて全条件を確認した
+                // うえでinput_audio_buffer.commitを最大1回だけ送信する（詳細は
                 // 同関数のコメント参照）。それ以外の場合、この呼び出しは
                 // 内部で何もせずに戻る。
                 maybeSendNameCommitPoc(type, myGeneration);
+                // Short Choice 3-Second Turn（今回追加・全店舗適用）:
+                // type==='YES_NO'または'SHORT_CHOICE'の場合、
+                // maybeSendShortAnswerCommit()が改めて全条件を確認したうえで
+                // input_audio_buffer.commitを最大1回だけ送信する。それ以外の
+                // 場合、この呼び出しは内部で何もせずに戻る。
+                maybeSendShortAnswerCommit(type, myGeneration);
             }, limitMs);
         }
 
@@ -941,6 +1014,84 @@
             pushTimelineEvent('POC_NAME_COMMIT_REACTION (' + label + ', elapsed_ms=' + Math.round(performance.now() - pocCommitSentAt) + ')');
         }
 
+        // ===== Short Choice 3-Second Turn: 2つの中核関数（今回追加・全店舗適用） =====
+        // NAME Forced Commit Observation PoC・Conversation Takeover Observation PoCで
+        // 実機検証済みの安全なパターン（commitは1世代につき最大1回・送信直前に
+        // 正常完了フラグを再確認・response.createは絶対に追加送信しない・
+        // datachannel未オープンやsend例外は非fatal）をそのまま踏襲する。
+        // 両PoCと異なり、これは店舗gatingを一切行わない（全店舗の本番通話で
+        // 動作する）。ユーザー(谷村様)の明示的な指示に基づく。
+
+        // Expected Answer Window（startAnswerWindowIfNeeded）が期限切れになった
+        // 時点で、answerType が YES_NO または SHORT_CHOICE で、かつまだ正常な
+        // ターン終了（speech_stopped/committed/item_created）が届いていない
+        // 場合に限り、input_audio_buffer.commitを最大1回だけ手動送信する。
+        // response.createは絶対に追加送信しない（サーバー側のsemantic_vadが
+        // 既に内部的にauto-commit＋auto-responseを開始している可能性を排除
+        // できず、手動response.createを重ねると二重応答を招くリスクがあるため。
+        // NAME PoCと全く同じ理由）。
+        //
+        // 「単純に3秒で内容を破棄しない」について（重要・監査結果）: この
+        // 関数はExpected Answer Windowが期限切れになった時点、つまり通常の
+        // semantic_vadがそれより先にspeech_stopped等へ進んでいない場合にのみ
+        // 呼ばれる。お客様がまだ話し続けている自然な発話（例:「午後なんです
+        // けど、できれば少し遅めで……」）と、単なる背景ノイズによる
+        // speech_stopped遅延を、ブラウザJS側から発話内容ベースで区別する
+        // 安全な手段は今回の監査でも見つかっていない（Conversation Takeover
+        // Observation PoCのCONTENT SUFFICIENCY監査結果と同じ理由：
+        // input_audio_transcriptionが未設定のため、発話内容に一切アクセス
+        // できない）。そのため本関数も、NAME PoCと同じく時間ベースの判定に
+        // とどまる。この構造的な限界は完了報告のopen itemとして明記すること。
+        function maybeSendShortAnswerCommit(answerType, myGeneration) {
+            if (answerType !== 'YES_NO' && answerType !== 'SHORT_CHOICE') return;
+            if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない（保険）
+            if (!dc || dc.readyState !== 'open') {
+                pushTimelineEvent('SHORT_ANSWER_COMMIT_SKIPPED (reason=datachannel_not_open)');
+                return;
+            }
+            if (shortChoiceCommitSentGeneration === shortChoiceAnswerGeneration) {
+                // この世代についてはすでに手動commit送信済み（最大1回/世代）
+                return;
+            }
+            pushTimelineEvent('SHORT_ANSWER_COMMIT_ELIGIBLE (type=' + answerType + ', generation=' + shortChoiceAnswerGeneration + ')');
+            // 送信直前にもう一度だけ、正常完了フラグがその間に立っていないか
+            // 最終確認する（NAME PoCと同じレース対策）。
+            if (shortChoiceTurnNormalCompletionSeen) {
+                pushTimelineEvent('SHORT_ANSWER_COMMIT_SKIPPED (reason=normal_completion_won_race)');
+                return;
+            }
+            pushTimelineEvent('SHORT_ANSWER_COMMIT_REQUESTED (type=' + answerType + ', generation=' + shortChoiceAnswerGeneration + ')');
+            try {
+                // 観測のみではなく実運用のcommitだが、送信するのはNAME PoCと
+                // 全く同じくinput_audio_buffer.commitのみ。この直後に
+                // response.createを送ることは絶対にしない。
+                dc.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+                shortChoiceCommitSentGeneration = shortChoiceAnswerGeneration;
+                shortAnswerCommitCallGeneration = myGeneration;
+                shortAnswerCommitSentAt = performance.now();
+                shortAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+                pushTimelineEvent('SHORT_ANSWER_COMMIT_SENT (type=' + answerType + ', generation=' + shortChoiceAnswerGeneration + ')');
+            } catch (e) {
+                // send自体が例外を投げた場合も非fatal扱い（endCall/
+                // cleanupConnectionは呼ばない）。既存のsemantic_vadに以後を委ねる。
+                pushTimelineEvent('SHORT_ANSWER_COMMIT_ERROR (reason=send_exception): ' + (e && e.message));
+            }
+        }
+
+        // Short Choice 3-Second Turn: 手動commit送信後に観測したい4種の反応
+        // （committed/item_created/response.created/AI音声開始）を、各イベント
+        // につき一度だけelapsed_msとしてタイムラインに記録する（NAME PoCの
+        // maybeLogPocReactionElapsedと同じ構造）。手動commitを送信していない
+        // 通常の通話では shortAnswerCommitSentAt が null のままのため、
+        // 何もしない。
+        function maybeLogShortAnswerReactionElapsed(key, label) {
+            if (shortAnswerCommitSentAt === null) return;
+            if (callGeneration !== shortAnswerCommitCallGeneration) return;
+            if (shortAnswerCommitPendingEvents[key]) return;
+            shortAnswerCommitPendingEvents[key] = true;
+            pushTimelineEvent('SHORT_ANSWER_COMMIT_REACTION (' + label + ', elapsed_ms=' + Math.round(performance.now() - shortAnswerCommitSentAt) + ')');
+        }
+
         // ===== Conversation Takeover Observation PoC: 4つの中核関数（今回追加） =====
         // NAME Forced Commit Observation PoCの安全なパターン
         // （startAnswerWindowIfNeeded/maybeSendNameCommitPoc/
@@ -961,9 +1112,13 @@
         // 時間が経過したら安全にターンを強制成立させられるか」だけを検証する。
         function startTakeoverTimerIfNeeded(myGeneration) {
             if (!takeoverPocEnabled) return; // PoC専用テスト店舗+debug=1のみ
-            // 既存NAME PoC・PHONE・YES_NOの短答待ちと重複させない
-            // （それらは自身のAnswer Window/NAME PoCで既に処理される場面）。
-            if (expectedAnswerType === 'NAME' || expectedAnswerType === 'PHONE' || expectedAnswerType === 'YES_NO') return;
+            // 既存NAME PoC・PHONE・YES_NO・SHORT_CHOICE（Short Choice
+            // 3-Second Turn。今回追加）の短答待ちと重複させない（それらは
+            // それぞれ自身のAnswer Window/専用Forced Commit関数で既に処理
+            // される場面のため、Takeover側が二重にタイマー・commitを
+            // 発生させないようにする）。
+            if (expectedAnswerType === 'NAME' || expectedAnswerType === 'PHONE' ||
+                expectedAnswerType === 'YES_NO' || expectedAnswerType === 'SHORT_CHOICE') return;
             if (takeoverTimerId !== null) return; // 同一エピソード内での多重開始防止
             takeoverSpeechEpisodeId += 1;
             const myEpisodeId = takeoverSpeechEpisodeId;
@@ -2961,8 +3116,10 @@
                 pushTimelineEvent('AI_AUDIO_STARTED');
                 // NAME Forced Commit Observation PoC（PHASE9）
                 maybeLogPocReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
-                // Conversation Takeover Observation PoC（今回追加。NAME PoCとは独立）
+                // Conversation Takeover Observation PoC（NAME PoCとは独立）
                 maybeLogTakeoverReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
+                // Short Choice 3-Second Turn（今回追加。全店舗適用・独立）
+                maybeLogShortAnswerReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
             } else if (type === 'output_audio_buffer.stopped') {
                 aiAudioOutputActive = false;
                 lastAiAudioEventAt = performance.now();
@@ -3034,9 +3191,12 @@
                 // 送信済みの手動commitへの反応であればelapsed_msを記録する。
                 nameTurnNormalCompletionSeen = true;
                 maybeLogPocReactionElapsed('committed', 'input_audio_buffer.committed');
-                // Conversation Takeover Observation PoC（今回追加。NAME PoCとは独立）
+                // Conversation Takeover Observation PoC（NAME PoCとは独立）
                 takeoverTurnNormalCompletionSeen = true;
                 maybeLogTakeoverReactionElapsed('committed', 'input_audio_buffer.committed');
+                // Short Choice 3-Second Turn（今回追加。全店舗適用・独立）
+                shortChoiceTurnNormalCompletionSeen = true;
+                maybeLogShortAnswerReactionElapsed('committed', 'input_audio_buffer.committed');
             } else if (type === 'conversation.item.created' && msg.item && msg.item.role === 'user') {
                 // PHASE8（会話停止調査・最重要）: ユーザー発話が会話アイテムとして
                 // 確定したことを示すイベント。「名前を答えた後に止まる」等の症状で、
@@ -3048,9 +3208,12 @@
                 // NAME Forced Commit Observation PoC（PHASE7/9）
                 nameTurnNormalCompletionSeen = true;
                 maybeLogPocReactionElapsed('item', 'conversation.item.created');
-                // Conversation Takeover Observation PoC（今回追加。NAME PoCとは独立）
+                // Conversation Takeover Observation PoC（NAME PoCとは独立）
                 takeoverTurnNormalCompletionSeen = true;
                 maybeLogTakeoverReactionElapsed('item', 'conversation.item.created');
+                // Short Choice 3-Second Turn（今回追加。全店舗適用・独立）
+                shortChoiceTurnNormalCompletionSeen = true;
+                maybeLogShortAnswerReactionElapsed('item', 'conversation.item.created');
             } else if (type === 'input_audio_buffer.speech_started') {
                 if (!initialGreetingSent) userSpokeBeforeGreeting = true;
                 // ISSUE2調査用（PIIなし）: speech_started発生時点のローカルマイク
@@ -3110,6 +3273,12 @@
                 // もう不要。
                 cancelTakeoverTimer('speech_stopped_normally');
                 takeoverTurnNormalCompletionSeen = true;
+                // Short Choice 3-Second Turn（今回追加。全店舗適用・独立）:
+                // 同じく正常終了したため、この2択質問の世代についてはもう
+                // 手動commitを送らない。Answer Window自体は上のcancelAnswerWindow()
+                // で既にキャンセル済み（NAME/YES_NO/SHORT_CHOICE等で共有している
+                // 同一のanswerWindowTimerIdのため、専用のキャンセル関数は不要）。
+                shortChoiceTurnNormalCompletionSeen = true;
                 // PHASE6相関用（PIIなし）: 対応するspeech_startedからの経過時間
                 // （＝サーバーがユーザー発話と判定していた継続時間）を記録する。
                 // 短時間の相槌（「はい」「違います」等）も本物の短い発話として
@@ -3137,8 +3306,10 @@
                 // OpenAI側が自発的にresponse.createdを送ってきた場合、観測する
                 // だけで、こちらから追加のresponse.createは絶対に送らない。
                 maybeLogPocReactionElapsed('responseCreated', 'response.created');
-                // Conversation Takeover Observation PoC（今回追加。NAME PoCとは独立）
+                // Conversation Takeover Observation PoC（NAME PoCとは独立）
                 maybeLogTakeoverReactionElapsed('responseCreated', 'response.created');
+                // Short Choice 3-Second Turn（今回追加。全店舗適用・独立）
+                maybeLogShortAnswerReactionElapsed('responseCreated', 'response.created');
                 // Silence Timeout: この回の応答にfunction_callが含まれるかどうかを
                 // 新しい応答サイクルの開始時点でリセットする（response.doneで判定に使う）。
                 responseHasFunctionCall = false;
@@ -3228,6 +3399,17 @@
                     const toErrMessage = (msg.error && msg.error.message) || null;
                     pushTimelineEvent('TAKEOVER_ERROR (code=' + toErrCode + ', type=' + toErrType
                         + ', elapsed_ms=' + Math.round(performance.now() - takeoverCommitSentAt) + ', message=' + toErrMessage + ')');
+                }
+                // Short Choice 3-Second Turn（今回追加。全店舗適用・独立）: 同じ
+                // 理由で、手動commit送信後に発生したerrorを専用イベントとして
+                // 記録する。このハンドラは元々fatal処理を一切行っていないため、
+                // そのままの挙動を維持するだけで非fatal要件を満たす。
+                if (shortAnswerCommitSentAt !== null && callGeneration === shortAnswerCommitCallGeneration) {
+                    const scErrCode = (msg.error && msg.error.code) || null;
+                    const scErrType = (msg.error && msg.error.type) || null;
+                    const scErrMessage = (msg.error && msg.error.message) || null;
+                    pushTimelineEvent('SHORT_ANSWER_COMMIT_ERROR (code=' + scErrCode + ', type=' + scErrType
+                        + ', elapsed_ms=' + Math.round(performance.now() - shortAnswerCommitSentAt) + ', message=' + scErrMessage + ')');
                 }
             }
         }
@@ -3403,6 +3585,15 @@
             takeoverCommitSentAt = null;
             takeoverCommitCallGeneration = null;
             takeoverCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+            // Short Choice 3-Second Turn: 新しい通話ごとに必ずリセットする
+            // （前回通話の状態を持ち越さない。NAME PoC/Takeover PoCとは独立した
+            // 状態のため個別にリセットする）。
+            shortChoiceAnswerGeneration = 0;
+            shortChoiceCommitSentGeneration = null;
+            shortChoiceTurnNormalCompletionSeen = false;
+            shortAnswerCommitSentAt = null;
+            shortAnswerCommitCallGeneration = null;
+            shortAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。
