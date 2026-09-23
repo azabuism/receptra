@@ -529,6 +529,50 @@
         // PHASE10: AI応答生成の現在状態。'idle' | 'active' | 'done' | 'error'
         let responseState = 'idle';
 
+        // ===== Expected Answer Window（雑音による名前/電話番号ターン長時間化調査） =====
+        //
+        // 背景（実機症状）: 周囲に人の声・雑音があると、AIが「谷村です」等の
+        // 短い回答の後も雑音を発話の続きとして拾ってしまい、
+        // input_audio_buffer.speech_stopped がなかなか来ず、名前の回答ターンが
+        // 終了しないことがある。
+        //
+        // 設計方針（重要・必ず守ること。今回の監査結果に基づく）:
+        // - semantic_vad自体のグローバル設定（eagerness等）は一切変更しない。
+        // - 「全会話を5秒で切る」ものではなく、直前にAIがNAME/PHONE/YES_NOの
+        //   ような短い定型回答を尋ねた直後にだけ適用する軽量な状態
+        //   （expectedAnswerType）と、その経過時間の観測用タイマーに限定する。
+        // - 現時点ではこの区間は【観測のみ】である。タイムボックス到達時に
+        //   input_audio_buffer.commit を手動送信してターンを強制終了させる
+        //   PHASE3の仕組みは、今回の監査でOpenAI Realtime API公式ドキュメント
+        //   および実機の外部事例（OpenAI Developer Community等）を確認した結果、
+        //   turn_detection（semantic_vad/server_vad）が有効な状態での手動commitは
+        //   公式にサポートされた組み合わせではなく、"buffer has 0ms of audio"等の
+        //   エラーを誘発する実例が確認されたため、本番の実通話へ影響するリスクが
+        //   排除できないと判断し、今回は実装を見送った（完了報告で詳細を説明する）。
+        //   そのため、ANSWER_WINDOW_EXPIRED後もOpenAIへは何も送信せず、既存の
+        //   semantic_vadによる通常のターン終了検知をそのまま待つ（挙動は今回
+        //   変更していない。観測用ログが増えるだけ）。
+        // - expectedAnswerTypeの判定は、AI自身の発話内容
+        //   （response.output_audio_transcript.done）に対する簡易なキーワード
+        //   一致のみで行う軽量なヒューリスティックであり、大きな状態機械は
+        //   作らない。判定できない場合はNONEのまま（誤ってNAME/PHONE扱いに
+        //   しない安全側フォールバック）。
+        // - タイマーの起点はAIの発話開始ではなく、ユーザーが実際に話し始めた
+        //   input_audio_buffer.speech_started を起点にする（PHASE6の明示的な
+        //   指示）。
+        // - PII（氏名・電話番号等の内容）はタイムラインに一切記録しない。
+        //   記録するのはtype文字列（NAME/PHONE/YES_NO/VISIT_REASON）・
+        //   経過時間(ms)のみ。
+        // 追加要件（Conversation Time Control）: 来店理由（VISIT_REASON）も
+        // 同じ仕組みに追加する。ただしこれも従来通り【観測のみ】であり、
+        // 30秒到達だけを理由に発話を打ち切ることは一切しない（このAnswer
+        // Windowの仕組み自体が最初からOpenAIへ何も送信しない設計のため、
+        // 自動的に「話している最中は切らない」という要件を満たす）。
+        let expectedAnswerType = 'NONE'; // 'NONE' | 'NAME' | 'PHONE' | 'YES_NO' | 'VISIT_REASON'
+        let answerWindowTimerId = null;
+        let answerWindowType = null; // 現在アクティブなタイマーが対象とするtype
+        const ANSWER_WINDOW_LIMITS_MS = { NAME: 5000, PHONE: 10000, YES_NO: 5000, VISIT_REASON: 30000 };
+
         // ===== Mobile Real-Call Failure Investigation: 追加の観測状態 =====
         // すべてPIIを含まない（状態文字列・イベント名・カウンタのみ）。対処は
         // 行わず観測のみ（原因が実機ログで確定するまでVAD等は変更しない）。
@@ -623,6 +667,194 @@
             }
         }
 
+        // Expected Answer Window: AI自身の発話内容から、直後にお客様へ求めている
+        // 回答の種類を軽量に推定する（PIIなし。判定結果のtype文字列のみ保持）。
+        // NAME/PHONE/YES_NO以外（日時・来店理由・自由回答等）は今回タイムボックス
+        // 対象としないため、キーワードが一致しない場合はNONEのままにする
+        // （大きな状態機械にしない・誤判定時は従来通りの通常VADのみで進む）。
+        function classifyExpectedAnswerType(aiTranscript) {
+            const t = aiTranscript || '';
+            let type = 'NONE';
+            if (/電話番号|お電話番号/.test(t)) {
+                type = 'PHONE';
+            } else if (/お名前|ご氏名/.test(t)) {
+                type = 'NAME';
+            } else if (/よろしいですか|でよろしい|間違いない|お間違い|合っています/.test(t)) {
+                type = 'YES_NO';
+            } else if (/ご来店の目的|ご来店について|ご希望やお悩み|ご相談内容|どのようなことでのご予約|来店理由/.test(t)) {
+                // 追加要件（Conversation Time Control）: 来店理由確認の問いかけを
+                // 検出する。NAME/PHONE/YES_NOより優先度を下げている
+                // （自由回答の来店理由の中に偶然「よろしいですか」等の語が
+                // 含まれていても誤ってYES_NO等に上書きされないよう、
+                // 既存3種のいずれにも一致しなかった場合にのみ判定する）。
+                type = 'VISIT_REASON';
+            }
+            if (type !== expectedAnswerType) {
+                expectedAnswerType = type;
+                pushTimelineEvent('EXPECTED_ANSWER_SET (type=' + type + ')');
+            }
+        }
+
+        // ユーザーが実際に話し始めた瞬間（input_audio_buffer.speech_started）に
+        // 呼び出す。expectedAnswerTypeがNAME/PHONE/YES_NOのいずれかで、かつ
+        // 既に同種のタイマーが動いていない場合にのみ観測用タイマーを開始する
+        // （PHASE6: 起点はAIの発話ではなく、ユーザーの発話開始）。
+        // 重要: このタイマーは現時点では観測のみで、OpenAIへは何も送信しない
+        // （上部の設計方針コメント参照）。
+        function startAnswerWindowIfNeeded(myGeneration) {
+            if (expectedAnswerType === 'NONE') return;
+            if (answerWindowTimerId !== null) return; // 同一ターン内での多重開始防止
+            const limitMs = ANSWER_WINDOW_LIMITS_MS[expectedAnswerType];
+            if (!limitMs) return;
+            const type = expectedAnswerType;
+            answerWindowType = type;
+            pushTimelineEvent('ANSWER_WINDOW_STARTED (type=' + type + ', limit_ms=' + limitMs + ')');
+            const startedAt = performance.now();
+            answerWindowTimerId = setTimeout(() => {
+                answerWindowTimerId = null;
+                if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない
+                const elapsedMs = Math.round(performance.now() - startedAt);
+                pushTimelineEvent('ANSWER_WINDOW_EXPIRED (type=' + type + ', elapsed_ms=' + elapsedMs + ')');
+                // 観測のみ: ここでinput_audio_buffer.commitやresponse.createを
+                // 送信することはしない（設計方針コメント参照）。既存の
+                // semantic_vadによる通常のターン終了検知をそのまま待つ。
+            }, limitMs);
+        }
+
+        // 通常のVADがspeech_stoppedを検知した場合など、正常にターンが終了した
+        // ときに呼び出す。アクティブな観測用タイマーがあれば即キャンセルする
+        // （PHASE10: 競合防止。二重に何かを送信するわけではないが、期限切れ後の
+        // 無駄なログ出力を防ぐ）。
+        function cancelAnswerWindow(reason) {
+            if (answerWindowTimerId === null) return;
+            clearTimeout(answerWindowTimerId);
+            answerWindowTimerId = null;
+            pushTimelineEvent('ANSWER_WINDOW_CANCELLED (type=' + answerWindowType + ', reason=' + reason + ')');
+            answerWindowType = null;
+        }
+
+        // ===== Silence Timeout（完全無言による自動終話。Answer Windowとは別概念） =====
+        //
+        // 追加要件（Conversation Time Control）: Answer Window（上記）は「AIが
+        // NAME/PHONE/YES_NO/VISIT_REASONのような回答を尋ねた直後」にのみ適用
+        // される、しかも一切のcommit強制を行わない観測専用の仕組み。これに
+        // 対しSilence Timeoutは、通話全体を通じて「AIがユーザーの回答を
+        // 待っている状態で、約30秒間まったく有効な発話が確認できない」場合に、
+        // 既存のendCall()を安全に再利用して通話を終了させるための、意図的に
+        // 別実装・別タイマーにした機構（同一のtimerとして実装しないことという
+        // 明示的な指示に基づく）。
+        //
+        // 「AIがユーザーの回答を待っている」状態の判定（重要・必ず守ること）:
+        // - AI自身が発話中の時間、AI応答生成中の時間（Tool Call往復の待ち時間を
+        //   含む）は、ユーザーの無言として一切カウントしない。そのため
+        //   このタイマーは、function_callを含まない応答が完全に完了した
+        //   （response.done、かつその回にfunction_callが無かった。
+        //   responseHasFunctionCallで判定）時点で初めて開始する。Tool Call
+        //   往復の中間応答（function_callのみのresponse.done）では開始しない。
+        // - Zero-Wait Greeting（事前録音のローカル音声再生）はRealtimeの
+        //   response.doneを経由しないため、その再生終了(onEnded)時点でも
+        //   別途開始する（該当のonEnded内から呼び出す）。
+        // - ユーザーの有効な発話開始（input_audio_buffer.speech_started）を
+        //   検知した時点で即リセットする。
+        // - AIが新しい応答の生成を開始した時点（response.created）でも、
+        //   実行中の通常タイマー（'waiting'状態）は一旦キャンセルする。ただし
+        //   本機構自身が発行した警告/終話案内アナウンスの応答
+        //   （silenceState==='warned'/'goodbye'時）はこの限りではない
+        //   （'waiting'状態のときのみキャンセル対象とすることで、自分自身の
+        //   アナウンスで自分のタイマーを誤ってキャンセルしないようにする）。
+        //
+        // 状態遷移: 'idle' →(回答待ち開始)→ 'waiting' →(30秒無言)→ 'warned'
+        // （予告アナウンス送信＋猶予タイマー開始）→(猶予中も無言)→ 'goodbye'
+        // （終話案内アナウンス送信）→(案内音声の再生完了を確認)→ 既存の
+        // endCall()。猶予中にユーザーが話せば'idle'へ戻り通話継続する
+        // （'warned'状態のみキャンセル可能。'goodbye'に入った後は既に
+        // アナウンス済みのため取り消さず、既存のcallGeneration/endedガードに
+        // 委ねる＝終話中の競合防止・二重endCall防止は既存機構を再利用する。
+        // ここから直接pc.close()/dc.close()/track.stop()を呼ぶことは絶対に
+        // しない）。
+        let silenceTimerId = null;
+        let silenceWarningTimerId = null;
+        let silenceState = 'idle'; // 'idle' | 'waiting' | 'warned' | 'goodbye'
+        let responseHasFunctionCall = false; // 直近のresponse.created〜response.doneの間にfunction_callがあったか
+        let pendingSilenceGoodbyeHangup = false; // 終話案内アナウンスの再生完了待ちかどうか
+        const SILENCE_TIMEOUT_MS = 30000; // 約30秒間、有効な発話が無ければ予告
+        const SILENCE_WARNING_GRACE_MS = 8000; // 予告後、約5〜10秒の猶予（中間値を採用）
+        const SILENCE_WARNING_TEXT = 'お声が確認できないため、このままですとお電話を終了します。';
+        const SILENCE_GOODBYE_TEXT = 'お電話を終了させていただきます。ありがとうございました。';
+
+        // 「AIがユーザーの回答を待っている」状態に入った瞬間に呼ぶ。既に
+        // waiting/warned/goodbyeのいずれかであれば何もしない（多重開始防止）。
+        function startSilenceTimerIfNeeded(myGeneration) {
+            if (silenceState !== 'idle') return;
+            silenceState = 'waiting';
+            pushTimelineEvent('SILENCE_TIMER_STARTED');
+            silenceTimerId = setTimeout(() => {
+                silenceTimerId = null;
+                if (isStaleCallEvent(myGeneration)) return;
+                triggerSilenceWarning(myGeneration);
+            }, SILENCE_TIMEOUT_MS);
+        }
+
+        // 有効なユーザー発話を検知した、またはAIが新しい応答生成を開始した等、
+        // 「無言で待っている」状態ではなくなったときに呼ぶ。
+        function resetSilenceTimer(reason) {
+            if (silenceState === 'goodbye') {
+                // 既に終話案内アナウンスを送信済み（間もなくendCallする既定路線）。
+                // ここでは取り消さず、既存のcallGeneration/endedガードに委ねる
+                // （終話中の競合防止・ユーザーの明示的な指示）。
+                return;
+            }
+            const wasWarned = (silenceState === 'warned');
+            if (silenceTimerId !== null) { clearTimeout(silenceTimerId); silenceTimerId = null; }
+            if (silenceWarningTimerId !== null) { clearTimeout(silenceWarningTimerId); silenceWarningTimerId = null; }
+            if (silenceState !== 'idle') {
+                pushTimelineEvent('SILENCE_TIMER_RESET (reason=' + reason + ', 直前state=' + silenceState + ')');
+            }
+            if (wasWarned) {
+                // 終話予告後にユーザーが話した場合の終話キャンセル。
+                pushTimelineEvent('SILENCE_WARNING_CANCELLED (reason=' + reason + ')');
+            }
+            silenceState = 'idle';
+        }
+
+        function triggerSilenceWarning(myGeneration) {
+            if (isStaleCallEvent(myGeneration)) return;
+            if (silenceState !== 'waiting') return; // 既に別状態へ遷移済みなら何もしない（安全側）
+            silenceState = 'warned';
+            pushTimelineEvent('SILENCE_WARNING_TRIGGERED');
+            sendResponseCreate('silence_warning', SILENCE_WARNING_TEXT);
+            silenceWarningTimerId = setTimeout(() => {
+                silenceWarningTimerId = null;
+                if (isStaleCallEvent(myGeneration)) return;
+                triggerSilenceFinalGoodbye(myGeneration);
+            }, SILENCE_WARNING_GRACE_MS);
+        }
+
+        function triggerSilenceFinalGoodbye(myGeneration) {
+            if (isStaleCallEvent(myGeneration)) return;
+            if (silenceState !== 'warned') return; // 猶予中にユーザーが話した等で既にキャンセル済みなら何もしない
+            silenceState = 'goodbye';
+            pendingSilenceGoodbyeHangup = true;
+            pushTimelineEvent('SILENCE_FINAL_GOODBYE_STARTED');
+            sendResponseCreate('silence_final_goodbye', SILENCE_GOODBYE_TEXT);
+        }
+
+        // 終話案内アナウンスの音声再生が完了したことを確認してから、既存の
+        // 安全なendCall()経路で通話を終了する（pc.close()/dc.close()/
+        // track.stop()をここから直接個別に呼ぶことは絶対にしない）。
+        // output_audio_buffer.stopped（通常はこちらが先に来る）とresponse.done
+        // （安全網。他のAI音声完了処理と同じ既存パターンを踏襲）の両方から
+        // 呼ぶが、pendingSilenceGoodbyeHangupを最初に呼ばれた時点で消費する
+        // ため、二重にendCall()が呼ばれることはない（仮に呼ばれても既存の
+        // ended guardによりendCall自体が安全に無視する）。
+        function maybeHangUpAfterSilenceGoodbye(myGeneration, source) {
+            if (!pendingSilenceGoodbyeHangup) return;
+            pendingSilenceGoodbyeHangup = false;
+            if (isStaleCallEvent(myGeneration)) return;
+            pushTimelineEvent('SILENCE_END_CALL_REQUESTED (source=' + source + ')');
+            endCall(SILENCE_GOODBYE_TEXT, 'silence_timeout');
+        }
+
         // PHASE4（重要・response.create重複防止調査）: response.create送信の
         // 一元化ラッパー。これまでresponse.createの送信箇所が
         // maybeSendInitialGreeting()とhandleFunctionCallItem()の2箇所に
@@ -635,10 +867,19 @@
         // 多重response.createをどう扱うか（エラーになるか、キューされるか）
         // は実機/サーバー側の挙動に依存し断定できないため、ここでは送信を
         // 止めず観測のみ行う（既存の応答フロー自体は変更しない）。
-        function sendResponseCreate(reason) {
+        function sendResponseCreate(reason, instructionsOverride) {
             // PHASE8（会話停止調査）: タイムラインの表記をRESPONSE_CREATE_REQUESTED
             // という統一名に揃える（reasonで区別する）。挙動・送信内容は一切
             // 変更しない。ログ文言のみの変更。
+            // 追加要件（Conversation Time Control・Silence Timeout）:
+            // instructionsOverrideが指定された場合のみ、そのレスポンス1回に
+            // 限りresponse.instructionsを付与する。第一声用response.createの
+            // 直前コメントで確認済みの通り、response.instructionsはセッション
+            // 全体のinstructionsを「追加」ではなく「置換」する仕様だが、
+            // Silence Timeoutの予告/終話案内は固定の短い定型文をそのまま
+            // 一字一句話させれば十分（人格・Tool呼び出し等は不要）なため、
+            // ここでは意図的にこの置換仕様を利用する。省略時（既存の全呼び出し
+            // 箇所）は従来通りresponseフィールド自体を付与しない。
             if (!dc || dc.readyState !== 'open') {
                 pushTimelineEvent('RESPONSE_CREATE_SKIPPED (dc未接続, reason=' + reason + ')');
                 logEvent('response.create送信スキップ: DataChannel未接続 (reason=' + reason + ')');
@@ -650,8 +891,12 @@
                     + '(responseState=active, reason=' + reason + ')。多重応答の可能性があります（観測のみ・送信は継続します）');
             }
             try {
-                dc.send(JSON.stringify({ type: 'response.create' }));
-                pushTimelineEvent('RESPONSE_CREATE_REQUESTED (reason=' + reason + ')');
+                const payload = { type: 'response.create' };
+                if (instructionsOverride) {
+                    payload.response = { instructions: instructionsOverride };
+                }
+                dc.send(JSON.stringify(payload));
+                pushTimelineEvent('RESPONSE_CREATE_REQUESTED (reason=' + reason + (instructionsOverride ? ', instructions_override=true' : '') + ')');
                 return true;
             } catch (e) {
                 pushTimelineEvent('RESPONSE_CREATE_FAILED (reason=' + reason + '): ' + e.message);
@@ -1515,6 +1760,15 @@
                 } else {
                     bigMic.classList.remove('ai-speaking');
                     subStatusText.textContent = '待機中（お話しください）';
+                    // Silence Timeout: Zero-Wait Greetingは事前録音のローカル音声を
+                    // 再生しているだけでRealtimeのresponse.doneを経由しないため、
+                    // 通常の（response.done起点の）開始経路では最初のターンだけ
+                    // 開始されない。ここで代わりに開始する。ただし再生中に既に
+                    // お客様が話し始めていた場合（userVadState==='speech'）は
+                    // 明らかに無言ではないため開始しない。
+                    if (userVadState !== 'speech') {
+                        startSilenceTimerIfNeeded(myGeneration);
+                    }
                 }
             };
             zeroWaitAudioEl.addEventListener('playing', onPlaying, { once: true });
@@ -2371,6 +2625,9 @@
                 aiAudioOutputActive = false;
                 lastAiAudioEventAt = performance.now();
                 pushTimelineEvent('AI_AUDIO_STOPPED');
+                // Silence Timeout: 終話案内アナウンスの再生完了を検知する主経路
+                // （通常はresponse.doneより先にこちらが来る）。
+                maybeHangUpAfterSilenceGoodbye(callGeneration, 'ai_audio_stopped');
             } else if (type === 'output_audio_buffer.cleared') {
                 lastAiAudioEventAt = performance.now();
                 // 無言化調査用: サーバー側がAIの音声出力バッファを破棄した
@@ -2475,9 +2732,17 @@
                 setStatus(stUserSpeakEl, '発話中（認識中）', 'ok');
                 userVadState = 'speech';
                 updateAudioDiagnosticsPanel();
+                // Expected Answer Window（PHASE6: 起点はユーザーの発話開始）。
+                startAnswerWindowIfNeeded(callGeneration);
+                // Silence Timeout: 有効なユーザー発話を検知したため即リセット
+                // （'warned'中であればここで終話をキャンセルし通常会話へ復帰する）。
+                resetSilenceTimer('user_speech_started');
             } else if (type === 'input_audio_buffer.speech_stopped') {
                 userVadState = 'idle';
                 lastSpeechStoppedAt = performance.now();
+                // 正常にターンが終了した（＝雑音等で長時間化していない）ため、
+                // Answer Windowの観測用タイマーは不要になる。
+                cancelAnswerWindow('speech_stopped_normally');
                 // PHASE6相関用（PIIなし）: 対応するspeech_startedからの経過時間
                 // （＝サーバーがユーザー発話と判定していた継続時間）を記録する。
                 // 短時間の相槌（「はい」「違います」等）も本物の短い発話として
@@ -2501,6 +2766,16 @@
                 responseState = 'active';
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('RESPONSE_CREATED');
+                // Silence Timeout: この回の応答にfunction_callが含まれるかどうかを
+                // 新しい応答サイクルの開始時点でリセットする（response.doneで判定に使う）。
+                responseHasFunctionCall = false;
+                // 'waiting'（通常の無言計測中）であればAIが新たに話し始める/
+                // 生成を始めるためキャンセルする。'warned'/'goodbye'中に発生する
+                // response.createdは本機構自身が発行したアナウンスの応答である
+                // ため、ここではキャンセル対象にしない（個別の状態遷移で管理）。
+                if (silenceState === 'waiting') {
+                    resetSilenceTimer('ai_response_started');
+                }
             } else if (type === 'response.done') {
                 lastAiAudioEventAt = performance.now();
                 subStatusText.textContent = '待機中（お話しください）';
@@ -2518,6 +2793,21 @@
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('RESPONSE_DONE (status=' + (respStatus || '不明') + ')');
                 recordUsageEvent(msg.response);
+                // Silence Timeout: この回にfunction_callが無かった場合のみ、
+                // 「AIがユーザーの回答を待っている」状態に入ったとみなし開始する
+                // （Tool Call往復中の中間応答では開始しない＝待ち時間を無言として
+                // カウントしないための最重要ガード）。
+                if (!responseHasFunctionCall) {
+                    startSilenceTimerIfNeeded(callGeneration);
+                }
+                // Silence Timeout: 終話案内アナウンスの再生完了検知の安全網
+                // （通常はoutput_audio_buffer.stoppedで既に処理済みのはず）。
+                maybeHangUpAfterSilenceGoodbye(callGeneration, 'response_done_fallback');
+            } else if (type === 'response.output_audio_transcript.done') {
+                // Expected Answer Window: AI自身の発話内容から、直後にお客様へ
+                // 求めている回答の種類を軽量に推定する（PIIはtype文字列にのみ
+                // 反映し、transcript本文はどこにも保存・記録しない）。
+                classifyExpectedAnswerType(msg.transcript);
             } else if (type === 'response.output_item.done' && msg.item && msg.item.type === 'function_call') {
                 // Phase3A: Tool Calling。応答完了(response.done)を待たず、
                 // このitemが確定した時点で処理を開始してよい
@@ -2525,6 +2815,10 @@
                 // 直後に発火し、この時点でarguments/nameが確定していることを
                 // 確認済み）。非同期で処理するが、handleDataChannelEvent自体は
                 // 待たない（他のイベント処理をブロックしないため）。
+                // Silence Timeout: このresponseにはfunction_callが含まれるため、
+                // 続くresponse.doneではまだ「ユーザーの回答待ち」状態にしない
+                // （Tool往復中の待ち時間を無言としてカウントしないためのフラグ）。
+                responseHasFunctionCall = true;
                 handleFunctionCallItem(msg.item).catch((e) => {
                     logEvent('Tool処理中にエラー: ' + e.message);
                 });
@@ -2680,6 +2974,16 @@
             lastBargeInSpeechStartedAt = null;
             playbackPauseCount = 0;
             recentEvents = [];
+            // Expected Answer Window / Silence Timeout: 新しい通話ごとに必ず
+            // リセットする（前回通話の状態やタイマーを持ち越さない）。
+            expectedAnswerType = 'NONE';
+            if (answerWindowTimerId !== null) { clearTimeout(answerWindowTimerId); answerWindowTimerId = null; }
+            answerWindowType = null;
+            if (silenceTimerId !== null) { clearTimeout(silenceTimerId); silenceTimerId = null; }
+            if (silenceWarningTimerId !== null) { clearTimeout(silenceWarningTimerId); silenceWarningTimerId = null; }
+            silenceState = 'idle';
+            responseHasFunctionCall = false;
+            pendingSilenceGoodbyeHangup = false;
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。
@@ -3281,6 +3585,14 @@
             // 二重endCall()やnullアクセスにつながり得る。cleanup時は必ず解除する。
             // （failureSnapshot自体はここではクリアしない＝失敗直後も画面に残す）
             if (disconnectGraceTimer) { clearTimeout(disconnectGraceTimer); disconnectGraceTimer = null; }
+            // Expected Answer Window / Silence Timeout: 通話終了経路によらず、
+            // 残存タイマーが遅延発火してログを汚さないよう防御的に解除する
+            // （isStaleCallEventガードにより誤動作はしないが、タイマー自体は
+            // ここで確実に止める。state自体はfailureSnapshotと同じ方針で
+            // ここではリセットせず、次回startCall()でのみクリアする）。
+            if (answerWindowTimerId) { clearTimeout(answerWindowTimerId); answerWindowTimerId = null; }
+            if (silenceTimerId) { clearTimeout(silenceTimerId); silenceTimerId = null; }
+            if (silenceWarningTimerId) { clearTimeout(silenceWarningTimerId); silenceWarningTimerId = null; }
             stopMicLevelMeter();
             stopStatsPolling();
             // 再調査（第2ラウンド・PHASE「ブチッ」とcleanupの順序）: cleanupが
