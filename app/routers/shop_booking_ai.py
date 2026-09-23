@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import ValidationError
 
 from app.deps import get_db
-from app.models.shop import Shop, ShopHours
+from app.models.shop import Shop, ShopHours, ShopHoursOverride
 from app.schemas.reservation import ReservationCreateRequest
 from app.routers.reservations import create_reservation
 from app.services import voice_ai
@@ -56,6 +56,43 @@ async def _get_shop_or_404(db: AsyncSession, shop_id: str) -> Shop:
     return shop
 
 
+def _date_str_jst(d) -> str:
+    """datetime.date を「2026年9月24日（木曜日）」形式に整形する。
+    Reservation Intelligence Phase D-3: app/services/realtime_voice_ai.py の
+    同名関数と内容は同じだが、既存ファイルには手を加えない方針のため、ここに
+    独立して実装している（_build_hours_block()と同じ意図的な重複）。
+    """
+    return f"{d.year}年{d.month}月{d.day}日（{_DAY_NAMES_JA[d.weekday()]}曜日）"
+
+
+async def _build_override_lines(db: AsyncSession, shop_id: str) -> list:
+    """
+    Reservation Intelligence Phase D-3: 特定日の営業時間（ShopHoursOverride）の
+    うち、本日以降のものをシステムプロンプト埋め込み用のテキスト行に整形する。
+    app/services/realtime_voice_ai.py の同名関数と内容は同じ（Section38。詳細は
+    同関数のdocstring参照）。既存ファイルには手を加えない方針のため、ここに
+    独立して実装している。
+    """
+    today = datetime.now(JST).date()
+    result = await db.execute(
+        select(ShopHoursOverride)
+        .where(ShopHoursOverride.shop_id == shop_id, ShopHoursOverride.target_date >= today)
+        .order_by(ShopHoursOverride.target_date)
+        .limit(100)
+    )
+    overrides = result.scalars().all()
+    lines = []
+    for o in overrides:
+        opening = o.opening_time.strftime("%H:%M")
+        closing = ("翌" if o.closes_next_day else "") + o.closing_time.strftime("%H:%M")
+        line = f"{_date_str_jst(o.target_date)}: {opening}〜{closing}（通常の曜日ごとの営業時間とは異なる特別営業時間）"
+        if o.last_order_time:
+            lo = ("翌" if o.last_order_next_day else "") + o.last_order_time.strftime("%H:%M")
+            line += f"、ラストオーダー{lo}"
+        lines.append(line)
+    return lines
+
+
 async def _build_hours_block(db: AsyncSession, shop_id: str) -> str:
     result = await db.execute(select(ShopHours).where(ShopHours.shop_id == shop_id))
     rows = {h.day_of_week: h for h in result.scalars().all()}
@@ -74,6 +111,16 @@ async def _build_hours_block(db: AsyncSession, shop_id: str) -> str:
             opening = h.opening_time.strftime("%H:%M")
             closing = h.closing_time.strftime("%H:%M")
             lines.append(f"{_DAY_NAMES_JA[day]}曜: {opening}〜{closing}")
+
+    # Reservation Intelligence Phase D-3: 特定日の営業時間が本日以降に1件以上
+    # 登録されていれば末尾に追記する。1件も無い店舗では従来と完全に同じ
+    # テキストになる（realtime_voice_ai.py の _build_hours_block()と同じ方針）。
+    override_lines = await _build_override_lines(db, shop_id)
+    if override_lines:
+        lines.append("")
+        lines.append("※以下の特定の日付は、上記の曜日ごとの営業時間より優先されます:")
+        lines.extend(override_lines)
+
     return "\n".join(lines)
 
 

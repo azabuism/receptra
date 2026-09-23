@@ -18,7 +18,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_optional_current_user
 from app.schemas.user import CurrentUser
 from app.models.reservation import Reservation, ReservationStatus
-from app.models.shop import Shop, ShopHours, ShopTable, ShopClosure, ShopBreakTime
+from app.models.shop import Shop, ShopHours, ShopTable, ShopClosure, ShopBreakTime, ShopHoursOverride
 from app.models.service import Service
 from app.models.staff import Staff, StaffService
 from app.models.staff_shift import StaffWeeklyShift, StaffShiftOverride
@@ -236,25 +236,94 @@ def _existing_duration_minutes(existing: "Reservation", default_duration_minutes
     return existing.duration_minutes or default_duration_minutes
 
 
+async def _get_hours_override_for_date(
+    db: AsyncSession, shop_id: str, target_date: date_type
+) -> Optional[ShopHoursOverride]:
+    """
+    Reservation Intelligence Phase D-3: 指定したカレンダー日付について、登録
+    されている特定日の営業時間（ShopHoursOverride）を1件取得する。存在しなければ
+    None（＝その日はShopHoursOverrideが無いので、通常のShopHoursにフォールバック
+    する、という呼び出し元_resolve_day_hours()の判断材料になる）。
+    """
+    result = await db.execute(
+        select(ShopHoursOverride).filter(
+            ShopHoursOverride.shop_id == shop_id, ShopHoursOverride.target_date == target_date
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _resolve_day_hours(
+    db: AsyncSession, shop_id: str, target_date: date_type
+) -> tuple[Optional[object], Optional[str], bool]:
+    """
+    Reservation Intelligence Phase D-3: 指定したカレンダー日付の「営業時間の
+    出どころ」を1箇所で決定する共通ロジック。_resolve_business_session()と
+    _lookup_yesterday_overnight_session()、get_availability()の3箇所すべてが
+    本関数経由でShopHours/ShopHoursOverrideを参照することで、「Overrideが
+    Weeklyより優先される（定休日even含む）」という判断ロジックが重複しない
+    ようにする（ユーザー承認済み仕様。Section5/9）。
+
+    優先順位:
+    1. ShopHoursOverride（特定日の営業時間）が存在すれば、それを最優先で使う。
+       ShopHoursOverrideにはis_closedフィールドが存在しない（Section8。
+       app/models/shop.pyのShopHoursOverrideのdocstring参照）ため、行が
+       存在する＝常に「その日は営業する」という意味になる。これにより、
+       通常は定休日の曜日であってもSpecial Hoursを登録すればその日は
+       営業日になる。
+    2. ShopHoursOverrideが存在しなければ、通常の曜日ごとのShopHoursに
+       フォールバックする（Phase D-2までと完全に同じ挙動。Special Hoursを
+       1件も登録していない店舗では、本関数は常に(weekly_hours, "weekly",
+       not weekly_hours.is_closed)相当を返し、挙動は一切変化しない）。
+
+    戻り値: (hours, source, is_open)
+    - hours: ShopHoursOverride または ShopHours のインスタンス。両モデルとも
+      opening_time/closing_time/closes_next_day/last_order_time/
+      last_order_next_dayという同じ名前・同じ意味のフィールドを持つため、
+      _validate_reservation_time_window()には一切変更を加えずそのまま渡せる
+      （duck-typing互換。事前の監査で確認済み）。該当データが一切無ければNone。
+    - source: "override" | "weekly" | None。呼び出し元が休憩検索用の曜日を
+      必要とする場合は、target_date.weekday()から求めること（ShopHours
+      Overrideはday_of_weekを持たないため。Section18のMVPベースライン方針。
+      sourceの値そのものに依存しなくても同じ結果になる）。
+    - is_open: その日が営業日かどうか（is_closedの一般化）。Overrideは
+      常にTrue、Weeklyはis_closedフィールドで判定。データが一切無ければFalse。
+    """
+    override = await _get_hours_override_for_date(db, shop_id, target_date)
+    if override is not None:
+        return override, "override", True
+
+    weekday = target_date.weekday()
+    result = await db.execute(
+        select(ShopHours).filter(ShopHours.shop_id == shop_id, ShopHours.day_of_week == weekday)
+    )
+    hours = result.scalar_one_or_none()
+    if hours is None:
+        return None, None, False
+    return hours, "weekly", (not hours.is_closed)
+
+
 async def _lookup_yesterday_overnight_session(
     db: AsyncSession, shop_id: str, today_date: date_type, start_dt: datetime,
 ) -> tuple[Optional[ShopHours], Optional[date_type]]:
     """
-    Reservation Intelligence Phase D-1: today_dateの前日（yesterday）のShopHoursが
+    Reservation Intelligence Phase D-1: today_dateの前日（yesterday）の営業時間が
     日跨ぎ営業（closes_next_day=True）であり、かつstart_dtがその実際の営業セッション
     範囲 [yesterday opening, yesterday closing + 1日) に収まっている場合にのみ、
-    そのShopHoursと帰属日（yesterday_date）を返す。それ以外は (None, None)。
+    その営業時間と帰属日（yesterday_date）を返す。それ以外は (None, None)。
 
     日跨ぎを一切使わない店舗（yesterdayがcloses_next_day=Falseまたは定休日/未設定）
     では常に (None, None) を返し、呼び出し元は従来通りの判定にフォールバックする。
+
+    Phase D-3での変更点: yesterdayの営業時間の出どころとして、_resolve_day_hours()
+    経由でShopHoursOverride（yesterday_dateにSpecial Hoursが登録されていれば
+    そちら）も考慮するようにした。判定ロジック自体（closes_next_dayかつセッション
+    範囲内かどうか）は完全に同一で変更していない。Special Hoursが1件も登録されて
+    いない店舗・日付では従来通りShopHoursだけが使われ、挙動は変化しない。
     """
     yesterday_date = today_date - timedelta(days=1)
-    yesterday_weekday = yesterday_date.weekday()
-    result = await db.execute(
-        select(ShopHours).filter(ShopHours.shop_id == shop_id, ShopHours.day_of_week == yesterday_weekday)
-    )
-    yesterday_hours = result.scalar_one_or_none()
-    if yesterday_hours is None or yesterday_hours.is_closed or not yesterday_hours.closes_next_day:
+    yesterday_hours, _yesterday_source, yesterday_is_open = await _resolve_day_hours(db, shop_id, yesterday_date)
+    if yesterday_hours is None or not yesterday_is_open or not yesterday_hours.closes_next_day:
         return None, None
 
     session_start = datetime.combine(yesterday_date, yesterday_hours.opening_time)
@@ -316,16 +385,35 @@ async def _resolve_business_session(
     session_dateは、ShopClosure判定や_validate_reservation_time_window()に
     「このセッションがどの日に帰属するか」として渡す、start_dt.date()
     （calendar date）とは独立した値である点に注意。
+
+    Reservation Intelligence Phase D-3での変更点: todayの営業時間の出どころ
+    として、_resolve_day_hours()経由でShopHoursOverride（todayにSpecial Hoursが
+    登録されていればそちら。通常は定休日の曜日であってもSpecial Hoursの行が
+    存在すれば「営業している」とみなす。ユーザー承認済み仕様Section9）も考慮
+    するようにした。判定順序・優先順位ロジック自体（today優先、収まらなければ
+    yesterday継続を確認）は一切変更していない。
+
+    Section30監査結果（重要。STOP条件の検討結果）: 「today優先」の判定は
+    `start_dt.time() >= today_hours.opening_time` という決定的なif/elifの
+    排他分岐であり、today自身がこの条件を満たさない場合にのみyesterightからの
+    継続セッションを確認する（both候補を並べて「どちらか選ぶ」ような曖昧な
+    判定は一切行っていない）。そのため、前日と当日の両方に日跨ぎで重なって
+    見える営業時間が設定されている場合（例: 前日18:00〜翌03:00、かつ当日
+    01:00〜05:00の両方が登録されている状況）であっても、実際の判定は常に
+    todayの開店時刻（today_hours.opening_time）を基準に一意に確定する：
+    start_dt.time()がtodayのopening_time以降であれば常にtodayのセッションが
+    選ばれ、yesterday継続は一切検討されない（todayが休業/未設定/開店前の
+    場合にのみyesterday継続を確認する）。この優先順位はPhase D-1導入時からの
+    ユーザー承認済み仕様であり、Phase D-3はhours取得元をOverride対応にしただけ
+    で、優先順位ルール自体は変更していない。よって複数セッションの帰属が
+    曖昧になるケースは存在せず、Section30のSTOP条件には該当しない（この結論は
+    tests/smoke_test_business_hours_override.pyの専用テストで実際に検証済み）。
     """
     today_date = start_dt.date()
-    today_weekday = today_date.weekday()
 
-    today_result = await db.execute(
-        select(ShopHours).filter(ShopHours.shop_id == shop_id, ShopHours.day_of_week == today_weekday)
-    )
-    today_hours = today_result.scalar_one_or_none()
+    today_hours, _today_source, today_is_open = await _resolve_day_hours(db, shop_id, today_date)
 
-    if today_hours is not None and not today_hours.is_closed:
+    if today_hours is not None and today_is_open:
         if start_dt.time() >= today_hours.opening_time:
             return today_hours, today_date, None
         # start_dtがtodayの開店時刻より前 → 前日からの日跨ぎ継続の可能性を確認
@@ -938,9 +1026,14 @@ async def check_single_slot_availability(
     # 重なりを確認する。ShopClosure（終日休業）より後、営業時間境界チェックより後、
     # スタッフ/テーブルの空き状況チェックより前という順序（Section21・仕様書の
     # 優先順位: 終日休業 > 営業時間外 > 休憩時間 > 満席、を維持するための位置）。
-    # day_of_weekはowning_hours.day_of_week（＝session_dateの曜日。calendar dateの
-    # 曜日ではない点に注意。_get_shop_break_times()のdocstring参照）。
-    breaks = await _get_shop_break_times(db, shop.id, owning_hours.day_of_week)
+    # day_of_weekはsession_date.weekday()（＝営業セッションの帰属日の曜日。
+    # calendar dateの曜日ではない点に注意。_get_shop_break_times()のdocstring
+    # 参照）。Reservation Intelligence Phase D-3: owning_hoursがShopHours
+    # Override（day_of_weekフィールドを持たない）の場合もあるため、
+    # owning_hours.day_of_weekではなくsession_date.weekday()を使う
+    # （従来のWeekly-onlyケースでは両者は常に同じ値だったため、この変更は
+    # 既存の挙動に一切影響しない。Section18のMVPベースライン方針）。
+    breaks = await _get_shop_break_times(db, shop.id, session_date.weekday())
     if breaks and _overlaps_break_time(breaks, session_date, start_dt, start_dt + timedelta(minutes=duration)):
         return False, "break_time"
 
@@ -1114,15 +1207,18 @@ async def get_availability(
         message = f"臨時休業日です（{reason_text}）" if reason_text else "臨時休業日です"
         return AvailabilityResponse(**common, is_open=False, message=message, slots=[])
 
-    weekday = target_date.weekday()  # 0=月, 6=日
-    hours_result = await db.execute(
-        select(ShopHours).filter(ShopHours.shop_id == shop_id, ShopHours.day_of_week == weekday)
-    )
-    hours = hours_result.scalar_one_or_none()
+    # Reservation Intelligence Phase D-3: この日の営業時間の出どころ（特定日の
+    # 営業時間 ShopHoursOverride が優先。無ければ通常の曜日ごとの営業時間
+    # ShopHours にフォールバック）を _resolve_day_hours() で一括して決定する
+    # （_resolve_business_session() / _lookup_yesterday_overnight_session() と
+    # 同じ共通ロジックを使うことで、Override優先の判断が重複しないようにする）。
+    # Special Hoursを1件も登録していない店舗では、本関数は常に従来と同じ
+    # ShopHoursベースの結果を返すため、挙動は一切変化しない。
+    hours, hours_source, is_open = await _resolve_day_hours(db, shop_id, target_date)
 
     if hours is None:
         return AvailabilityResponse(**common, is_open=False, message="この店舗の営業時間が設定されていません", slots=[])
-    if hours.is_closed:
+    if not is_open:
         return AvailabilityResponse(**common, is_open=False, message="定休日です", slots=[])
 
     duration = _resolve_reservation_duration(service, shop)
@@ -1168,7 +1264,9 @@ async def get_availability(
     # 空リストのままで、以下のoverlapチェックは常にFalseになり挙動は変化しない。
     # get_availability()自身の既知の限定スコープ（前日から継続する日跨ぎセッションの
     # 深夜側スロットは今回対象外。上のコメント参照）と同じtarget_date基準で扱う。
-    breaks = await _get_shop_break_times(db, shop_id, weekday)
+    # Phase D-3: hoursがShopHoursOverrideの場合もあるため、day_of_week相当は
+    # target_date.weekday()から求める（他の3箇所と同じ修正方針）。
+    breaks = await _get_shop_break_times(db, shop_id, target_date.weekday())
     slots: List[AvailabilitySlot] = []
     cursor = opening_dt
     while cursor <= latest_start_dt:
@@ -1301,7 +1399,10 @@ async def create_reservation(
         # Reservation Intelligence Phase D-2: 休憩・予約停止時間との重なりを確認する
         # （check_single_slot_availability()と同じ優先順位・同じ判定式。
         # check-NG-but-create-OKのギャップを作らないため、ここでも必ず再検証する）。
-        breaks = await _get_shop_break_times(db, request.shop_id, owning_hours.day_of_week)
+        # Phase D-3: owning_hoursがShopHoursOverrideの場合もあるため、
+        # session_date.weekday()を使う（check_single_slot_availability()と
+        # 同じ修正。詳細は同関数のコメント参照）。
+        breaks = await _get_shop_break_times(db, request.shop_id, session_date.weekday())
         if breaks and _overlaps_break_time(
             breaks, session_date, request.reservation_date, request.reservation_date + timedelta(minutes=duration)
         ):
@@ -1622,7 +1723,9 @@ async def update_reservation(
             # 確認する（create_reservation()と同じ判定式。日時が実際に変更される
             # 場合にのみこのifブロックに入るため、日時に無関係な変更では不要な
             # 休憩時間クエリは発生しない）。
-            breaks = await _get_shop_break_times(db, reservation.shop_id, owning_hours.day_of_week)
+            # Phase D-3: owning_hoursがShopHoursOverrideの場合もあるため、
+            # session_date.weekday()を使う（他の2箇所と同じ修正）。
+            breaks = await _get_shop_break_times(db, reservation.shop_id, session_date.weekday())
             if breaks and _overlaps_break_time(
                 breaks, session_date, request.reservation_date,
                 request.reservation_date + timedelta(minutes=effective_duration),

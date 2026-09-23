@@ -182,6 +182,9 @@ class Shop(Base):
     # Reservation Intelligence Phase D-2: 休憩・予約停止時間。店舗削除時に一緒に削除する
     # （shop_hours/closuresと同じcascade方針）。
     break_times = relationship("ShopBreakTime", back_populates="shop", cascade="all, delete-orphan")
+    # Reservation Intelligence Phase D-3: 特定日の営業時間（上書き）。店舗削除時に
+    # 一緒に削除する（shop_hours/break_times/closuresと同じcascade方針）。
+    hours_overrides = relationship("ShopHoursOverride", back_populates="shop", cascade="all, delete-orphan")
     reservations = relationship("Reservation", back_populates="shop", cascade="all, delete-orphan")
     reviews = relationship("Review", back_populates="shop", cascade="all, delete-orphan")
     promotions = relationship("Promotion", back_populates="shop", cascade="all, delete-orphan")
@@ -343,6 +346,78 @@ class ShopBreakTime(Base):
 
     def __repr__(self):
         return f"<ShopBreakTime(shop_id={self.shop_id}, day={self.day_of_week}, {self.start_time}-{self.end_time})>"
+
+
+class ShopHoursOverride(Base):
+    """
+    特定日の営業時間（Reservation Intelligence Phase D-3）。
+
+    「特定のカレンダー日付」について、通常の曜日ごとの営業時間（ShopHours）とは
+    別に、その日だけの営業時間を登録する（例: 通常は月曜10:00〜20:00だが、
+    2026-12-31だけは10:00〜15:00にしたい。または通常は日曜定休だが、ある特定の
+    日曜だけ12:00〜18:00で営業したい）。
+
+    3つの責務の分離（ユーザー承認済み仕様。混同しないこと）:
+    - ShopHours: 曜日ごとの通常の繰り返し営業時間。
+    - ShopHoursOverride（本モデル）: 特定の1カレンダー日付だけの営業時間の
+      上書き。この行が存在する日は、ShopHoursの内容を完全に置き換える
+      （足し合わせるのではない）。ShopHoursが定休日（is_closed=True）の
+      曜日であっても、この行が存在すればその日は営業日として扱う。
+    - ShopClosure: 終日休業（理由を問わず、その日は一切営業しない）。
+      ShopHoursOverrideが存在していても、ShopClosureがあればその日は
+      休業が最優先される（優先順位: ShopClosure > ShopHoursOverride > ShopHours）。
+
+    意図的に持たせていないフィールド: is_closed（Section8。ユーザー承認済み仕様）。
+    「休業」はShopClosureの排他的な責務のままとし、本テーブルには一切持たせない
+    （本テーブルの行が存在する＝その日は特別営業時間で営業する、という意味しか
+    持たない。休業にしたい日はShopHoursOverrideではなくShopClosureに登録する）。
+
+    フィールド構成は意図的にShopHoursと同じ名前・意味に揃えている
+    （opening_time/closing_time/closes_next_day/last_order_time/
+    last_order_next_day）。これにより、営業時間境界の判定を行う
+    _validate_reservation_time_window()（app/routers/reservations.py）を
+    一切変更せずにそのまま本モデルのインスタンスにも使い回せる（同関数は
+    is_closed/day_of_weekには一切触れず、上記5フィールドのみを参照する
+    duck-typing互換の設計であることを事前に確認済み）。
+
+    day_of_week（曜日）は意図的に持たせない。本モデルが表すのはtarget_date
+    という1つのカレンダー日付そのものであり、曜日はtarget_date.weekday()から
+    いつでも導出できるため、冗長な列は持たせない（MVPベースラインとして
+    ユーザー承認済み。休憩時間帯の曜日ベース検索(_get_shop_break_times)との
+    連携は、target_dateの実際の曜日をその都度計算して渡す設計にする）。
+
+    UNIQUE(shop_id, target_date): 同じ店舗・同じ日付に複数の特別営業時間を
+    登録できないようにする（ShopHoursのUNIQUE(shop_id, day_of_week)と同じ
+    考え方を日付単位に適用したもの）。
+    """
+
+    __tablename__ = "shop_hours_overrides"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    shop_id = Column(String(36), ForeignKey("shops.id"), nullable=False, index=True)
+
+    target_date = Column(Date, nullable=False)
+
+    opening_time = Column(Time, nullable=False)
+    closing_time = Column(Time, nullable=False)
+
+    last_order_time = Column(Time, nullable=True)
+
+    # Phase D-1と同じ「暗黙推論しない」設計方針（ShopHours.closes_next_day参照）。
+    closes_next_day = Column(Boolean, nullable=False, default=False)
+    last_order_next_day = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    shop = relationship("Shop", back_populates="hours_overrides")
+
+    __table_args__ = (
+        Index("ix_shop_hours_overrides_shop_date", "shop_id", "target_date", unique=True),
+    )
+
+    def __repr__(self):
+        return f"<ShopHoursOverride(shop_id={self.shop_id}, date={self.target_date})>"
 
 
 class ShopPhotoKind(str, enum.Enum):

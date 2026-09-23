@@ -434,6 +434,44 @@
         </div>
 
         <div class="card">
+            <h2>特定日の営業時間</h2>
+            <p class="hint">
+                年末年始や特別営業日など、特定の1日だけ通常と異なる営業時間にしたい場合に登録できます。
+                登録した日は、曜日ごとの通常の営業時間（上の「営業時間・定休日」）よりもこちらの設定が優先されます。
+                普段は定休日の曜日でも、この日付を登録すればその日だけ営業扱いになります。<br>
+                終日休業（臨時休業）にしたい場合は、ここではなく下の「臨時休業日」に登録してください。
+            </p>
+            <form id="hours-override-form">
+                <div class="row-3">
+                    <div class="field">
+                        <label for="override-date">対象日 *</label>
+                        <input type="date" id="override-date" required>
+                    </div>
+                    <div class="field">
+                        <label for="override-open">開店時刻 *</label>
+                        <input type="time" id="override-open" required>
+                    </div>
+                    <div class="field">
+                        <label for="override-close">閉店時刻 *</label>
+                        <input type="time" id="override-close" required>
+                    </div>
+                </div>
+                <div class="row-3">
+                    <div class="field"><label><input type="checkbox" id="override-close-nextday"> 翌日に閉店</label></div>
+                    <div class="field">
+                        <label for="override-lastorder">ラストオーダー</label>
+                        <input type="time" id="override-lastorder">
+                    </div>
+                    <div class="field"><label><input type="checkbox" id="override-lastorder-nextday"> ラストオーダーも翌日</label></div>
+                </div>
+                <button type="submit" class="btn" id="hours-override-add-btn">この日の営業時間を登録</button>
+                <button type="button" class="btn-outline" id="hours-override-cancel-edit-btn" style="display:none;">編集をキャンセル</button>
+                <div class="msg" id="hours-override-msg"></div>
+            </form>
+            <div id="hours-override-list" style="margin-top: 18px;"></div>
+        </div>
+
+        <div class="card">
             <h2>休憩・予約停止時間</h2>
             <p class="hint">
                 営業時間の一部だけ、予約の受付を一時的に停止したい場合に登録できます（例：12:00〜13:00は休憩のため予約不可）。
@@ -1639,6 +1677,7 @@
             loadReservations();
             loadClosures();
             loadBreakTimes();
+            loadHoursOverrides();
             loadReviewsManage();
             loadCoupons();
             loadAiStaffSettings();
@@ -1863,6 +1902,139 @@
                 btn.disabled = false;
             }
         });
+
+        // ---------- 特定日の営業時間 ----------
+        let hoursOverrideEditingDate = null;
+
+        function _formatOverrideDateLabel(dateStr) {
+            // dateStrは"YYYY-MM-DD"。曜日表示のためにローカルタイムでDateを組み立てる
+            // （new Date("YYYY-MM-DD")はUTC解釈になり、日本時間で前日にずれる場合が
+            // あるための回避）。
+            const parts = dateStr.split('-').map(function (p) { return parseInt(p, 10); });
+            const d = new Date(parts[0], parts[1] - 1, parts[2]);
+            return dateStr + '（' + DAY_NAMES[(d.getDay() + 6) % 7] + '曜）';
+        }
+
+        async function loadHoursOverrides() {
+            const container = document.getElementById('hours-override-list');
+            try {
+                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/hours-overrides');
+                const overrides = await res.json();
+                if (!overrides.length) {
+                    container.innerHTML = '<p class="empty-hint">登録されている特定日の営業時間はありません</p>';
+                    return;
+                }
+                const sorted = overrides.slice().sort(function (a, b) {
+                    return a.target_date.localeCompare(b.target_date);
+                });
+                container.innerHTML = sorted.map(function (o) {
+                    const closeLabel = (o.closes_next_day ? '翌' : '') + o.closing_time.slice(0, 5);
+                    let label = _formatOverrideDateLabel(o.target_date) + '　' + o.opening_time.slice(0, 5) + '〜' + closeLabel;
+                    if (o.last_order_time) {
+                        label += '　L.O. ' + (o.last_order_next_day ? '翌' : '') + o.last_order_time.slice(0, 5);
+                    }
+                    return '<div class="closure-item">' +
+                        '<div><span class="name">' + label + '</span></div>' +
+                        '<div>' +
+                        '<button type="button" class="btn-outline hours-override-edit-btn" data-date="' + o.target_date + '">編集</button> ' +
+                        '<button type="button" class="btn-outline btn-danger hours-override-delete-btn" data-date="' + o.target_date + '">削除</button>' +
+                        '</div>' +
+                        '</div>';
+                }).join('');
+                container.querySelectorAll('.hours-override-edit-btn').forEach(function (btn) {
+                    btn.addEventListener('click', function () { startEditHoursOverride(btn.dataset.date, sorted); });
+                });
+                container.querySelectorAll('.hours-override-delete-btn').forEach(function (btn) {
+                    btn.addEventListener('click', function () { deleteHoursOverride(btn.dataset.date); });
+                });
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        function startEditHoursOverride(dateStr, list) {
+            const o = list.find(function (x) { return x.target_date === dateStr; });
+            if (!o) return;
+            hoursOverrideEditingDate = dateStr;
+            document.getElementById('override-date').value = o.target_date;
+            document.getElementById('override-open').value = o.opening_time.slice(0, 5);
+            document.getElementById('override-close').value = o.closing_time.slice(0, 5);
+            document.getElementById('override-close-nextday').checked = !!o.closes_next_day;
+            document.getElementById('override-lastorder').value = o.last_order_time ? o.last_order_time.slice(0, 5) : '';
+            document.getElementById('override-lastorder-nextday').checked = !!o.last_order_next_day;
+            document.getElementById('hours-override-add-btn').textContent = 'この日の営業時間を更新';
+            document.getElementById('hours-override-cancel-edit-btn').style.display = '';
+            document.getElementById('override-date').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        function cancelEditHoursOverride() {
+            hoursOverrideEditingDate = null;
+            document.getElementById('hours-override-form').reset();
+            document.getElementById('hours-override-add-btn').textContent = 'この日の営業時間を登録';
+            document.getElementById('hours-override-cancel-edit-btn').style.display = 'none';
+        }
+
+        document.getElementById('hours-override-cancel-edit-btn').addEventListener('click', cancelEditHoursOverride);
+
+        document.getElementById('hours-override-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('hours-override-msg');
+            const btn = document.getElementById('hours-override-add-btn');
+            const targetDate = document.getElementById('override-date').value;
+            const openingTime = document.getElementById('override-open').value;
+            const closingTime = document.getElementById('override-close').value;
+            const closesNextDay = document.getElementById('override-close-nextday').checked;
+            const lastOrderTime = document.getElementById('override-lastorder').value;
+            const lastOrderNextDay = document.getElementById('override-lastorder-nextday').checked;
+            if (!targetDate || !openingTime || !closingTime) return;
+            // 既に別の日付を編集モードにしていた状態から、日付を変えて新規登録する
+            // ような操作でも混乱しないよう、送信先は常にフォーム上のtargetDateを使う
+            // （upsert先はURLパスのtarget_dateで一意に決まるため、常に整合する）。
+            btn.disabled = true;
+            try {
+                const res = await authFetch(
+                    '/api/v1/shops/' + encodeURIComponent(shopId) + '/hours-overrides/' + encodeURIComponent(targetDate),
+                    {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            opening_time: openingTime,
+                            closing_time: closingTime,
+                            closes_next_day: closesNextDay,
+                            last_order_time: lastOrderTime || null,
+                            last_order_next_day: lastOrderNextDay
+                        })
+                    }
+                );
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(_extractErrorMessage(errData, '登録に失敗しました'));
+                }
+                showMsg(msg, '特定日の営業時間を保存しました', 'success');
+                cancelEditHoursOverride();
+                loadHoursOverrides();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '登録に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        async function deleteHoursOverride(targetDate) {
+            if (!confirm('この特定日の営業時間を削除しますか？（削除後は通常の曜日ごとの営業時間に戻ります）')) return;
+            const msg = document.getElementById('hours-override-msg');
+            try {
+                const res = await authFetch(
+                    '/api/v1/shops/' + encodeURIComponent(shopId) + '/hours-overrides/' + encodeURIComponent(targetDate),
+                    { method: 'DELETE' }
+                );
+                if (!res.ok) throw new Error('削除に失敗しました');
+                if (hoursOverrideEditingDate === targetDate) cancelEditHoursOverride();
+                loadHoursOverrides();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
+            }
+        }
 
         // ---------- 休憩・予約停止時間 ----------
         (function initBreakDaySelect() {

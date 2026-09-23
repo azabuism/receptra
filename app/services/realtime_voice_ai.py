@@ -28,7 +28,7 @@ from sqlalchemy.orm import undefer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.shop import Shop, ShopHours
+from app.models.shop import Shop, ShopHours, ShopHoursOverride
 from app.models.ai_staff_settings import AIStaffSettings
 from app.language_registry import (
     REQUIRED_AI_LANGUAGE, display_name_for, effective_ai_languages, effective_languages,
@@ -657,11 +657,62 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
+async def _build_override_lines(db: AsyncSession, shop_id: str) -> list[str]:
+    """
+    Reservation Intelligence Phase D-3: 特定日の営業時間（ShopHoursOverride）の
+    うち、本日以降のものをシステムプロンプト埋め込み用のテキスト行に整形する。
+
+    背景（Section38。ユーザー承認済み仕様）: 予約可否の判定
+    （_resolve_business_session()経由）はPhase D-3でShopHoursOverrideを
+    正しく考慮するようになったが、AIが「何時に閉まりますか？」等の質問に
+    自然文で答える際の案内文（_build_hours_block()が組み立てる曜日ごとの
+    営業時間テキスト）は従来、曜日ごとのShopHoursだけを見ており、Special
+    Hoursを考慮していなかった。この不整合（予約はできるのに案内が間違う）
+    を解消するため、曜日ごとの一覧の後に「特定日の営業時間」の一覧を追記する。
+
+    新しいTool・新しいAPI呼び出しは一切追加しない（Section38の制約）。
+    session開始時に1回だけ組み立てられる既存の静的テキストブロックに行を
+    追加するだけであり、AI自身に日付計算や「今日は特別営業日かどうか」の
+    判断をさせるわけではない（Python側で事前に該当行を絶対日付＋曜日付きで
+    整形して渡すだけ。既存の相対日付ブロックと同じ設計思想）。
+
+    件数は無制限にはせず、本日から数えて直近100件までに丸める（Special Hoursは
+    オーナーが手動で個別登録する疎なデータであり、通常は片手で数える程度の
+    件数にしかならないが、instructionsが際限なく肥大化しないための安全側の
+    上限。100件を超えるような登録が実際にあれば、それ自体が別途検討すべき
+    運用上の問題であり、本フェーズのスコープ外とする）。
+    """
+    today = datetime.now(JST).date()
+    result = await db.execute(
+        select(ShopHoursOverride)
+        .where(ShopHoursOverride.shop_id == shop_id, ShopHoursOverride.target_date >= today)
+        .order_by(ShopHoursOverride.target_date)
+        .limit(100)
+    )
+    overrides = result.scalars().all()
+    lines = []
+    for o in overrides:
+        opening = o.opening_time.strftime("%H:%M")
+        closing = ("翌" if o.closes_next_day else "") + o.closing_time.strftime("%H:%M")
+        line = f"{_date_str_jst(o.target_date)}: {opening}〜{closing}（通常の曜日ごとの営業時間とは異なる特別営業時間）"
+        if o.last_order_time:
+            lo = ("翌" if o.last_order_next_day else "") + o.last_order_time.strftime("%H:%M")
+            line += f"、ラストオーダー{lo}"
+        lines.append(line)
+    return lines
+
+
 async def _build_hours_block(db: AsyncSession, shop_id: str) -> str:
     """
     店舗の営業時間をシステムプロンプト埋め込み用のテキストに整形する。
     shop_booking_ai.py の同名処理と内容は同じだが、既存ファイルには手を
     加えない方針のため、ここに独立して実装している（意図的な重複）。
+
+    Reservation Intelligence Phase D-3: 曜日ごとの一覧に加えて、特定日の
+    営業時間（ShopHoursOverride）が本日以降に1件以上登録されていれば、その
+    一覧を末尾に追記する（_build_override_lines()参照）。Special Hoursを
+    1件も登録していない店舗では追記される内容が無く、従来と完全に同じ
+    テキストになる。
     """
     result = await db.execute(select(ShopHours).where(ShopHours.shop_id == shop_id))
     rows = {h.day_of_week: h for h in result.scalars().all()}
@@ -681,6 +732,13 @@ async def _build_hours_block(db: AsyncSession, shop_id: str) -> str:
             opening = h.opening_time.strftime("%H:%M")
             closing = h.closing_time.strftime("%H:%M")
             lines.append(f"{_DAY_NAMES_JA[day]}曜: {opening}〜{closing}")
+
+    override_lines = await _build_override_lines(db, shop_id)
+    if override_lines:
+        lines.append("")
+        lines.append("※以下の特定の日付は、上記の曜日ごとの営業時間より優先されます:")
+        lines.extend(override_lines)
+
     return "\n".join(lines)
 
 
