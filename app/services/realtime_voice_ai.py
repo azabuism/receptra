@@ -894,10 +894,116 @@ _SCOPE_TEMPLATE = """\
 不必要にToolを呼び出したり、店舗と無関係な情報を詳しく説明したりしないでください。\
 """
 
+# Conversation Opening / Intent Classification: 通話冒頭でお客様のご用件を
+# 早期に把握し、適切なフローへ自然に橋渡しするための運用ルール。常に固定
+# （店舗独自のcustom_instructionsによって上書き・無効化されない）。
+# build_realtime_instructions()のセクション挿入順ルールに従い、
+# _SCOPE_TEMPLATEの直後・_FAST_RESERVATION_FLOW_TEMPLATEの直前に配置する。
+#
+# 設計方針（重要・必ず守ること。ユーザー(谷村様)の明示的な指示に基づく）:
+# - 「20秒で音声を強制的に打ち切る」仕組みでは一切ない。OpenAI Realtime APIの
+#   応答生成はsemantic_vadが検知した自然なターン区切り（または手動commit）
+#   でしか発火しないため、お客様の発話そのものを物理的に遮ることは
+#   instructions（このテンプレート）だけでは実現できないと監査の結果
+#   判断した（実現するにはeagerness変更、またはNAME Forced Commit
+#   Observation PoCと同種の手動commit介入が必要になるが、いずれも今回の
+#   スコープ外・明示的に禁止されている。この判断・切り分けは谷村様へ
+#   実装前に報告済み）。したがってここでの「20秒」はAI自身が「最初の
+#   ご用件を把握する」際の目安値として文中に含めるだけであり、
+#   input_audio_buffer.commitの送信・音声トラック停止・response.createの
+#   無条件送信など、クライアント側の時間管理処理は一切追加しない
+#   （NAME Forced Commit Observation PoCはNAME確認専用のまま維持し、
+#   このセクションを口実に汎用化しない）。
+# - RESERVATION/CALLBACK/QUESTIONの各フローの詳細な進め方は、このセクションで
+#   重複して書かず、既存の_FAST_RESERVATION_FLOW_TEMPLATE（このセクションの
+#   直後）・_HUMAN_HANDOFF_TEMPLATE（7a）・_SHOP_KNOWLEDGE_RULES_TEMPLATE（7b）
+#   にそのまま委ねる。9個目のToolは追加しない（request_callback/
+#   get_shop_info/check_availability/create_reservationの既存4 Toolで
+#   4分類すべてに対応できると監査の結果判断したため）。
+# - 「同じご用件を何度も判定し直して会話がブレる」ことを防ぐための専用state
+#   （クライアント側JS変数・サーバー側DBの新規カラム/テーブル）は追加しない。
+#   Realtime APIの1通話は会話履歴を保持し続ける単一セッションであるため、
+#   「一度把握したご用件はお客様自身が話を変えない限り判定し直さない」という
+#   一文をこのテンプレート内の指示として含めることで対応する（実機テストで
+#   崩れが確認された場合に軽量なstate導入を再検討する）。
+_INTENT_CLASSIFICATION_TEMPLATE = """\
+# 通話冒頭のご用件把握（Conversation Opening / Intent Classification）（重要・必ず守ってください）
+電話に出たら、お客様が話し終わるのを黙って待ち続けるのではなく、人間の
+受付スタッフのように、お話の内容から早めにご用件を把握し、適切な対応へ
+自然に橋渡ししてください。
+
+## 4つの分類
+お客様のご用件を、次の4つのいずれかとして把握してください（細かく分類
+しすぎず、この4つで十分です）:
+1. RESERVATION（ご予約） - 来店・来院等の予約をしたい
+2. CALLBACK / HUMAN_HANDOFF（折り返し・担当者への取り次ぎ） - 担当者からの
+   折り返しを希望、特定のスタッフに用がある、担当者でないと分からない内容
+3. QUESTION / INFORMATION（お問い合わせ） - 営業時間・料金・サービス内容・
+   アクセス・持ち物など、その場で回答できる質問
+4. OTHER / UNCLEAR（不明） - 上記のいずれかがまだ判断できない
+
+## 「原則20秒以内」はあくまで目安であり、待機時間ではありません（重要）
+お客様のお話の内容から、ご用件が上記1〜3のいずれかだとはっきり分かった
+時点で、それ以上待たずすぐに対応へ進んでください。原則20秒以内を目安に
+最初のご用件を把握する、という考え方ですが、これは「20秒間は待たなければ
+ならない」という意味では全くありません。5秒・8秒・10秒など、それより
+早くはっきり分かった場合は、すぐにその時点で対応してください。
+例:「今日予約したいんですけど……」とだけ言われた時点で、ご予約という
+ことは既に明確なので、それ以上待たず「ありがとうございます。ご予約
+ですね。ご希望の日時を教えてください。」とすぐに続けてください。
+
+## ご用件を把握したら、必要以上に聞き込まない
+お客様が症状やご事情を長めに話された場合でも（例:「腰が痛くて、最近
+ずっと調子が悪くて……」）、それがご予約のご相談だと分かった時点で、
+その内容をさらに深掘りする質問（「いつからですか？」「どのように
+痛みますか？」等）は重ねないでください。「ありがとうございます。
+ご予約のご相談ですね。では、ご希望の日時を教えてください。」のように、
+短く受け止めてすぐに次へ進んでください（来店理由の確認については、
+この後の該当セクションの案内に従ってください。オーナー設定でOFFの
+場合は、それ以上深掘りしないでください）。
+
+## 自然な相槌で会話に入る
+「ありがとうございます。」「承知しました。」のような短い相槌を使って
+会話に入って構いません。まだご用件がはっきりしない場合は、
+「すみません、一度確認させてください。」のように前置きしてから、
+後述のOTHER/UNCLEARの確認質問に進んでください。相槌はあくまで自然な
+橋渡しのためのものであり、お客様がまだ話している内容を無理に遮ったり、
+経過時間だけを理由に話を急かしたりすることは絶対にしないでください。
+
+## それぞれの分類での進め方
+- RESERVATION: このすぐ後の「Fast Reservation Flow」セクションの進め方に
+  従ってください。
+- CALLBACK / HUMAN_HANDOFF: 新しい仕組みは使わず、必ず既存の
+  request_callbackツールおよびこの後の「Human Handoff」セクションの
+  進め方に従ってください。
+- QUESTION / INFORMATION: 必ず既存のget_shop_infoツールおよびこの後の
+  「店舗情報の質問への回答ルール」セクションの進め方に従って回答して
+  ください。回答が済んだら、不要に「ご予約はいかがですか？」等と予約へ
+  誘導せず、それで完結する内容であれば「ありがとうございます。」のように
+  自然に会話を締めくくって構いません。
+- OTHER / UNCLEAR: 自分で用件を決めつけず、できれば二択程度の短い確認
+  質問をしてください。例:「すみません、一度確認させてください。
+  ご予約についてでしょうか？それとも担当者からの折り返しをご希望
+  でしょうか？」
+
+## 来店理由とご用件（Intent）を混同しない（重要）
+「腰が痛くて予約したい」と言われた場合、ご用件（Intent）はRESERVATION、
+腰が痛いという内容は来店理由です。体調や症状に関する発言だけを理由に、
+ご用件をCALLBACKやQUESTIONだと誤って分類しないでください。
+
+## 一度把握したご用件は、お客様の発言が変わらない限り判定し直さない
+一度ご用件を把握して該当のフローに進んだ後は、お客様ご自身が話す内容を
+変えない限り、同じご用件を何度も確認し直したり、最初から判断をやり
+直したりしないでください。\
+"""
+
 # Fast Reservation Flow: 「予約電話を自然・正確・短時間で終える」ための
 # 会話設計ルール。常に固定（店舗独自のcustom_instructionsによって上書き・
 # 無効化されない）。build_realtime_instructions()のセクション挿入順ルールに
-# 従い、_SCOPE_TEMPLATEの直後・_EXAMPLES_TEMPLATE_BASEの直前に配置する。
+# 従い、_INTENT_CLASSIFICATION_TEMPLATEの直後・_EXAMPLES_TEMPLATE_BASEの
+# 直前に配置する（Intent Classification導入前は_SCOPE_TEMPLATEの直後だったが、
+# Conversation Opening / Intent Classificationセクションの追加に伴い位置を
+# 一つ後ろにずらした）。
 #
 # 設計方針（重要・必ず守ること。ユーザー(谷村様)の明示的な指示に基づく）:
 # - RECEPTRAは「たくさん質問するAI」ではなく「必要なことだけを尋ねてすぐに
@@ -1711,7 +1817,8 @@ async def build_realtime_instructions(
     Constraintsの間にのみ挿入する。Phase3B追加要件のScopeはCoreの直後に挿入）:
       1. Core Rules（話し方の絶対ルール・言語ルール）        … 常に固定・最上位
       2. Scope（Phase3B: 受付業務の会話範囲ルール）          … 常に固定
-      2a. Fast Reservation Flow（予約受付を短時間で終える会話設計ルール） … 常に固定
+      2a. Conversation Opening / Intent Classification（通話冒頭のご用件把握） … 常に固定
+      2b. Fast Reservation Flow（予約受付を短時間で終える会話設計ルール） … 常に固定
       3. Examples（話し方の見本）                            … 常に固定
       4. Shop Information（営業時間・本日の日付）            … 常に固定
       4b. Service Terminology（Phase3H: 業種別の「サービス」呼称） … 該当業種のみ
@@ -1757,17 +1864,33 @@ async def build_realtime_instructions(
     既存の不変条件は変更しない。
 
     Fast Reservation Flow追記:
-    - 2a（_FAST_RESERVATION_FLOW_TEMPLATE）はScopeの直後・Examplesの直前に、
-      staff_settingsの有無に関わらず常に固定文言として挿入する。人数確認の
-      要否は_build_party_size_guidance(shop.business_type)で業種ごとに
-      差し替える（テンプレート自体は1つだけで、業種分岐はこの関数内の
-      dictのみで完結させ、instructions生成処理自体を業種でハードコード
-      分岐させない）。
+    - 2b（_FAST_RESERVATION_FLOW_TEMPLATE）はIntent Classificationの直後・
+      Examplesの直前に、staff_settingsの有無に関わらず常に固定文言として
+      挿入する。人数確認の要否は_build_party_size_guidance(shop.business_type)
+      で業種ごとに差し替える（テンプレート自体は1つだけで、業種分岐はこの
+      関数内のdictのみで完結させ、instructions生成処理自体を業種で
+      ハードコード分岐させない）。
     - 7f（_VISIT_REASON_TEMPLATE、_build_visit_reason_sectionで組み立て）は、
       staff_settingsが存在し、かつask_visit_reason_enabledがtrueの場合にのみ、
       Time Ambiguityの直後・Booking Safetyの直前に挿入する。OFFの場合や
       staff_settingsが存在しない場合（レコード未作成＝デフォルトOFF）は
       一切挿入しない（既存店舗の挙動は変更されない）。
+
+    Conversation Opening / Intent Classification追記（谷村様の明示的な指示に
+    基づく）:
+    - 2a（_INTENT_CLASSIFICATION_TEMPLATE）はScopeの直後・Fast Reservation
+      Flowの直前に、staff_settingsの有無や業種に関わらず常に固定文言として
+      挿入する。RESERVATION/CALLBACK/HUMAN_HANDOFF/QUESTION/INFORMATION/
+      OTHER・UNCLEARの4分類と、通話冒頭でのご用件把握のタイミング・進め方を
+      定めるだけで、各分類の詳細な進め方自体はFast Reservation Flow・
+      Human Handoff・Shop Knowledge Rulesの各既存セクションにそのまま委ねる
+      （重複して書き直さない）。
+    - 「20秒」はAI自身の判断目安としてのみ文中に含め、client側の強制的な
+      音声打ち切り・commit送信等は一切実装していない（NAME Forced Commit
+      Observation PoCとは無関係・別スコープ）。新規Toolの追加、新規の
+      Intent保持用state（クライアント側変数・サーバー側DB）の追加も、
+      いずれも行っていない（監査の結果、既存4Toolと会話履歴のみで十分と
+      判断したため）。
     """
     hours_block = await _build_hours_block(db, shop.id)
 
@@ -1780,6 +1903,7 @@ async def build_realtime_instructions(
             language_rules_section=_build_language_rules_section(ai_languages, staff_languages),
         ),
         _SCOPE_TEMPLATE,
+        _INTENT_CLASSIFICATION_TEMPLATE,
         _FAST_RESERVATION_FLOW_TEMPLATE.format(
             party_size_guidance=_build_party_size_guidance(shop.business_type)
         ),
