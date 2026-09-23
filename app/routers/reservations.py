@@ -185,6 +185,67 @@ def _existing_duration_minutes(existing: "Reservation", default_duration_minutes
     return existing.duration_minutes or default_duration_minutes
 
 
+def _validate_reservation_time_window(
+    hours: ShopHours, target_date: date_type, start_time, duration_minutes: int
+) -> Optional[str]:
+    """
+    Reservation Intelligence Phase C: 予約枠（start_time 〜 start_time+duration_minutes）
+    全体が、指定した曜日の営業時間(hours)に収まっているかどうかを判定する共通ロジック。
+
+    背景（Phase B完了報告で発見し、Phase Cで修正した不整合）: 以前は
+    check_single_slot_availability() / get_availability() が
+    「last_order_time未設定の場合のみclosing_timeからdurationを差し引く」
+    formulaを使っていたのに対し、create_reservation()だけが
+    `hours.last_order_time or hours.closing_time`（durationを一切考慮しない）
+    という別のformulaを使っており、check側ではNGのはずの予約がcreate側では
+    誤って成立してしまう可能性があった。加えて、last_order_timeが設定されて
+    いる店舗では、従来どちらの経路も「予約の開始時刻がlast_order_time以前か」
+    しか見ておらず、「予約の終了時刻(start+duration)がclosing_timeを超えないか」
+    を一切確認していなかった（例: last_order_time=19:00, closing_time=20:00の
+    店舗で、90分のサービスを19:00開始で受け付けると20:30終了になり、
+    閉店を30分超過してしまうが、従来はこれを検知できなかった）。
+
+    本関数はこの2つの問題を1箇所で解消し、
+    check_single_slot_availability() / get_availability() /
+    create_reservation() / update_reservation() の4箇所すべてから呼ばれる
+    唯一のsource of truthとする。
+
+    判定内容:
+    1. start_time が opening_time 以降であること。
+    2. start_time が「最終予約開始可能時刻」（last_order_time が設定されて
+       いればその値。無ければ closing_time から duration_minutes を
+       差し引いた時刻）以前であること。last_order_timeの意味自体は変更
+       しない（既存の「予約受付可能時間」という店舗設定値をそのまま尊重する）。
+    3. 予約の終了時刻（start_time + duration_minutes）が closing_time を
+       超えないこと（last_order_timeの設定有無に関わらず必ず確認する。
+       上記の欠陥の直接の修正）。
+
+    日跨ぎ営業時間（例: 18:00〜翌03:00）は本Phaseの対象外。終了時刻が
+    target_dateの翌日にまたがるケースは、closing_time（同日扱い）との
+    比較により安全側（fail-closed）で営業時間外として扱われる
+    （日跨ぎの正式サポートはPhase D以降の課題として別途検討する）。
+
+    戻り値: 問題なければNone。問題があれば既存のreason_code文字列
+    "outside_business_hours"（新規reason_codeは追加しない。既存のAI案内
+    文言・テストとの互換性を保つため）。
+    """
+    if start_time < hours.opening_time:
+        return "outside_business_hours"
+
+    latest_start_time = hours.last_order_time or (
+        (datetime.combine(target_date, hours.closing_time) - timedelta(minutes=duration_minutes)).time()
+    )
+    if start_time > latest_start_time:
+        return "outside_business_hours"
+
+    end_dt = datetime.combine(target_date, start_time) + timedelta(minutes=duration_minutes)
+    closing_dt = datetime.combine(target_date, hours.closing_time)
+    if end_dt > closing_dt:
+        return "outside_business_hours"
+
+    return None
+
+
 async def _find_available_table(
     db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int,
     default_duration_minutes: int, excluded_table_ids: Optional[set] = None,
@@ -248,7 +309,8 @@ async def _find_available_table(
 
 
 async def _lock_and_verify_table_slot(
-    db: AsyncSession, table_id: str, start: datetime, duration_minutes: int, default_duration_minutes: int
+    db: AsyncSession, table_id: str, start: datetime, duration_minutes: int, default_duration_minutes: int,
+    exclude_reservation_id: Optional[str] = None,
 ) -> bool:
     """
     Phase3E-3: 同時多重予約防止。対象テーブルの行をSELECT ... FOR UPDATEで
@@ -260,15 +322,22 @@ async def _lock_and_verify_table_slot(
     default_duration_minutes: Reservation Intelligence Phase B追加。
     _find_available_table()と同じ意味（既存予約自身のduration_minutesが
     NULLの場合のみのフォールバック）。
+
+    exclude_reservation_id: Reservation Intelligence Phase C追加。
+    update_reservation()（Owner予約編集）が、変更対象のReservation自身を
+    重複判定から除外するために使う。create_reservation()（新規作成）では
+    まだそのReservationが存在しないため常にNoneのまま呼び出され、従来通りの
+    挙動になる。
     """
     await db.execute(select(ShopTable.id).filter(ShopTable.id == table_id).with_for_update())
     end = start + timedelta(minutes=duration_minutes)
-    overlap_result = await db.execute(
-        select(Reservation).filter(
-            Reservation.table_id == table_id,
-            Reservation.status.in_(["pending", "confirmed"]),
-        )
-    )
+    overlap_filters = [
+        Reservation.table_id == table_id,
+        Reservation.status.in_(["pending", "confirmed"]),
+    ]
+    if exclude_reservation_id is not None:
+        overlap_filters.append(Reservation.id != exclude_reservation_id)
+    overlap_result = await db.execute(select(Reservation).filter(*overlap_filters))
     for existing in overlap_result.scalars().all():
         existing_start = existing.reservation_date
         existing_end = existing_start + timedelta(
@@ -493,7 +562,8 @@ async def _find_available_staff_for_service(
 
 
 async def _lock_and_verify_staff_slot(
-    db: AsyncSession, staff_id: str, start: datetime, duration_minutes: int, default_duration_minutes: int
+    db: AsyncSession, staff_id: str, start: datetime, duration_minutes: int, default_duration_minutes: int,
+    exclude_reservation_id: Optional[str] = None,
 ) -> bool:
     """
     Phase3E-3: 同時多重予約防止。対象スタッフの行をSELECT ... FOR UPDATEで
@@ -507,15 +577,22 @@ async def _lock_and_verify_staff_slot(
     default_duration_minutes: Reservation Intelligence Phase B追加。
     _find_available_table()と同じ意味（既存予約自身のduration_minutesが
     NULLの場合のみのフォールバック）。
+
+    exclude_reservation_id: Reservation Intelligence Phase C追加。
+    update_reservation()（Owner予約編集）が、変更対象のReservation自身を
+    重複判定から除外するために使う（_lock_and_verify_table_slot()と同じ
+    考え方）。create_reservation()では常にNoneのまま呼び出され、従来通りの
+    挙動になる。
     """
     await db.execute(select(Staff.id).filter(Staff.id == staff_id).with_for_update())
     end = start + timedelta(minutes=duration_minutes)
-    overlap_result = await db.execute(
-        select(Reservation).filter(
-            Reservation.staff_id == staff_id,
-            Reservation.status.in_(["pending", "confirmed"]),
-        )
-    )
+    overlap_filters = [
+        Reservation.staff_id == staff_id,
+        Reservation.status.in_(["pending", "confirmed"]),
+    ]
+    if exclude_reservation_id is not None:
+        overlap_filters.append(Reservation.id != exclude_reservation_id)
+    overlap_result = await db.execute(select(Reservation).filter(*overlap_filters))
     for existing in overlap_result.scalars().all():
         existing_start = existing.reservation_date
         existing_end = existing_start + timedelta(
@@ -626,12 +703,12 @@ async def check_single_slot_availability(
             return False, "service_unavailable"
 
     duration = _resolve_reservation_duration(service, shop)
-    latest_start_time = hours.last_order_time or (
-        (datetime.combine(target_date, hours.closing_time) - timedelta(minutes=duration)).time()
-    )
-
-    if target_time < hours.opening_time or target_time > latest_start_time:
-        return False, "outside_business_hours"
+    # Reservation Intelligence Phase C: 営業時間境界（開始・終了の両方）の
+    # 判定を共通helperへ一本化（詳細は_validate_reservation_time_window()の
+    # docstring参照）。
+    boundary_reason = _validate_reservation_time_window(hours, target_date, target_time, duration)
+    if boundary_reason is not None:
+        return False, boundary_reason
 
     start_dt = datetime.combine(target_date, target_time)
     # create_reservation / get_availability と同じ比較方法。Phase3E-3で
@@ -836,6 +913,15 @@ async def get_availability(
     cursor = opening_dt
     while cursor <= latest_start_dt:
         if cursor > now:
+            # Reservation Intelligence Phase C: latest_start_dtまでの30分刻みの
+            # 候補のうち、last_order_timeが設定されている店舗では「開始時刻は
+            # last_order_time以内でも、終了時刻がclosing_timeを超える」候補が
+            # 混在し得る（_validate_reservation_time_window()のdocstring参照）。
+            # そのような候補はスロット自体を生成しない（営業時間外の時刻が
+            # 一覧に出ないようにする。closure/is_closedと同じ扱い）。
+            if _validate_reservation_time_window(hours, target_date, cursor.time(), duration) is not None:
+                cursor += timedelta(minutes=SLOT_INTERVAL_MINUTES)
+                continue
             if service:
                 found_staff_id, unmanaged = await _find_available_staff_for_service(
                     db, shop_id, service.id, cursor, duration, default_duration, staff_id,
@@ -931,12 +1017,22 @@ async def create_reservation(
             )
         if hours.is_closed:
             raise _http_error(400, "ご指定の日は定休日です", reason_code="shop_closed")
-        req_time = request.reservation_date.time()
-        latest_start_time = hours.last_order_time or hours.closing_time
-        if req_time < hours.opening_time or req_time > latest_start_time:
-            raise _http_error(400, "ご指定の時間は営業時間外です", reason_code="outside_business_hours")
 
         duration = _resolve_reservation_duration(service, shop)
+        # Reservation Intelligence Phase C: 以前はここだけ
+        # `hours.last_order_time or hours.closing_time`（durationを一切
+        # 考慮しない）という、check_single_slot_availability()/get_availability()
+        # とは異なる緩い判定式を使っており、両者の間で「checkはNGなのに
+        # createはOK」という不整合が起き得た（Phase B完了報告で発見、Phase C
+        # で修正）。共通helperへ統一し、開始時刻だけでなく終了時刻が
+        # closing_timeを超えないことも必ず確認する
+        # （詳細は_validate_reservation_time_window()のdocstring参照）。
+        boundary_reason = _validate_reservation_time_window(
+            hours, request.reservation_date.date(), request.reservation_date.time(), duration
+        )
+        if boundary_reason is not None:
+            raise _http_error(400, "ご指定の時間は営業時間外です", reason_code=boundary_reason)
+
         # Reservation Intelligence Phase B: 既存予約自身のduration_minutesが
         # NULL（Phase B以前に作成された予約）の場合にのみ使うフォールバック値。
         # check_single_slot_availability()/get_availability()と同じ考え方。
@@ -1205,6 +1301,78 @@ async def update_reservation(
             # Phase3E-3: reservation_dateと同じ基準(JST-naive)の「現在時刻」に統一
             if request.reservation_date <= _reservation_basis_now():
                 raise HTTPException(status_code=400, detail="過去の日時には変更できません")
+
+            # Reservation Intelligence Phase C: 日時が変更される場合のみ、
+            # create_reservation()と同じ一連のルール（臨時休業・営業時間・
+            # 既存予約との重複・スタッフシフト）を再検証してから保存する。
+            # 以前はここで一切の再検証が行われておらず、Ownerが既存の別予約
+            # と重なる時間へ自由に変更できてしまう（ダブルブッキングを作り
+            # 出せてしまう）既知の不整合があった（Phase B完了報告で発見）。
+            # guest_name等、日時に無関係な項目だけの変更ではこのブロックに
+            # 入らないため、不要な検証は増えない。
+            new_date = request.reservation_date.date()
+            new_time = request.reservation_date.time()
+
+            new_closure = await _get_closure_for_date(db, reservation.shop_id, new_date)
+            if new_closure:
+                raise HTTPException(status_code=400, detail="ご指定の日は臨時休業のため、その日時には変更できません")
+
+            new_weekday = new_date.weekday()
+            new_hours_result = await db.execute(
+                select(ShopHours).filter(ShopHours.shop_id == reservation.shop_id, ShopHours.day_of_week == new_weekday)
+            )
+            new_hours = new_hours_result.scalar_one_or_none()
+            if new_hours is None:
+                raise HTTPException(status_code=400, detail="この店舗は営業時間が設定されていないため、その日時には変更できません")
+            if new_hours.is_closed:
+                raise HTTPException(status_code=400, detail="ご指定の日は定休日のため、その日時には変更できません")
+
+            # この予約自身の占有時間。Phase B以降に作成された予約は
+            # reservation.duration_minutesを持つが、Phase B以前のlegacy予約は
+            # NULLのため、既存の_resolve_reservation_duration()（Service→
+            # 店舗デフォルト→90分）にフォールバックする（Phase Bのfallback
+            # ルールをそのまま再利用。ここで新しいルールは作らない）。
+            effective_duration = reservation.duration_minutes or _resolve_reservation_duration(reservation.service, shop)
+
+            boundary_reason = _validate_reservation_time_window(new_hours, new_date, new_time, effective_duration)
+            if boundary_reason is not None:
+                raise HTTPException(status_code=400, detail="ご指定の時間は営業時間外のため、その日時には変更できません")
+
+            default_duration = shop.reservation_duration_minutes or 90
+
+            # table_id/staff_idの変更自体は現状のReservationUpdateRequestでは
+            # サポートされていない（既に割り当て済みのresourceは固定のまま）。
+            # そのため、候補探索(_find_available_table等)は不要で、既に確定
+            # している自分自身のresourceについてだけ、新しい時間帯で重複が
+            # ないかを確認すればよい。exclude_reservation_id=reservation.idで
+            # 自分自身を重複判定から除外する（自分の元の予約と比較して誤って
+            # 「重複」と判定しないため）。
+            if reservation.staff_id:
+                if shop.staff_schedule_enabled:
+                    # Reservation Intelligence Phase C: create_reservation経路
+                    # (_find_available_staff_for_service経由)と同じシフト
+                    # チェックを、Owner編集でも同様に適用する。既存の
+                    # _is_staff_scheduled()をそのまま再利用し、判定ロジックを
+                    # 重複実装しない。
+                    scheduled = await _is_staff_scheduled(
+                        db, reservation.staff_id, request.reservation_date, effective_duration
+                    )
+                    if not scheduled:
+                        raise HTTPException(status_code=400, detail="ご指定の時間はスタッフの勤務時間外のため変更できません")
+                slot_ok = await _lock_and_verify_staff_slot(
+                    db, reservation.staff_id, request.reservation_date, effective_duration, default_duration,
+                    exclude_reservation_id=reservation.id,
+                )
+                if not slot_ok:
+                    raise HTTPException(status_code=400, detail="ご指定の時間は既に他の予約が入っているため変更できません")
+            elif reservation.table_id:
+                slot_ok = await _lock_and_verify_table_slot(
+                    db, reservation.table_id, request.reservation_date, effective_duration, default_duration,
+                    exclude_reservation_id=reservation.id,
+                )
+                if not slot_ok:
+                    raise HTTPException(status_code=400, detail="ご指定の時間は既に他の予約が入っているため変更できません")
+
             reservation.reservation_date = request.reservation_date
 
         reservation.updated_at = datetime.utcnow()
