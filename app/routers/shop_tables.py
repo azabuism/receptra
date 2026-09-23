@@ -20,7 +20,7 @@ from app.models.reservation import Reservation
 from app.schemas.shop_table import (
     ShopTableCreateRequest, ShopTableUpdateRequest, ShopTableResponse
 )
-from app.routers.reservations import _validate_table_capacity
+from app.routers.reservations import _validate_table_capacity, _reservation_basis_now
 
 router = APIRouter(prefix="/api/v1/shops", tags=["shop-tables"])
 
@@ -28,30 +28,38 @@ router = APIRouter(prefix="/api/v1/shops", tags=["shop-tables"])
 # かつ reservation_date >= 現在時刻）。Resource Mutation Safetyでもこの定義を
 # そのまま再利用する（新しい定義を発明しない。Section4/10/11）。
 #
-# 既知の制限（今回新規に持ち込んだものではなく、delete_table()に元々あった
-# ものをそのまま引き継いでいる）: ここでの「現在時刻」はdatetime.utcnow()で
-# あり、reservation_date自体はJST-naiveな値として保存されている
-# （app/routers/reservations.pyの_reservation_basis_now()のdocstring参照）。
-# そのため、日本時間の日付境界付近では最大9時間のズレが生じ得る。
-# reservations.py側はPhase3E-3でこの不具合を_reservation_basis_now()経由で
-# 修正済みだが、shop_tables.py側のdelete_table()は元々その修正の対象外
-# だった。今回のフェーズはdelete_table()の既存定義をそのまま再利用する
-# ことが明示的に指示されているため、この既存の不整合を今回新たに修正・
-# 変更することはしない（完了報告の既知制限として記載する）。
+# Reservation Time Basis Consistencyフェーズで修正: 以前は「現在時刻」に
+# datetime.utcnow()（真のUTC時刻）を使っていたが、reservation_date自体は
+# JST-naiveな値として保存されている（app/routers/reservations.pyの
+# _reservation_basis_now()のdocstring参照。3つの予約経路すべてがJSTの
+# 壁時計時刻をnaive datetimeとして保存する、単一の一貫した設計）。
+# そのため日本時間の日付境界付近で最大9時間のズレが生じ、既にJST基準では
+# 過去になった予約を「まだ未来」と誤判定しうるバグがあった
+# （delete_table()/update_table()のcapacity decrease検証を誤ってブロック
+# する可能性があった）。
+#
+# 修正は、reservations.py側がPhase3E-3で確立した既存のsingle source of
+# truthである_reservation_basis_now()（reservation_date系の値と比較する
+# ための「JST基準に揃えた現在時刻」）を、新しいtimezone helperを発明せずに
+# そのまま再利用するだけ。datetime.utcnow()をこの関数に置き換えたこと
+# 以外、クエリの構造・status条件・比較演算子(>=)は一切変更していない。
 _ACTIVE_RESERVATION_STATUSES = ("pending", "confirmed")
 
 
 async def _find_future_active_table_reservations(db: AsyncSession, table_id: str) -> List[Reservation]:
     """
     指定テーブルに割り当てられた「今後の有効な予約」を返す。
-    delete_table()が元から持っていたクエリ条件をそのまま抽出しただけで、
-    判定条件は一切変更していない。
+    delete_table()が元から持っていたクエリ条件をそのまま抽出したもので、
+    status条件・>=という境界の意味は一切変更していない。「現在時刻」の
+    基準のみ、reservations.pyのsingle source of truthである
+    _reservation_basis_now()（JST-naive基準）に統一した
+    （Reservation Time Basis Consistencyフェーズ）。
     """
     result = await db.execute(
         select(Reservation).filter(
             Reservation.table_id == table_id,
             Reservation.status.in_(_ACTIVE_RESERVATION_STATUSES),
-            Reservation.reservation_date >= datetime.utcnow()
+            Reservation.reservation_date >= _reservation_basis_now()
         )
     )
     return list(result.scalars().all())
