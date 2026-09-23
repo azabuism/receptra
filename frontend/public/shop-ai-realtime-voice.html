@@ -241,6 +241,15 @@
                  だけで確認できる（次回の実機確認時、パネル自体が写っていない
                  という問題の再発防止）。 -->
             <div id="debugModeIndicator" style="background:#333; color:#ffd54f; font-size:11px; font-weight:700; padding:4px 8px; border-radius:6px; display:inline-block; margin-bottom:8px;">🐛 DEBUG MODE（?debug=1で表示中）</div>
+            <!-- CRITICAL INCIDENT調査（音声ブツブツ/ノイズ→応答停止）: iPhone実機では
+                 Safari開発者ツールを開けないため、これまでdebug=1の画面を見ても
+                 ログをテキストとして取り出す手段が無かった。既存のeventLog/
+                 diagTimeline/failureSnapshot（いずれもPII除外済み・技術的な
+                 イベント名/状態文字列/カウンタのみ）をまとめてクリップボードへ
+                 コピーするだけの、既存表示内容の集約以外のことは何もしないボタン。
+                 新しいログ収集の仕組みは追加しない。 -->
+            <button type="button" id="copyDebugLogBtn" style="background:#1565c0; color:#fff; font-size:12px; font-weight:700; padding:6px 12px; border-radius:6px; border:none; display:inline-block; margin-bottom:8px; margin-left:6px;">📋 デバッグログをコピー</button>
+            <span id="copyDebugLogStatus" style="font-size:11px; color:#666; margin-left:6px;"></span>
             <!-- NAME Forced Commit Observation PoC（今回追加）: debug=1のときのみ
                  表示する、このPoCが今回の通話で有効かどうかのインジケーター。
                  PoC専用のテスト店舗（RECEPTRA Realtime PoC Test）+debug=1が
@@ -274,6 +283,8 @@
                     <span class="label">INBOUND PACKETS（AI音声・受信）</span><span class="val" id="diagInboundPackets">未確認</span>
                     <span class="label">PACKETS LOST</span><span class="val" id="diagPacketsLost">—</span>
                     <span class="label">JITTER</span><span class="val" id="diagJitter">—</span>
+                    <span class="label">CONCEALED SAMPLES（ブツブツ音の直接指標）</span><span class="val" id="diagConcealed">—</span>
+                    <span class="label">JITTER BUFFER DELAY</span><span class="val" id="diagJitterBufferDelay">—</span>
                     <span class="label">VAD（発話検知）</span><span class="val" id="diagVad">idle</span>
                     <span class="label">AI応答状態</span><span class="val" id="diagResponse">idle</span>
                     <span class="label">AI音声出力(output_audio_buffer)</span><span class="val" id="diagAiOutput">idle</span>
@@ -370,6 +381,10 @@
         if (debugMode) {
             document.getElementById('debugPanels').style.display = 'block';
             document.getElementById('debugBadge').style.display = 'inline-block';
+            // CRITICAL INCIDENT調査（音声ブツブツ/ノイズ→応答停止）: このボタンは
+            // debugMode時のみ表示されるため、リスナーの登録もdebugMode時のみ行う。
+            const copyBtnEl = document.getElementById('copyDebugLogBtn');
+            if (copyBtnEl) copyBtnEl.addEventListener('click', copyDebugLog);
         }
         // ?noagc=1 は debug/test専用のマイク制約比較モード（Production利用者の
         // defaultは変更しない）。autoGainControlをfalseで要求した場合に、
@@ -594,6 +609,17 @@
         let lastInboundAudioStats = null;
         let lastPacketsLost = null;
         let lastJitter = null;
+        // CRITICAL INCIDENT調査（音声ブツブツ/ノイズ）: concealedSamples系は
+        // 「WebRTCが受信側でパケットロス/ジッタを取り繕うために代替音声で
+        // 穴埋めした量」を示す、ブツブツ/プチプチ音の最も直接的な技術的
+        // シグナル。jitterBufferDelay/jitterBufferEmittedCountは受信側の
+        // バッファリング遅延の指標。既存のpacketsLost/jitterと同じ
+        // typeof安全ガード方式で追加するだけで、収集の仕組み自体は変更しない。
+        // ブラウザが対応しない場合はN/Aのまま（存在しないfieldを仮定しない）。
+        let lastConcealedSamples = null;
+        let lastSilentConcealedSamples = null;
+        let lastJitterBufferDelay = null;
+        let lastJitterBufferEmittedCount = null;
         // PHASE9: ユーザー発話検知(VAD)の現在状態。'idle' | 'speech'
         let userVadState = 'idle';
         // PHASE10: AI応答生成の現在状態。'idle' | 'active' | 'done' | 'error'
@@ -841,6 +867,88 @@
             if (debugMode) {
                 const el = document.getElementById('diagTimeline');
                 if (el) el.textContent = recentEvents.join('\n');
+            }
+        }
+
+        // CRITICAL INCIDENT調査（音声ブツブツ/ノイズ→応答停止、iPhone実機再現）:
+        // iPhone実機ではSafari開発者ツールを開けず、これまでdebug=1の画面を
+        // 見てもログをテキストとして取り出す手段が無かった。この関数は既存の
+        // 音声診断グリッド（#audioDiagPanel .status-grid、PIIなし）・
+        // FAILURE SNAPSHOT（あれば）・直近イベントタイムライン（recentEvents、
+        // 最大RECENT_EVENTS_MAX件）・イベントログ全文（eventLogEl）という、
+        // いずれも既存の・既にPII除外済みの表示内容をそのまま1つのテキストへ
+        // 集約するだけで、新しいログ収集の仕組みや新しい記録項目は一切
+        // 追加しない（concealedSamples等はstartStatsPolling側で別途追加済み。
+        // ここではそれを含む既存表示を集約するのみ）。
+        function buildDebugLogText() {
+            const lines = [];
+            lines.push('=== RECEPTRA Realtime Voice Debug Log ===');
+            lines.push('取得時刻: ' + new Date().toLocaleString('ja-JP'));
+            lines.push('shopId: ' + (shopId || '(不明)'));
+            lines.push('callGeneration: ' + callGeneration);
+            lines.push('');
+            lines.push('--- 音声診断パネル（現在値） ---');
+            const grid = document.querySelector('#audioDiagPanel .status-grid');
+            if (grid) {
+                const children = Array.from(grid.children);
+                for (let i = 0; i + 1 < children.length; i += 2) {
+                    lines.push(children[i].textContent + ': ' + children[i + 1].textContent);
+                }
+            }
+            const failureContentEl = document.getElementById('failureSnapshotContent');
+            if (failureContentEl && failureContentEl.textContent) {
+                lines.push('');
+                lines.push('--- FAILURE SNAPSHOT ---');
+                lines.push(failureContentEl.textContent);
+            }
+            lines.push('');
+            lines.push('--- 直近イベント（diagTimeline, 最大' + RECENT_EVENTS_MAX + '件） ---');
+            lines.push(recentEvents.join('\n'));
+            lines.push('');
+            lines.push('--- イベントログ全文（eventLog） ---');
+            lines.push(eventLogEl ? eventLogEl.textContent : '(取得不可)');
+            return lines.join('\n');
+        }
+
+        function fallbackCopyToClipboard(text, showResult, err) {
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                const ok = document.execCommand('copy');
+                document.body.removeChild(ta);
+                showResult(ok, ok ? null : (err && err.message));
+            } catch (e2) {
+                showResult(false, e2 && e2.message);
+            }
+        }
+
+        function copyDebugLog() {
+            const text = buildDebugLogText();
+            const statusEl = document.getElementById('copyDebugLogStatus');
+            const btn = document.getElementById('copyDebugLogBtn');
+            function showResult(ok, extra) {
+                if (statusEl) {
+                    statusEl.textContent = ok
+                        ? 'コピーしました'
+                        : ('コピーに失敗しました' + (extra ? '（' + extra + '）' : '') + '。下の欄を長押しして手動でコピーしてください');
+                }
+                if (btn) {
+                    const original = '📋 デバッグログをコピー';
+                    btn.textContent = ok ? '✅ コピーしました' : '📋 デバッグログをコピー';
+                    if (ok) setTimeout(() => { btn.textContent = original; }, 2000);
+                }
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(() => showResult(true)).catch((e) => {
+                    fallbackCopyToClipboard(text, showResult, e);
+                });
+            } else {
+                fallbackCopyToClipboard(text, showResult);
             }
         }
 
@@ -1425,6 +1533,8 @@
             const diagInboundPacketsEl = document.getElementById('diagInboundPackets');
             const diagPacketsLostEl = document.getElementById('diagPacketsLost');
             const diagJitterEl = document.getElementById('diagJitter');
+            const diagConcealedEl = document.getElementById('diagConcealed');
+            const diagJitterBufferDelayEl = document.getElementById('diagJitterBufferDelay');
             const diagZeroWaitPlaybackEl = document.getElementById('diagZeroWaitPlayback');
 
             const micTrack = localStream ? localStream.getAudioTracks()[0] : null;
@@ -1533,6 +1643,18 @@
             if (diagJitterEl) {
                 setStatus(diagJitterEl, (lastJitter === null ? 'N/A' : lastJitter.toFixed(4)), null);
             }
+            // CRITICAL INCIDENT調査（音声ブツブツ/ノイズ）: concealedSamplesが
+            // ポーリング間隔ごとに増加している＝その間にWebRTCが受信欠落を
+            // 代替音声で穴埋めした＝ブツブツ/プチプチ音が実際に発生した、
+            // という最も直接的な技術的証拠になる。自動判定はせず数値を
+            // そのまま表示するのみ（0より大きい場合はwarn表示）。
+            if (diagConcealedEl) {
+                setStatus(diagConcealedEl, (lastConcealedSamples === null ? 'N/A' : String(lastConcealedSamples)),
+                    (lastConcealedSamples !== null && lastConcealedSamples > 0) ? 'warn' : null);
+            }
+            if (diagJitterBufferDelayEl) {
+                setStatus(diagJitterBufferDelayEl, (lastJitterBufferDelay === null ? 'N/A' : lastJitterBufferDelay.toFixed(4)), null);
+            }
             // 再調査（第2ラウンド）: Zero-Wait音声要素自体の生のメディア
             // イベント状態（アプリ側のzeroWaitState=ready/playing/ended等とは
             // 別軸）。「和風デモの」直後のwaiting/stalled/pauseを直接確認する。
@@ -1634,6 +1756,11 @@
                 inboundPacketsTrend: inboundPacketsTrend,
                 lastPacketsLost: lastPacketsLost,
                 lastJitter: lastJitter,
+                lastConcealedSamples: lastConcealedSamples,
+                lastSilentConcealedSamples: lastSilentConcealedSamples,
+                lastJitterBufferDelay: lastJitterBufferDelay,
+                lastJitterBufferEmittedCount: lastJitterBufferEmittedCount,
+                playbackPauseCount: playbackPauseCount,
                 lastInterruptionInfo: lastInterruptionInfo,
                 currentToolLabel: lastToolLabel,
                 // PHASE3: このスナップショットが取得された通話の世代番号。
@@ -1691,6 +1818,11 @@
                 'INBOUND PACKETS trend: ' + s.inboundPacketsTrend,
                 'PACKETS LOST: ' + (s.lastPacketsLost === null ? 'N/A' : s.lastPacketsLost),
                 'JITTER: ' + (s.lastJitter === null ? 'N/A' : s.lastJitter),
+                'CONCEALED SAMPLES: ' + (s.lastConcealedSamples === null ? 'N/A' : s.lastConcealedSamples),
+                'SILENT CONCEALED SAMPLES: ' + (s.lastSilentConcealedSamples === null ? 'N/A' : s.lastSilentConcealedSamples),
+                'JITTER BUFFER DELAY: ' + (s.lastJitterBufferDelay === null ? 'N/A' : s.lastJitterBufferDelay),
+                'JITTER BUFFER EMITTED COUNT: ' + (s.lastJitterBufferEmittedCount === null ? 'N/A' : s.lastJitterBufferEmittedCount),
+                'playbackPauseCount（累計）: ' + s.playbackPauseCount,
                 'lastInterruptionInfo: ' + s.lastInterruptionInfo,
                 '直近Tool: ' + s.currentToolLabel,
                 'callGeneration(取得時点): ' + s.callGenerationAtCapture,
@@ -1752,6 +1884,10 @@
             lastInboundAudioStats = null;
             lastPacketsLost = null;
             lastJitter = null;
+            lastConcealedSamples = null;
+            lastSilentConcealedSamples = null;
+            lastJitterBufferDelay = null;
+            lastJitterBufferEmittedCount = null;
         }
 
         function startStatsPolling() {
@@ -1786,10 +1922,28 @@
                         lastInboundAudioStats = { packetsReceived, bytesReceived, ts: performance.now() };
                         lastPacketsLost = packetsLost;
                         lastJitter = jitter;
+                        // CRITICAL INCIDENT調査（音声ブツブツ/ノイズ）: concealedSamples/
+                        // silentConcealedSamplesは「受信側で欠落を取り繕うために代替
+                        // 音声で穴埋めした量」＝ブツブツ音の最も直接的な技術的シグナル。
+                        // jitterBufferDelay/jitterBufferEmittedCountは受信バッファの
+                        // 遅延の指標。既存のpacketsLost/jitterと同じtypeof安全ガードで
+                        // 追加するのみ（存在しないfieldはN/Aのまま。仮定しない）。
+                        const concealedSamples = (typeof inboundAudio.concealedSamples === 'number') ? inboundAudio.concealedSamples : null;
+                        const silentConcealedSamples = (typeof inboundAudio.silentConcealedSamples === 'number') ? inboundAudio.silentConcealedSamples : null;
+                        const jitterBufferDelay = (typeof inboundAudio.jitterBufferDelay === 'number') ? inboundAudio.jitterBufferDelay : null;
+                        const jitterBufferEmittedCount = (typeof inboundAudio.jitterBufferEmittedCount === 'number') ? inboundAudio.jitterBufferEmittedCount : null;
+                        lastConcealedSamples = concealedSamples;
+                        lastSilentConcealedSamples = silentConcealedSamples;
+                        lastJitterBufferDelay = jitterBufferDelay;
+                        lastJitterBufferEmittedCount = jitterBufferEmittedCount;
                         logEvent('[音声受信統計] packetsReceived=' + (packetsReceived === null ? 'N/A' : packetsReceived)
                             + ' bytesReceived=' + (bytesReceived === null ? 'N/A' : bytesReceived)
                             + ' packetsLost=' + (packetsLost === null ? 'N/A' : packetsLost)
                             + ' jitter=' + (jitter === null ? 'N/A' : jitter)
+                            + ' concealedSamples=' + (concealedSamples === null ? 'N/A' : concealedSamples)
+                            + ' silentConcealedSamples=' + (silentConcealedSamples === null ? 'N/A' : silentConcealedSamples)
+                            + ' jitterBufferDelay=' + (jitterBufferDelay === null ? 'N/A' : jitterBufferDelay)
+                            + ' jitterBufferEmittedCount=' + (jitterBufferEmittedCount === null ? 'N/A' : jitterBufferEmittedCount)
                             + ' trend=' + inboundPacketsTrend);
                     } else {
                         logEvent('[音声受信統計] inbound audio RTP統計がこのブラウザでは取得できませんでした(N/A)');
