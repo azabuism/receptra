@@ -65,6 +65,10 @@ const FN = {
     // （maybeSendNameCommitPoc/maybeSendShortAnswerCommitと同じ理由）。
     maybeSendPhoneCommit: extractFunctionSource(SRC, 'maybeSendPhoneCommit'),
     maybeLogPhoneReactionElapsed: extractFunctionSource(SRC, 'maybeLogPhoneReactionElapsed'),
+    // SHORT_ANSWER Forced Commit（FAST ANSWER TURNフェーズで追加）: 同じ理由で
+    // 抽出が必要（startAnswerWindowIfNeeded()が直接参照するため）。
+    maybeSendQuickAnswerCommit: extractFunctionSource(SRC, 'maybeSendQuickAnswerCommit'),
+    maybeLogQuickAnswerReactionElapsed: extractFunctionSource(SRC, 'maybeLogQuickAnswerReactionElapsed'),
     cancelAnswerWindow: extractFunctionSource(SRC, 'cancelAnswerWindow'),
     startTakeoverTimerIfNeeded: extractFunctionSource(SRC, 'startTakeoverTimerIfNeeded'),
 };
@@ -113,6 +117,14 @@ function buildSandbox(overrides) {
         phoneCommitSentAt: null,
         phoneCommitCallGeneration: null,
         phoneCommitPendingEvents: { committed: false, item: false, responseCreated: false, aiAudioStarted: false },
+        // SHORT_ANSWER Forced Commit（FAST ANSWER TURNフェーズで追加。このテストの
+        // 対象ではないが、startAnswerWindowIfNeeded()経由で参照されるため必要）
+        quickAnswerGeneration: 0,
+        quickAnswerCommitSentGeneration: null,
+        quickAnswerTurnNormalCompletionSeen: false,
+        quickAnswerCommitSentAt: null,
+        quickAnswerCommitCallGeneration: null,
+        quickAnswerCommitPendingEvents: { committed: false, item: false, responseCreated: false, aiAudioStarted: false },
         takeoverTimerId: null,
         takeoverSpeechEpisodeId: 0,
         takeoverPocEnabled: false, // このテストではTakeover PoC自体の有効性は問わない

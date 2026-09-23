@@ -673,7 +673,9 @@
         // 初めて全店舗（本番）へ適用する機能。約3秒はあくまで上限目安であり、
         // 通常のsemantic_vadがそれより早くspeech_stopped→committedまで進んだ場合は
         // 何もせずそのまま任せる（下のmaybeSendShortAnswerCommit()のコメント参照）。
-        const ANSWER_WINDOW_LIMITS_MS = { NAME: 5000, PHONE: 10000, YES_NO: 3000, SHORT_CHOICE: 3000, VISIT_REASON: 30000 };
+        // SHORT_ANSWER（今回追加）: TIME/DATE/PARTY_SIZEのような短答質問。
+        // 既存YES_NO/SHORT_CHOICEと同じ3秒上限を採用する（ユーザー指示16）。
+        const ANSWER_WINDOW_LIMITS_MS = { NAME: 5000, PHONE: 10000, YES_NO: 3000, SHORT_CHOICE: 3000, VISIT_REASON: 30000, SHORT_ANSWER: 3000 };
 
         // ===== NAME Forced Commit Observation PoC: 追加の最小状態（今回追加） =====
         // 有効化条件・目的はファイル冒頭のnameCommitPocEnabled定義を参照。
@@ -784,6 +786,57 @@
         // elapsed_msを記録済みかどうか（二重ログ防止。NAME PoC/Short Choiceと
         // 同じ構造）。
         let phoneCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+
+        // ===== SHORT_ANSWER Forced Commit（TIME/DATE/PARTY_SIZE専用。今回追加。全店舗適用） =====
+        // 背景（FAST ANSWER TURN / CUSTOMER-FIRST CONVERSATIONフェーズ・実機症状）:
+        // 予約希望時間が休憩時間等に該当しAIが「別のお時間は何時をご希望ですか？」
+        // と尋ねた後、客が新しい時間を回答してもAIが応答を再開せず会話が停止する
+        // ことがある。監査の結果、classifyExpectedAnswerType()にはTIME/DATE/
+        // PARTY_SIZEを尋ねる質問（「何時」「何名」「何日」「いつ」等）を検出する
+        // 分類が一切存在せず、これらの質問はすべてexpectedAnswerType='NONE'に
+        // 分類されていたことが判明した（NONEの場合、startAnswerWindowIfNeeded()は
+        // 即returnするため、Answer Window自体が一切開始しない＝PHONEの旧不具合
+        // 〔タイマーはあるが送信関数が無い〕よりさらに手前の「土台すら無い」
+        // 状態だった）。
+        //
+        // 本追加は、実機で安全性が確認済みのShort Choice 3-Second Turn・PHONE
+        // Forced Commitと全く同じ安全パターン（世代管理・commitは1世代につき
+        // 最大1回・送信直前に正常完了フラグを再確認・response.createは絶対に
+        // 追加送信しない・datachannel未オープンやsend例外は非fatal）を、
+        // TIME/DATE/PARTY_SIZE（内部分類名'SHORT_ANSWER'）に限定して全店舗
+        // （本番）へ適用する。NAME/PHONE/Takeover PoC・Short Choiceとは完全に
+        // 独立した状態・関数として実装する。
+        //
+        // 命名について（重要・混乱防止）: classifyExpectedAnswerType()が返す
+        // type文字列は仕様どおり'SHORT_ANSWER'とするが、既存のmaybeSendShortAnswerCommit
+        // /shortAnswerCommit*（実際はYES_NO/SHORT_CHOICE用のForced Commit実装で
+        // あり、変数名にたまたま"ShortAnswer"を含む）と紛らわしいため、本機構の
+        // 内部変数・関数名は意図的に「quickAnswer」という別の接頭辞を使う。
+        // ログ上のタイムラインマーカーも既存のSHORT_ANSWER_COMMIT_*（Short Choice用）
+        // と区別できるよう、QUICK_ANSWER_*という別の接頭辞にしている。
+        //
+        // 「型が変化した瞬間のみ」ではなくSHORT_CHOICEと同じ判定のたびに世代を
+        // 進める方式にしている理由: 休憩時間/営業時間外/満席/過去時刻等により
+        // AIが「別のお時間は何時ですか？」を複数回尋ね直す今回の中心ケースに
+        // 対応するため（classifyExpectedAnswerType側の該当箇所を参照）。
+        let quickAnswerGeneration = 0;
+        // このSHORT_ANSWER世代について、既に手動commitを送信済みならその世代番号
+        // （未送信ならnull）。同一世代につき手動commitは最大1回のみ。
+        let quickAnswerCommitSentGeneration = null;
+        // このSHORT_ANSWER世代について、手動commitより前に正常なターン終了
+        // （speech_stopped/committed/item_created）が先に届いたかどうか。
+        // trueの場合、送信直前の最終確認で手動commitを見送る
+        // （NAME PoC/Short Choice/PHONEと同じレース対策）。
+        let quickAnswerTurnNormalCompletionSeen = false;
+        // 直近の手動commit送信時刻（elapsed_ms計測の起点。performance.now()）。
+        // null＝現在手動commit送信待ち/観測対象ではない。
+        let quickAnswerCommitSentAt = null;
+        // その送信がどのcallGeneration（通話）で行われたかを覚えておき、
+        // 通話をまたいだ誤相関を防ぐ。
+        let quickAnswerCommitCallGeneration = null;
+        // 手動commit送信後に観測したい4種の反応それぞれについて、一度だけ
+        // elapsed_msを記録済みかどうか（二重ログ防止。既存3機構と同じ構造）。
+        let quickAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
 
         // ===== Conversation Takeover Observation PoC: 追加の最小状態（今回追加） =====
         // 目的・設計方針の詳細はファイル冒頭のtakeoverPocEnabled定義の
@@ -1041,6 +1094,31 @@
                 // 含まれていても誤ってYES_NO等に上書きされないよう、
                 // 既存のいずれにも一致しなかった場合にのみ判定する）。
                 type = 'VISIT_REASON';
+            } else if (/何時|何日|何名|いつをご希望|いつがよろしい|いつでしょうか|別のお?時間|ご希望のお?時間|ご希望の日(にち)?|お?時間.{0,6}(ご希望|いかが|ございます|よろしい)/.test(t)) {
+                // SHORT_ANSWER（今回追加。FAST ANSWER TURN / CUSTOMER-FIRST
+                // CONVERSATIONフェーズ）: 「何名様ですか？」「何日をご希望ですか？」
+                // のほか、実際にapp/services/realtime_voice_ai.py側のTool説明文が
+                // 使う「別のお時間をご希望ですか？」（time_in_past時）・「その時間帯で
+                // ご都合のよいお時間はございますか？」（営業時間外時）のような、
+                // TIME/DATE/PARTY_SIZEを尋ねる短答質問を検出する（実際のプロンプト
+                // 文言を確認した上で正規表現を設計。憶測で作っていない）。
+                // 最後の「お?時間.{0,6}(ご希望|いかが|ございます|よろしい)」は、
+                // 「時間」と「ご希望/いかが/ございます/よろしい」の語順・間隔が
+                // 発話ごとに揺れる（AIの自由生成のため一言一句は固定できない）
+                // ことを踏まえた許容範囲付きの検出。VISIT_REASON（自由回答・
+                // 長く話す可能性がある）判定より必ず後（優先度を下げて）に置く
+                // ことで、仮に両方の語が同じ発話に含まれてしまった場合でも、より
+                // 安全な側（3秒Forced CommitをかけないVISIT_REASON扱い）に倒れる
+                // ようにしている。同じ理由でPHONE/NAME/YES_NO/SHORT_CHOICEの
+                // いずれにも一致しなかった場合にのみ判定する（既存の優先順位
+                // PHONE→NAME→YES_NO→SHORT_CHOICE→VISIT_REASONを壊さない）。
+                //
+                // 命名について（重要・混乱防止）: この分類のtype文字列は仕様どおり
+                // 'SHORT_ANSWER'とするが、内部の状態変数・関数名は既存の
+                // maybeSendShortAnswerCommit/shortAnswerCommit*（実際は
+                // YES_NO/SHORT_CHOICE用のForced Commit関数）と紛らわしいため、
+                // 意図的に別の接頭辞「quickAnswer」を使う（下記参照）。
+                type = 'SHORT_ANSWER';
             }
             if (type !== expectedAnswerType) {
                 expectedAnswerType = type;
@@ -1074,6 +1152,15 @@
             if (type === 'YES_NO' || type === 'SHORT_CHOICE') {
                 shortChoiceAnswerGeneration += 1;
                 shortChoiceTurnNormalCompletionSeen = false;
+            }
+            // SHORT_ANSWER（今回追加）: Short Choiceと同じ理由で、「type文字列が
+            // 変化したときだけ」ではなく判定されるたびに新しい世代として扱う。
+            // 休憩時間/営業時間外/満席/過去時刻等で「別のお時間は何時ですか？」
+            // を複数回尋ね直す今回の中心ケースに対応するために必須。
+            if (type === 'SHORT_ANSWER') {
+                quickAnswerGeneration += 1;
+                quickAnswerTurnNormalCompletionSeen = false;
+                pushTimelineEvent('QUICK_ANSWER_TURN_DETECTED (generation=' + quickAnswerGeneration + ')');
             }
         }
 
@@ -1120,6 +1207,12 @@
                 // input_audio_buffer.commitを最大1回だけ送信する。それ以外の
                 // 場合、この呼び出しは内部で何もせずに戻る。
                 maybeSendPhoneCommit(type, myGeneration);
+                // SHORT_ANSWER Forced Commit（今回追加・全店舗適用）:
+                // type==='SHORT_ANSWER'（TIME/DATE/PARTY_SIZE）の場合、
+                // maybeSendQuickAnswerCommit()が改めて全条件を確認したうえで
+                // input_audio_buffer.commitを最大1回だけ送信する。それ以外の
+                // 場合、この呼び出しは内部で何もせずに戻る。
+                maybeSendQuickAnswerCommit(type, myGeneration);
             }, limitMs);
         }
 
@@ -1340,6 +1433,85 @@
             pushTimelineEvent('PHONE_COMMIT_REACTION (' + label + ', elapsed_ms=' + Math.round(performance.now() - phoneCommitSentAt) + ')');
         }
 
+        // ===== SHORT_ANSWER Forced Commit: 2つの中核関数（今回追加・全店舗適用） =====
+        // NAME Forced Commit Observation PoC・Short Choice 3-Second Turn・PHONE
+        // Forced Commitで実機検証済みの安全なパターン（commitは1世代につき最大
+        // 1回・送信直前に正常完了フラグを再確認・response.createは絶対に追加
+        // 送信しない・datachannel未オープンやsend例外は非fatal）をそのまま
+        // 踏襲する。Short Choice/PHONEと同じく店舗gatingを一切行わない（全店舗の
+        // 本番通話で動作する）。
+
+        // Expected Answer Window（startAnswerWindowIfNeeded）が期限切れになった
+        // 時点で、answerType が SHORT_ANSWER（TIME/DATE/PARTY_SIZE）で、かつ
+        // まだ正常なターン終了（speech_stopped/committed/item_created）が届いて
+        // いない場合に限り、input_audio_buffer.commitを最大1回だけ手動送信する。
+        // response.createは絶対に追加送信しない（他3機構と全く同じ理由:
+        // サーバー側semantic_vadが既に内部的にauto-commit＋auto-responseを
+        // 開始している可能性を排除できず、手動response.createを重ねると二重
+        // 応答を招くリスクがあるため）。
+        //
+        // 「3秒は客の発話を機械的に切るためのものではない」について（重要・
+        // 監査結果）: この関数はExpected Answer Windowが期限切れになった時点、
+        // つまり通常のsemantic_vadがそれより先にspeech_stopped等へ進んでいない
+        // 場合にのみ呼ばれる。客がまだ話し続けている自然な発話（例:「来週の
+        // 土曜日なんですけど、できれば午後で……」）と、単なる背景ノイズ等に
+        // よるspeech_stopped遅延を、ブラウザJS側から発話内容ベースで区別する
+        // 安全な手段は今回の監査でも見つかっていない（input_audio_transcription
+        // が未設定のため発話内容に一切アクセスできないという、Short Choice/
+        // NAME PoC監査時と全く同じ構造的制約）。この限界は、既に本番で同じ
+        // 仕組みが稼働しているShort Choice（2択質問でも客が長く話す可能性は
+        // 理論上ある）と同一のものであり、新たにSHORT_ANSWERだけに生じる
+        // リスクではないと判断し、既存precedentと同じ扱い（完了報告のopen
+        // itemとして明記）とした。
+        function maybeSendQuickAnswerCommit(answerType, myGeneration) {
+            if (answerType !== 'SHORT_ANSWER') return; // TIME/DATE/PARTY_SIZEのみが対象
+            if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない（保険）
+            if (!dc || dc.readyState !== 'open') {
+                pushTimelineEvent('QUICK_ANSWER_COMMIT_SKIPPED (reason=datachannel_not_open)');
+                return;
+            }
+            if (quickAnswerCommitSentGeneration === quickAnswerGeneration) {
+                // このSHORT_ANSWER世代についてはすでに手動commit送信済み（最大1回/世代）
+                return;
+            }
+            pushTimelineEvent('QUICK_ANSWER_COMMIT_ELIGIBLE (generation=' + quickAnswerGeneration + ')');
+            // 送信直前にもう一度だけ、正常完了フラグがその間に立っていないか
+            // 最終確認する（他3機構と同じレース対策）。
+            if (quickAnswerTurnNormalCompletionSeen) {
+                pushTimelineEvent('QUICK_ANSWER_COMMIT_SKIPPED (reason=normal_completion_won_race)');
+                return;
+            }
+            pushTimelineEvent('QUICK_ANSWER_COMMIT_REQUESTED (generation=' + quickAnswerGeneration + ')');
+            try {
+                // 他3機構と全く同じくinput_audio_buffer.commitのみ。この直後に
+                // response.createを送ることは絶対にしない（既存のRealtime
+                // ライフサイクルにそのまま委ねる）。
+                dc.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+                quickAnswerCommitSentGeneration = quickAnswerGeneration;
+                quickAnswerCommitCallGeneration = myGeneration;
+                quickAnswerCommitSentAt = performance.now();
+                quickAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+                pushTimelineEvent('QUICK_ANSWER_COMMIT_SENT (generation=' + quickAnswerGeneration + ')');
+            } catch (e) {
+                // send自体が例外を投げた場合も非fatal扱い（endCall/
+                // cleanupConnectionは呼ばない）。既存のsemantic_vadに以後を委ねる。
+                pushTimelineEvent('QUICK_ANSWER_COMMIT_ERROR (reason=send_exception): ' + (e && e.message));
+            }
+        }
+
+        // SHORT_ANSWER Forced Commit: 手動commit送信後に観測したい4種の反応
+        // （committed/item_created/response.created/AI音声開始）を、各イベント
+        // につき一度だけelapsed_msとしてタイムラインに記録する（他3機構と同じ
+        // 構造）。手動commitを送信していない通常の通話では
+        // quickAnswerCommitSentAt が null のままのため、何もしない。
+        function maybeLogQuickAnswerReactionElapsed(key, label) {
+            if (quickAnswerCommitSentAt === null) return;
+            if (callGeneration !== quickAnswerCommitCallGeneration) return;
+            if (quickAnswerCommitPendingEvents[key]) return;
+            quickAnswerCommitPendingEvents[key] = true;
+            pushTimelineEvent('QUICK_ANSWER_COMMIT_REACTION (' + label + ', elapsed_ms=' + Math.round(performance.now() - quickAnswerCommitSentAt) + ')');
+        }
+
         // ===== Conversation Takeover Observation PoC: 4つの中核関数（今回追加） =====
         // NAME Forced Commit Observation PoCの安全なパターン
         // （startAnswerWindowIfNeeded/maybeSendNameCommitPoc/
@@ -1361,12 +1533,13 @@
         function startTakeoverTimerIfNeeded(myGeneration) {
             if (!takeoverPocEnabled) return; // PoC専用テスト店舗+debug=1のみ
             // 既存NAME PoC・PHONE・YES_NO・SHORT_CHOICE（Short Choice
-            // 3-Second Turn。今回追加）の短答待ちと重複させない（それらは
-            // それぞれ自身のAnswer Window/専用Forced Commit関数で既に処理
-            // される場面のため、Takeover側が二重にタイマー・commitを
-            // 発生させないようにする）。
+            // 3-Second Turn）・SHORT_ANSWER（TIME/DATE/PARTY_SIZE。今回追加）の
+            // 短答待ちと重複させない（それらはそれぞれ自身のAnswer Window/
+            // 専用Forced Commit関数で既に処理される場面のため、Takeover側が
+            // 二重にタイマー・commitを発生させないようにする）。
             if (expectedAnswerType === 'NAME' || expectedAnswerType === 'PHONE' ||
-                expectedAnswerType === 'YES_NO' || expectedAnswerType === 'SHORT_CHOICE') return;
+                expectedAnswerType === 'YES_NO' || expectedAnswerType === 'SHORT_CHOICE' ||
+                expectedAnswerType === 'SHORT_ANSWER') return;
             if (takeoverTimerId !== null) return; // 同一エピソード内での多重開始防止
             takeoverSpeechEpisodeId += 1;
             const myEpisodeId = takeoverSpeechEpisodeId;
@@ -3416,6 +3589,8 @@
                 maybeLogShortAnswerReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
                 // PHONE Forced Commit（今回追加。全店舗適用・独立）
                 maybeLogPhoneReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
+                // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）
+                maybeLogQuickAnswerReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
             } else if (type === 'output_audio_buffer.stopped') {
                 aiAudioOutputActive = false;
                 lastAiAudioEventAt = performance.now();
@@ -3496,6 +3671,9 @@
                 // PHONE Forced Commit（今回追加。全店舗適用・独立）
                 phoneTurnNormalCompletionSeen = true;
                 maybeLogPhoneReactionElapsed('committed', 'input_audio_buffer.committed');
+                // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）
+                quickAnswerTurnNormalCompletionSeen = true;
+                maybeLogQuickAnswerReactionElapsed('committed', 'input_audio_buffer.committed');
             } else if (type === 'conversation.item.created' && msg.item && msg.item.role === 'user') {
                 // PHASE8（会話停止調査・最重要）: ユーザー発話が会話アイテムとして
                 // 確定したことを示すイベント。「名前を答えた後に止まる」等の症状で、
@@ -3516,6 +3694,9 @@
                 // PHONE Forced Commit（今回追加。全店舗適用・独立）
                 phoneTurnNormalCompletionSeen = true;
                 maybeLogPhoneReactionElapsed('item', 'conversation.item.created');
+                // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）
+                quickAnswerTurnNormalCompletionSeen = true;
+                maybeLogQuickAnswerReactionElapsed('item', 'conversation.item.created');
             } else if (type === 'input_audio_buffer.speech_started') {
                 if (!initialGreetingSent) userSpokeBeforeGreeting = true;
                 // ISSUE2調査用（PIIなし）: speech_started発生時点のローカルマイク
@@ -3591,6 +3772,11 @@
                 // キャンセル済み（PHONE/NAME/YES_NO/SHORT_CHOICEで共有している
                 // 同一のanswerWindowTimerIdのため、専用のキャンセル関数は不要）。
                 phoneTurnNormalCompletionSeen = true;
+                // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）: 同じく
+                // 正常終了したため、このTIME/DATE/PARTY_SIZEターンの世代について
+                // はもう手動commitを送らない。Answer Window自体は上の
+                // cancelAnswerWindow()で既にキャンセル済み。
+                quickAnswerTurnNormalCompletionSeen = true;
                 // PHASE6相関用（PIIなし）: 対応するspeech_startedからの経過時間
                 // （＝サーバーがユーザー発話と判定していた継続時間）を記録する。
                 // 短時間の相槌（「はい」「違います」等）も本物の短い発話として
@@ -3624,6 +3810,8 @@
                 maybeLogShortAnswerReactionElapsed('responseCreated', 'response.created');
                 // PHONE Forced Commit（今回追加。全店舗適用・独立）
                 maybeLogPhoneReactionElapsed('responseCreated', 'response.created');
+                // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）
+                maybeLogQuickAnswerReactionElapsed('responseCreated', 'response.created');
                 // Silence Timeout: この回の応答にfunction_callが含まれるかどうかを
                 // 新しい応答サイクルの開始時点でリセットする（response.doneで判定に使う）。
                 responseHasFunctionCall = false;
@@ -3735,6 +3923,17 @@
                     const phErrMessage = (msg.error && msg.error.message) || null;
                     pushTimelineEvent('PHONE_COMMIT_ERROR (code=' + phErrCode + ', type=' + phErrType
                         + ', elapsed_ms=' + Math.round(performance.now() - phoneCommitSentAt) + ', message=' + phErrMessage + ')');
+                }
+                // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）: 同じ
+                // 理由で、手動commit送信後に発生したerrorを専用イベントとして
+                // 記録する。このハンドラは元々fatal処理を一切行っていないため、
+                // そのままの挙動を維持するだけで非fatal要件を満たす。
+                if (quickAnswerCommitSentAt !== null && callGeneration === quickAnswerCommitCallGeneration) {
+                    const qaErrCode = (msg.error && msg.error.code) || null;
+                    const qaErrType = (msg.error && msg.error.type) || null;
+                    const qaErrMessage = (msg.error && msg.error.message) || null;
+                    pushTimelineEvent('QUICK_ANSWER_COMMIT_ERROR (code=' + qaErrCode + ', type=' + qaErrType
+                        + ', elapsed_ms=' + Math.round(performance.now() - quickAnswerCommitSentAt) + ', message=' + qaErrMessage + ')');
                 }
             }
         }
@@ -3928,6 +4127,15 @@
             phoneCommitSentAt = null;
             phoneCommitCallGeneration = null;
             phoneCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+            // SHORT_ANSWER Forced Commit: 新しい通話ごとに必ずリセットする
+            // （前回通話の状態を持ち越さない。NAME PoC/Takeover PoC/Short
+            // Choice/PHONEとは独立した状態のため個別にリセットする）。
+            quickAnswerGeneration = 0;
+            quickAnswerCommitSentGeneration = null;
+            quickAnswerTurnNormalCompletionSeen = false;
+            quickAnswerCommitSentAt = null;
+            quickAnswerCommitCallGeneration = null;
+            quickAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。
