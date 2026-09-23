@@ -42,7 +42,29 @@ class Reservation(Base):
     guest_email = Column(String(255), nullable=True)
 
     # 予約情報
-    reservation_date = Column(DateTime, nullable=False)  # 予約日時
+    reservation_date = Column(DateTime, nullable=False)  # 予約日時（開始時刻）
+    # ★★★ Reservation Intelligence Phase B: この予約自身が占有する時間（分）。
+    # reservation_date + duration_minutes が終了時刻。
+    #
+    # nullable=True（NOT NULLにはしない）: Phase B以前に作成された既存予約は
+    # この列を持たないためNULLになる。ただし「NULL=無制限」という意味では
+    # 断じてない。重複判定・テーブル/スタッフ占有判定でこの値を使う箇所は
+    # 必ず _existing_duration_minutes(existing, default_duration_minutes)
+    # （app/routers/reservations.py）を経由し、NULLの場合は
+    # shop.reservation_duration_minutes or 90 に具体的な分数として
+    # フォールバックする（未解決のまま使う箇所は存在しない）。
+    #
+    # 新規に作成される予約（create_reservation）では、既存の
+    # _resolve_reservation_duration(service, shop) で解決した値
+    # （Service.duration_minutes → shop.reservation_duration_minutes → 90分、
+    # 従来からある優先順位を変更せずそのまま流用）を常にここへ格納するため、
+    # Phase B以降に作成される予約は必ず具体的な値を持つ。
+    #
+    # 将来のレンタカー/ホテル/カラオケボックス等（数時間～数日単位の占有）も
+    # timedelta(minutes=duration_minutes) でそのまま表現できるため、
+    # 今回はend_datetimeのような別列は追加しない（2つのsource of truthを
+    # 持たせない設計判断。詳細はPhase B完了報告を参照）。
+    duration_minutes = Column(Integer, nullable=True)
     number_of_people = Column(Integer, nullable=False)  # 人数（飲食店向け）
     status = Column(String(50), default=ReservationStatus.PENDING, nullable=False)  # ステータス
 

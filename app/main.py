@@ -338,6 +338,20 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ ai_staff_settings.ask_visit_reason_enabled カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # Reservation Intelligence Phase B: 各予約が自身の占有時間（分）を
+            # 持つようにする duration_minutes を追加。nullable（NULLは「無制限」
+            # ではなく「Phase B以前に作成された既存予約」を意味し、参照する側
+            # （app.routers.reservations._existing_duration_minutes）が必ず
+            # shop.reservation_duration_minutes or 90 に解決してから使う設計。
+            # 既存予約行には一切書き込みを行わない（そのままNULLのまま）ため、
+            # 既存データへの破壊的変更はない。
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS duration_minutes INTEGER"
+                ))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ reservations.duration_minutes カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 

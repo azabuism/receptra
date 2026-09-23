@@ -56,6 +56,11 @@ class ReservationResponse(BaseModel):
     guest_phone: Optional[str] = None
     guest_email: Optional[str] = None
     reservation_date: datetime
+    # Reservation Intelligence Phase B: この予約自身が占有する時間（分）。
+    # Phase B以前に作成された予約はNULL（「無制限」ではなく単に未設定。
+    # 空き状況判定側は必ず具体的な分数にフォールバックして扱う。
+    # app.routers.reservations._existing_duration_minutes参照）。
+    duration_minutes: Optional[int] = None
     number_of_people: int
     status: str
     special_requests: Optional[str]

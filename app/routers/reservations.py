@@ -112,6 +112,7 @@ def _to_response(reservation: Reservation) -> ReservationResponse:
         guest_phone=reservation.guest_phone,
         guest_email=reservation.guest_email,
         reservation_date=reservation.reservation_date,
+        duration_minutes=reservation.duration_minutes,
         number_of_people=reservation.number_of_people,
         status=reservation.status,
         special_requests=reservation.special_requests,
@@ -164,9 +165,29 @@ async def _get_closure_for_date(db: AsyncSession, shop_id: str, target_date: dat
     return result.scalars().first()
 
 
+def _existing_duration_minutes(existing: "Reservation", default_duration_minutes: int) -> int:
+    """
+    Reservation Intelligence Phase B: 既存予約自身の占有時間（分）を返す。
+
+    重要（今回のPhase Bで修正した最重要バグ）: 以前はこの値の代わりに
+    「今回の新規リクエストのduration_minutes」を既存予約の終了時刻計算に
+    流用しており、既存予約と新規リクエストで長さが異なる場合に重複判定が
+    誤る欠陥があった（例: 20:00〜22:00の既存予約に対し、21:30〜22:00
+    〈30分〉の新規リクエストを流用すると21:30〜22:00の誤った終了時刻に
+    なり、本来重複するはずの時間帯を見逃す）。
+
+    existing.duration_minutes（Phase Bで追加した新列）が設定されていれば
+    それを唯一のsource of truthとして使う。Phase B以前に作成された既存
+    予約はこの列がNULLのため、その場合のみ店舗のデフォルト所要時間
+    （shop.reservation_duration_minutes or 90）にフォールバックする
+    （NULL=無制限とは絶対に扱わない。必ず具体的な分数に解決する）。
+    """
+    return existing.duration_minutes or default_duration_minutes
+
+
 async def _find_available_table(
     db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int,
-    excluded_table_ids: Optional[set] = None,
+    default_duration_minutes: int, excluded_table_ids: Optional[set] = None,
 ) -> tuple[Optional[str], bool]:
     """
     条件に合う空きテーブルを探す。
@@ -181,6 +202,11 @@ async def _find_available_table(
     以前は明示的な順序がなかったため、複数の空きテーブルがある場合の自動選択が
     DBの返却順という不定なものだったが、これは元々ドキュメント化された仕様
     ではなく、この決定的な順序への変更は安全側の改善として扱う）。
+
+    default_duration_minutes: Reservation Intelligence Phase Bで追加。
+    既存予約自身のduration_minutesがNULL（Phase B以前に作成された予約）
+    だった場合にのみ使うフォールバック値。呼び出し元は必ず
+    shop.reservation_duration_minutes or 90 を渡すこと。
     """
     tables_result = await db.execute(
         select(ShopTable).filter(ShopTable.shop_id == shop_id, ShopTable.is_active == True)
@@ -209,7 +235,9 @@ async def _find_available_table(
         conflicting = False
         for existing in overlap_result.scalars().all():
             existing_start = existing.reservation_date
-            existing_end = existing_start + timedelta(minutes=duration_minutes)
+            existing_end = existing_start + timedelta(
+                minutes=_existing_duration_minutes(existing, default_duration_minutes)
+            )
             if existing_start < end and existing_end > start:
                 conflicting = True
                 break
@@ -220,7 +248,7 @@ async def _find_available_table(
 
 
 async def _lock_and_verify_table_slot(
-    db: AsyncSession, table_id: str, start: datetime, duration_minutes: int
+    db: AsyncSession, table_id: str, start: datetime, duration_minutes: int, default_duration_minutes: int
 ) -> bool:
     """
     Phase3E-3: 同時多重予約防止。対象テーブルの行をSELECT ... FOR UPDATEで
@@ -228,6 +256,10 @@ async def _lock_and_verify_table_slot(
     create_reservation()のトランザクション内でのみ呼び出すこと
     （check_availability/check_single_slot_availability側は高速・ロックフリーの
     ままにするため、絶対にここからは呼ばない）。
+
+    default_duration_minutes: Reservation Intelligence Phase B追加。
+    _find_available_table()と同じ意味（既存予約自身のduration_minutesが
+    NULLの場合のみのフォールバック）。
     """
     await db.execute(select(ShopTable.id).filter(ShopTable.id == table_id).with_for_update())
     end = start + timedelta(minutes=duration_minutes)
@@ -239,14 +271,17 @@ async def _lock_and_verify_table_slot(
     )
     for existing in overlap_result.scalars().all():
         existing_start = existing.reservation_date
-        existing_end = existing_start + timedelta(minutes=duration_minutes)
+        existing_end = existing_start + timedelta(
+            minutes=_existing_duration_minutes(existing, default_duration_minutes)
+        )
         if existing_start < end and existing_end > start:
             return False
     return True
 
 
 async def _find_and_lock_available_table(
-    db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int
+    db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int,
+    default_duration_minutes: int,
 ) -> tuple[Optional[str], bool]:
     """
     Phase3E-3: create_reservation()専用。_find_available_table()で候補を探した
@@ -259,17 +294,21 @@ async def _find_and_lock_available_table(
     確保した）は、その候補を除外して次点のテーブル候補を再検索する
     （_MAX_LOCK_RETRY回まで）。テーブルが1件も登録されていない
     （unmanaged=True）店舗では、ロック対象がないため従来通り常に予約可能。
+
+    default_duration_minutes: Reservation Intelligence Phase B追加。
+    _find_available_table()/_lock_and_verify_table_slot()へそのまま渡す。
     """
     excluded: set = set()
     for _ in range(_MAX_LOCK_RETRY):
         table_id, unmanaged = await _find_available_table(
-            db, shop_id, party_size, start, duration_minutes, excluded_table_ids=excluded
+            db, shop_id, party_size, start, duration_minutes, default_duration_minutes,
+            excluded_table_ids=excluded,
         )
         if unmanaged:
             return table_id, True
         if table_id is None:
             return None, False
-        if await _lock_and_verify_table_slot(db, table_id, start, duration_minutes):
+        if await _lock_and_verify_table_slot(db, table_id, start, duration_minutes, default_duration_minutes):
             return table_id, False
         excluded.add(table_id)
     return None, False
@@ -372,6 +411,7 @@ async def _is_staff_scheduled(
 
 async def _find_available_staff_for_service(
     db: AsyncSession, shop_id: str, service_id: str, start: datetime, duration_minutes: int,
+    default_duration_minutes: int,
     preferred_staff_id: Optional[str] = None, enforce_schedule: bool = False,
     excluded_staff_ids: Optional[set] = None,
 ) -> tuple[Optional[str], bool]:
@@ -395,6 +435,11 @@ async def _find_available_staff_for_service(
     明示的な順序がなかったため、複数の空きスタッフがいる場合の自動選択が
     DBの返却順という不定なものだったが、ドキュメント化された仕様ではなく、
     この決定的な順序への変更は安全側の改善として扱う）。
+
+    default_duration_minutes: Reservation Intelligence Phase Bで追加。
+    _find_available_table()と同じ意味（既存予約自身のduration_minutesが
+    NULLの場合のみのフォールバック）。呼び出し元は必ず
+    shop.reservation_duration_minutes or 90 を渡すこと。
     """
     staff_result = await db.execute(
         select(Staff)
@@ -435,7 +480,9 @@ async def _find_available_staff_for_service(
         conflicting = False
         for existing in overlap_result.scalars().all():
             existing_start = existing.reservation_date
-            existing_end = existing_start + timedelta(minutes=duration_minutes)
+            existing_end = existing_start + timedelta(
+                minutes=_existing_duration_minutes(existing, default_duration_minutes)
+            )
             if existing_start < end and existing_end > start:
                 conflicting = True
                 break
@@ -446,7 +493,7 @@ async def _find_available_staff_for_service(
 
 
 async def _lock_and_verify_staff_slot(
-    db: AsyncSession, staff_id: str, start: datetime, duration_minutes: int
+    db: AsyncSession, staff_id: str, start: datetime, duration_minutes: int, default_duration_minutes: int
 ) -> bool:
     """
     Phase3E-3: 同時多重予約防止。対象スタッフの行をSELECT ... FOR UPDATEで
@@ -456,6 +503,10 @@ async def _lock_and_verify_staff_slot(
     ままにするため、絶対にここからは呼ばない。シフトの再チェックはここでは
     行わない＝シフトはロック対象ではなく、_find_available_staff_for_service側の
     通常ロジックで既に確認済みのため）。
+
+    default_duration_minutes: Reservation Intelligence Phase B追加。
+    _find_available_table()と同じ意味（既存予約自身のduration_minutesが
+    NULLの場合のみのフォールバック）。
     """
     await db.execute(select(Staff.id).filter(Staff.id == staff_id).with_for_update())
     end = start + timedelta(minutes=duration_minutes)
@@ -467,7 +518,9 @@ async def _lock_and_verify_staff_slot(
     )
     for existing in overlap_result.scalars().all():
         existing_start = existing.reservation_date
-        existing_end = existing_start + timedelta(minutes=duration_minutes)
+        existing_end = existing_start + timedelta(
+            minutes=_existing_duration_minutes(existing, default_duration_minutes)
+        )
         if existing_start < end and existing_end > start:
             return False
     return True
@@ -475,6 +528,7 @@ async def _lock_and_verify_staff_slot(
 
 async def _find_and_lock_available_staff_for_service(
     db: AsyncSession, shop_id: str, service_id: str, start: datetime, duration_minutes: int,
+    default_duration_minutes: int,
     preferred_staff_id: Optional[str] = None, enforce_schedule: bool = False,
 ) -> tuple[Optional[str], bool]:
     """
@@ -494,18 +548,22 @@ async def _find_and_lock_available_staff_for_service(
     従来通りロック対象がなく常に予約可能（このパスの二重予約チェックは
     Phase3E-3のスコープ外。Phase3D以前からの「管理対象データが0件なら常に
     空き扱い」という既存設計をそのまま維持する）。
+
+    default_duration_minutes: Reservation Intelligence Phase B追加。
+    _find_available_staff_for_service()/_lock_and_verify_staff_slot()へ
+    そのまま渡す。
     """
     excluded: set = set()
     for _ in range(_MAX_LOCK_RETRY):
         candidate_id, unmanaged = await _find_available_staff_for_service(
-            db, shop_id, service_id, start, duration_minutes,
+            db, shop_id, service_id, start, duration_minutes, default_duration_minutes,
             preferred_staff_id, enforce_schedule, excluded_staff_ids=excluded,
         )
         if unmanaged:
             return candidate_id, True
         if candidate_id is None:
             return None, False
-        if await _lock_and_verify_staff_slot(db, candidate_id, start, duration_minutes):
+        if await _lock_and_verify_staff_slot(db, candidate_id, start, duration_minutes, default_duration_minutes):
             return candidate_id, False
         if preferred_staff_id:
             return None, False
@@ -592,16 +650,25 @@ async def check_single_slot_availability(
     if start_dt <= _reservation_basis_now():
         return False, "time_in_past"
 
+    # Reservation Intelligence Phase B: 既存予約自身のduration_minutesがNULL
+    # （Phase B以前に作成された予約）の場合にのみ使うフォールバック値。
+    # _resolve_reservation_duration()と同じ優先順位（Service→店舗デフォルト→90分）
+    # だが、こちらは「既存予約」の、上のdurationは「今回の新規リクエスト」の
+    # 所要時間であり、意味が異なる2つの値であることに注意。
+    default_duration = shop.reservation_duration_minutes or 90
+
     if service:
         found_staff_id, unmanaged = await _find_available_staff_for_service(
-            db, shop.id, service.id, start_dt, duration, staff_id,
+            db, shop.id, service.id, start_dt, duration, default_duration, staff_id,
             enforce_schedule=bool(shop.staff_schedule_enabled),
         )
         if unmanaged or found_staff_id is not None:
             return True, None
         return False, ("staff_unavailable" if staff_id else "fully_booked")
     else:
-        table_id, unmanaged = await _find_available_table(db, shop.id, party_size, start_dt, duration)
+        table_id, unmanaged = await _find_available_table(
+            db, shop.id, party_size, start_dt, duration, default_duration
+        )
         if unmanaged or table_id is not None:
             return True, None
         return False, "fully_booked"
@@ -762,18 +829,23 @@ async def get_availability(
     # Phase3E-3: reservation_dateと同じ基準(JST-naive)の「現在時刻」に統一
     # （datetime.utcnow()との比較は最大9時間ズレるバグだった。上部コメント参照）。
     now = _reservation_basis_now()
+    # Reservation Intelligence Phase B: 既存予約自身のduration_minutesがNULLの
+    # 場合のみのフォールバック値。check_single_slot_availability()と同じ考え方。
+    default_duration = shop.reservation_duration_minutes or 90
     slots: List[AvailabilitySlot] = []
     cursor = opening_dt
     while cursor <= latest_start_dt:
         if cursor > now:
             if service:
                 found_staff_id, unmanaged = await _find_available_staff_for_service(
-                    db, shop_id, service.id, cursor, duration, staff_id,
+                    db, shop_id, service.id, cursor, duration, default_duration, staff_id,
                     enforce_schedule=bool(shop.staff_schedule_enabled),
                 )
                 available = unmanaged or (found_staff_id is not None)
             else:
-                table_id, unmanaged = await _find_available_table(db, shop_id, party_size, cursor, duration)
+                table_id, unmanaged = await _find_available_table(
+                    db, shop_id, party_size, cursor, duration, default_duration
+                )
                 available = unmanaged or (table_id is not None)
             slots.append(AvailabilitySlot(time=cursor.strftime("%H:%M"), available=available))
         cursor += timedelta(minutes=SLOT_INTERVAL_MINUTES)
@@ -865,6 +937,10 @@ async def create_reservation(
             raise _http_error(400, "ご指定の時間は営業時間外です", reason_code="outside_business_hours")
 
         duration = _resolve_reservation_duration(service, shop)
+        # Reservation Intelligence Phase B: 既存予約自身のduration_minutesが
+        # NULL（Phase B以前に作成された予約）の場合にのみ使うフォールバック値。
+        # check_single_slot_availability()/get_availability()と同じ考え方。
+        default_duration = shop.reservation_duration_minutes or 90
 
         table_id = None
         final_staff_id = None
@@ -887,8 +963,8 @@ async def create_reservation(
             # 二重に確保することを防ぐ（_find_and_lock_available_staff_for_service
             # のdocstring参照）。
             found_staff_id, unmanaged = await _find_and_lock_available_staff_for_service(
-                db, request.shop_id, service.id, request.reservation_date, duration, request.staff_id,
-                enforce_schedule=bool(shop.staff_schedule_enabled),
+                db, request.shop_id, service.id, request.reservation_date, duration, default_duration,
+                request.staff_id, enforce_schedule=bool(shop.staff_schedule_enabled),
             )
             if not unmanaged and found_staff_id is None:
                 detail = (
@@ -902,7 +978,8 @@ async def create_reservation(
             # Phase3E-3: テーブル予約も同様にFOR UPDATEロック＋再チェックで
             # 同時多重予約を防ぐ（_find_and_lock_available_tableのdocstring参照）。
             table_id, unmanaged = await _find_and_lock_available_table(
-                db, request.shop_id, request.number_of_people, request.reservation_date, duration
+                db, request.shop_id, request.number_of_people, request.reservation_date, duration,
+                default_duration,
             )
             if not unmanaged and table_id is None:
                 raise _http_error(400, "ご希望の時間は満席です。他の時間をお試しください", reason_code="fully_booked")
@@ -931,6 +1008,7 @@ async def create_reservation(
             guest_phone=request.guest_phone,
             guest_email=request.guest_email,
             reservation_date=request.reservation_date,
+            duration_minutes=duration,
             number_of_people=request.number_of_people,
             status=ReservationStatus.PENDING.value,
             special_requests=request.special_requests,
