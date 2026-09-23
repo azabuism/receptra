@@ -135,7 +135,7 @@ class CheckAvailabilityResponse(BaseModel):
     # available=False の場合のみ設定。候補:
     # fully_booked / outside_business_hours / shop_closed / business_hours_not_configured /
     # temporary_closure / service_unavailable / staff_unavailable / invalid_request /
-    # temporarily_unavailable
+    # time_in_past / temporarily_unavailable
     #
     # Phase3A当初は「入力不正」と「バックエンド側で確定できなかった」を
     # どちらもinvalid_requestに丸めていたが、ユーザー指摘により分離した:
@@ -151,6 +151,11 @@ class CheckAvailabilityResponse(BaseModel):
     # （店舗側が営業時間を一度も設定していない）を区別した。原因も対応も異なる
     # ため（前者は正常な休業日、後者は店舗側の設定漏れ）、check_availability /
     # create_reservation / AI instructionsの3箇所で同じ語彙に統一している。
+    #
+    # Reservation Intelligence Phase A: time_in_past（指定された日時が既に
+    # 過去である場合）を invalid_request から分離した。形式は正しいが値が
+    # 既に過ぎているだけであり、「形式を確認して再度呼び出す」という
+    # invalid_requestの対応とは案内内容が異なるため。
     reason_code: Optional[str] = None
 
 
@@ -201,7 +206,7 @@ class CreateReservationToolResponse(BaseModel):
     # success=Falseの場合のみ設定。候補:
     # invalid_request / reservation_not_enabled / shop_closed / business_hours_not_configured /
     # temporary_closure / outside_business_hours / service_unavailable / staff_unavailable /
-    # fully_booked / temporarily_unavailable
+    # fully_booked / time_in_past / temporarily_unavailable
     #
     # check_availability(Phase3A)と同じ語彙をそのまま再利用している（AIが新しい
     # 概念を覚える必要をなくすため）。Phase3B.1でbusiness_hours_not_configured
@@ -210,6 +215,8 @@ class CreateReservationToolResponse(BaseModel):
     # 空いていたが、予約確定時点で埋まっていた」ケースも含む（create_reservationは
     # 必ずその場でテーブル/スタッフの空き状況を再判定するため、Phase3Aの結果を
     # キャッシュして使い回すことはない）。
+    # Reservation Intelligence Phase A: time_in_past（指定日時が既に過去）を
+    # invalid_requestから分離。check_availabilityと同じ理由・同じ語彙。
     reason_code: Optional[str] = None
 
 

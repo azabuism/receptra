@@ -580,8 +580,17 @@ async def check_single_slot_availability(
     # datetime.utcnow()からreservation_dateと同じ基準(JST-naive)の
     # _reservation_basis_now()に修正した（調査で確認した実際のタイムゾーン
     # 不整合バグの修正。詳細は_reservation_basis_now()のdocstring参照）。
+    #
+    # Reservation Intelligence Phase A追記: 以前はここも invalid_request
+    # （入力形式の不正）に丸めていたが、「日時が既に過去である」ことと
+    # 「日付/時刻の形式が不正である」ことは原因も対応も全く異なるため分離した。
+    # 前者はAI側で「その時刻は過去です」と自然に案内し、別の時刻を伺うべき
+    # ケースであり、後者のように「形式を確認して再度呼び出す」対応は誤り
+    # （形式は正しいが、時刻そのものが既に過ぎているだけのため）。
+    # AI側の反応方針は _REALTIME_TOOLS の check_availability description
+    # 参照。
     if start_dt <= _reservation_basis_now():
-        return False, "invalid_request"
+        return False, "time_in_past"
 
     if service:
         found_staff_id, unmanaged = await _find_available_staff_for_service(
@@ -810,8 +819,11 @@ async def create_reservation(
         # Phase3E-3: reservation_dateと同じ基準(JST-naive)の「現在時刻」に統一
         # （datetime.utcnow()との比較は最大9時間ズレるバグだった。ファイル上部の
         # _reservation_basis_now()のdocstring参照）。
+        # Reservation Intelligence Phase A追記: check_single_slot_availability()と
+        # 同様の理由で invalid_request から time_in_past へ分離（詳細は同関数の
+        # コメント参照）。
         if request.reservation_date <= _reservation_basis_now():
-            raise _http_error(400, "過去の日時で予約することはできません", reason_code="invalid_request")
+            raise _http_error(400, "過去の日時で予約することはできません", reason_code="time_in_past")
 
         closure = await _get_closure_for_date(db, request.shop_id, request.reservation_date.date())
         if closure:
