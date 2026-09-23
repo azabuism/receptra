@@ -669,6 +669,41 @@ def _today_str_jst() -> str:
     return f"{now.year}年{now.month}月{now.day}日（{_DAY_NAMES_JA[now.weekday()]}曜日）"
 
 
+def _date_str_jst(d) -> str:
+    """datetime.date を「2026年9月24日（木曜日）」形式に整形する。"""
+    return f"{d.year}年{d.month}月{d.day}日（{_DAY_NAMES_JA[d.weekday()]}曜日）"
+
+
+def _relative_dates_block_jst() -> str:
+    """
+    「今日」「明日」「明後日」を、店舗ローカルの現在日付を基準に、サーバー側
+    （Python）で計算した絶対日付の一覧として整形する。
+
+    重要（今回の要件の核心）: この関数がPython側で計算した文字列をそのまま
+    instructionsへ埋め込むことで、AIモデル自身には日付の加算・曜日の判定を
+    一切行わせない。「日付変換はモデルの推測に依存させず、店舗ローカルの
+    現在日付を基準に安全に計算する」という要件を、モデルへの指示文の書き方
+    ではなくサーバー側の決定的な計算で満たすための実装。
+
+    タイムゾーンについて（実装前の安全確認・結論）: Shopモデルには店舗ごとの
+    timezoneフィールドは存在せず（app/models/shop.py確認済み）、本関数が
+    使うJST固定定数は、既存の_today_str_jst()が「本日の日付」として従来
+    から前提としてきたものと完全に同じ基準である。_today_str_jst()は
+    Phase1時点から現在まで本番で使われ続けており、本サービスは現時点で
+    日本国内の店舗のみを対象としているため、この既存のJST固定基準を
+    そのまま踏襲することが安全である（新たな依存やタイムゾーン推測を
+    一切追加しない）。
+    """
+    today = datetime.now(JST).date()
+    tomorrow = today + timedelta(days=1)
+    day_after_tomorrow = today + timedelta(days=2)
+    return (
+        f"今日: {_date_str_jst(today)}\n"
+        f"明日: {_date_str_jst(tomorrow)}\n"
+        f"明後日: {_date_str_jst(day_after_tomorrow)}"
+    )
+
+
 # ============================================================
 # instructions組み立て方針（Phase2）
 # ============================================================
@@ -1111,8 +1146,13 @@ _SHOP_INFO_TEMPLATE = """\
 # 店舗の営業時間（曜日ごと）
 {hours_block}
 
-# 本日の日付
-{today_str}（「明日」「今週土曜」などの相対的な日時表現はこれを基準に解釈してください）\
+# 本日・明日・明後日の日付（RECEPTRA側で事前に計算済みの絶対日付です）
+{relative_dates_block}
+お客様が「今日」「明日」「明後日」という言葉で来店希望日を伝えた場合は、
+必ず上記の一覧に記載された絶対日付（曜日付き）をそのまま使ってください。
+この変換をあなた自身の推測・暗算で行うことは絶対にしないでください。
+上記の3つ以外の相対的な日時表現（「今週の土曜」「来週」など）については、
+「今日」の日付を基準に、これまで通り解釈してください。\
 """
 
 # Phase3H Workstream A: 業種（Shop.business_type）に応じて、AIが会話の中で
@@ -1502,6 +1542,73 @@ _TIME_AMBIGUITY_TEMPLATE = """\
 最終確認もやり直してください。\
 """
 
+# 相対的な日時表現（今日・明日・明後日）の絶対日付への変換ルール。
+# Time Ambiguity（AM/PM解釈）の直後・Visit Reason（該当する場合）/
+# Booking Safetyの直前に、staff_settingsの有無や業種に関わらず常に固定
+# 文言として挿入する（build_realtime_instructions()のセクション挿入順
+# ルール参照。Booking Safetyが常に最後という既存の不変条件は変更しない）。
+#
+# 設計方針（重要・必ず守ること。ユーザーの明示的な指示に基づく）:
+# - お客様には「今日」「明日」「明後日」のような自然な相対表現だけを話して
+#   もらえばよく、具体的な日付（何月何日）をお客様自身に計算させたり
+#   尋ねたりすることは絶対にしない。「何月何日ですか？」「明日というのは
+#   何日でしょうか？」は明示的に禁止された言い回し。
+# - 絶対日付への変換そのものは、AIモデルの推測ではなく、Shop Information
+#   セクションに埋め込まれた_relative_dates_block_jst()のサーバー側計算
+#   結果を参照するだけで完結させる（このテンプレート自身は日付計算の
+#   ロジックを一切持たず、「どの一覧を見るか」だけを指示する）。
+# - 確認回数を増やさないため、日時・人数など既に分かっている情報は
+#   個別にではなく、その時点でまとめて一度の発話で確認する。これは
+#   _TIME_AMBIGUITY_TEMPLATEの「解釈した時刻を安全網として一度伝える」
+#   設計、および_BOOKING_SAFETY_TEMPLATEの「項目ごとの確認と予約全体の
+#   最終確認は別物」という既存の枠組みをそのまま踏襲したものであり、
+#   新しい確認の仕組み（新Tool・新state等）を別途作ってはいない。
+# - この早い段階での日付確認は、あくまで項目ごとの確認の一種であり、
+#   Booking Safetyで定義された「予約全体の最終確認」を代替・省略する
+#   ものではない。ただし、既にこの時点で確認済みの日付を、最終確認で
+#   もう一度単独で問い直す（＝実質的に同じ確認を2回行う）ことは避け、
+#   他の項目と合わせた読み上げに含めるだけにとどめるよう明記した
+#   （_TIME_AMBIGUITY_TEMPLATEが電話番号・時刻について既に採用している
+#   「一度確認したものは、最終確認では読み上げに含めるだけでよい」という
+#   考え方と同じもの）。
+_RELATIVE_DATE_TEMPLATE = """\
+# 相対的な日時表現（今日・明日・明後日）の絶対日付への変換ルール（重要・必ず守ってください）
+お客様は、来店希望日を「今日」「明日」「明後日」のような自然な言い方で
+伝えるだけで構いません。何月何日かをお客様ご自身に計算させたり、答え
+させたりすることは絶対にしないでください。
+
+## 絶対にしてはいけない言い方（例）
+「何月何日ですか？」「明日というのは何日でしょうか？」のように、日付の
+特定・計算をお客様に求める質問は絶対にしないでください。
+
+## 変換方法（あなた自身で日付計算をしない）
+お客様が「今日」「明日」「明後日」と言った場合、必ず上の「Shop
+Information」セクションに記載された「本日・明日・明後日の日付」の一覧
+（RECEPTRA側で事前に計算済みの絶対日付）だけを参照して変換してください。
+あなた自身で日付を加算したり、曜日を推測したりすることは絶対にしないで
+ください。この一覧に無い相対表現（「今週の土曜」「来週の月曜」など）は、
+従来どおり「今日」の日付を基準に解釈して構いません。
+
+## 変換結果は、分かっている他の情報とまとめて一度で確認する
+お客様が伝えた来店希望日（相対表現から変換した絶対日付）は、その時点で
+既に分かっている時刻・人数などの情報とまとめて、一つの発話で自然に確認
+してください（例:「9月24日木曜日の午後2時、2名様ですね？」）。「明日
+ですね？」→「2時ですね？」→「2人ですね？」のように、日付・時刻・人数を
+それぞれ別々の発話で個別に確認して回ることは絶対にしないでください
+（確認の往復回数を増やさないでください）。
+
+## この確認と「予約全体の最終確認」は別物です（重要・混同禁止）
+上記の確認に対するお客様の「はい」等の返事は、あくまでその時点で伝えた
+日時・人数についての確認にすぎません。予約を確定してよいという同意
+としては扱わないでください。Booking Safetyのルールに従い、お名前・
+電話番号等も含めた「予約全体の最終確認」は別途必ず行ってください。
+ただし、この最終確認において、日付についてはここで既に一度お客様の
+確認を得ているため、「本当に9月24日でよろしいですか？」のように日付
+だけを改めて個別に問い直す必要はありません。他の項目（人数・お名前・
+電話番号等）と合わせて、確定した日付として一度まとめて読み上げに含める
+だけで構いません。\
+"""
+
 # Fast Reservation Flow: 来店理由（ask_visit_reason_enabled）の確認ルール。
 # staff_settingsが存在し、かつask_visit_reason_enabledがtrueの店舗にのみ
 # 挿入する（_TIME_AMBIGUITY_TEMPLATEの直後・_BOOKING_SAFETY_TEMPLATEの直前。
@@ -1832,6 +1939,8 @@ async def build_realtime_instructions(
       7d. Customer Context Rules（Phase4B: confirm_customer_identity /
           get_customer_context運用ルール） … 常に固定
       7e. Time Ambiguity（Human Handoff基盤付随: 時刻の午前/午後解釈ルール） … 常に固定
+      7e2. Relative Date（相対的な日時表現「今日/明日/明後日」の絶対日付
+          変換ルール） … 常に固定
       7f. Visit Reason（Fast Reservation Flow: 来店理由の確認ルール） …
           staff_settings.ask_visit_reason_enabledがtrueの場合のみ
       8. Booking Safety（Phase3B: 予約成立宣言の絶対ルール） … 常に固定・最後
@@ -1862,6 +1971,24 @@ async def build_realtime_instructions(
     挿入する（店舗独自のcustom_instructionsによる上書き・無効化はできない。
     他の常時固定セクションと同じ位置づけ）。Booking Safetyが常に最後という
     既存の不変条件は変更しない。
+
+    相対日付変換ルール追記（谷村様の明示的な指示に基づく）:
+    - 7e2（_RELATIVE_DATE_TEMPLATE）はTime Ambiguityの直後・Visit Reason
+      （該当する場合）またはBooking Safetyの直前に、staff_settingsの
+      有無や業種に関わらず常に固定文言として挿入する。
+    - 「今日」「明日」「明後日」の絶対日付（曜日付き）自体は、このテンプレート
+      ではなくShop Informationセクション
+      （_SHOP_INFO_TEMPLATE + _relative_dates_block_jst()）側で、
+      Python（サーバー側）が店舗ローカルの現在日付（JST固定。Shopモデルに
+      店舗ごとのtimezoneフィールドは存在せず、本サービスは現時点で日本
+      国内の店舗のみを対象としているため、既存の_today_str_jst()と同じ
+      JST基準をそのまま踏襲する）を基準に計算する。AIモデル自身による
+      日付の加算・曜日の推測には一切依存しない。
+    - 新規Tool・新規DBスキーマ・新規state（クライアント側/サーバー側とも）
+      は一切追加していない（既存のShop InformationセクションとBooking
+      Safety/Time Ambiguityの既存の「項目ごとの確認 と 予約全体の最終確認は
+      別物」という枠組みを、日付にもそのまま適用しただけの、prompt/
+      instructions側のみの変更）。
 
     Fast Reservation Flow追記:
     - 2b（_FAST_RESERVATION_FLOW_TEMPLATE）はIntent Classificationの直後・
@@ -1908,7 +2035,7 @@ async def build_realtime_instructions(
             party_size_guidance=_build_party_size_guidance(shop.business_type)
         ),
         _EXAMPLES_TEMPLATE_BASE + "\n" + _build_language_example_line(ai_languages),
-        _SHOP_INFO_TEMPLATE.format(hours_block=hours_block, today_str=_today_str_jst()),
+        _SHOP_INFO_TEMPLATE.format(hours_block=hours_block, relative_dates_block=_relative_dates_block_jst()),
     ]
 
     # Phase3H Workstream A: 業種に応じた「サービス」の呼び方（該当する業種のみ）。
@@ -1943,6 +2070,7 @@ async def build_realtime_instructions(
     sections.append(_CUSTOMER_MEMORY_RULES_TEMPLATE)
     sections.append(_CUSTOMER_CONTEXT_RULES_TEMPLATE)
     sections.append(_TIME_AMBIGUITY_TEMPLATE)
+    sections.append(_RELATIVE_DATE_TEMPLATE)
 
     # Fast Reservation Flow: 来店理由確認はオーナー設定がONの店舗のみ挿入する
     # （デフォルトOFF・staff_settings未作成の店舗は従来通り一切触れない）。
