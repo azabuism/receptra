@@ -732,6 +732,59 @@
         // elapsed_msを記録済みかどうか（二重ログ防止。NAME PoCと同じ構造）。
         let shortAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
 
+        // ===== PHONE Forced Commit（電話番号ターン専用の安全上限。今回追加。全店舗適用） =====
+        // 背景（実機症状・PHONE TURN FIXフェーズ）: 「最後に、ご連絡先の
+        // お電話番号をお願いします」とAIが尋ねた後、お客様が電話番号を話した
+        // にもかかわらずAIが応答を再開しないまま会話が停止することがある。
+        // 監査の結果、PHONE用のExpected Answer Window自体（ANSWER_WINDOW_LIMITS_MS.
+        // PHONE=10000msという上限値・classifyExpectedAnswerType()によるPHONE判定・
+        // startAnswerWindowIfNeeded()によるタイマー開始）はすでに存在していたが、
+        // そのタイマーが期限切れになった際に実際に手動commitを送信する関数が
+        // NAME/YES_NO/SHORT_CHOICE分にしか存在せず、PHONEだけが「observed=タイム
+        // ボックス超過をログに記録するだけで、その後は何もせず通常のsemantic_vad
+        // に委ねる」という未実装のまま放置されていたことが判明した（ファイル
+        // 冒頭のExpected Answer Window設計方針コメント：本来はPHONE/VISIT_REASON/
+        // 通常店舗のNAMEは観測のみのままにする、という古い決定に基づく状態で
+        // あり、その後NAME PoC・Short Choiceで安全性が実機検証された強制commit
+        // パターンがPHONEにだけ反映されていなかった）。
+        //
+        // 本追加は、実機で安全性が確認済みのShort Choice 3-Second Turnと全く
+        // 同じ安全パターン（世代管理・commitは1世代につき最大1回・送信直前に
+        // 正常完了フラグを再確認・response.createは絶対に追加送信しない・
+        // datachannel未オープンやsend例外は非fatal）を、PHONEに限定して
+        // 全店舗（本番）へ適用するものである。NAME Forced Commit Observation PoC・
+        // Conversation Takeover Observation PoCとは完全に独立した状態・関数として
+        // 実装する（既存の設計方針である「1つの汎用機構にまとめない」を踏襲）。
+        //
+        // 「正常なsemantic_vadが優先」について: 下のmaybeSendPhoneCommit()は、
+        // PHONE用Answer Window（10秒。あくまで安全上限であり待ち時間ではない）が
+        // 期限切れになった時点、つまり通常のsemantic_vadがそれより先に
+        // speech_stopped等へ進んでいない場合にのみ呼ばれる。通常のsemantic_vadが
+        // 先に完了すれば、この仕組みは一切何もしない。
+        //
+        // 「電話番号ターン1回」を識別する世代カウンタ。classifyExpectedAnswerType()で
+        // AIが新たにPHONEを尋ねたと判定した（NAMEと同じく、型が変化した瞬間のみ）
+        // ときに+1する。
+        let phoneAnswerGeneration = 0;
+        // このPHONE世代について、既に手動commitを送信済みならその世代番号
+        // （未送信ならnull）。同一世代につき手動commitは最大1回のみ。
+        let phoneCommitSentGeneration = null;
+        // このPHONE世代について、手動commitより前に正常なターン終了
+        // （speech_stopped/committed/item_created）が先に届いたかどうか。
+        // trueの場合、送信直前の最終確認で手動commitを見送る
+        // （NAME PoC/Short Choiceと同じレース対策）。
+        let phoneTurnNormalCompletionSeen = false;
+        // 直近の手動commit送信時刻（elapsed_ms計測の起点。performance.now()）。
+        // null＝現在手動commit送信待ち/観測対象ではない。
+        let phoneCommitSentAt = null;
+        // その送信がどのcallGeneration（通話）で行われたかを覚えておき、
+        // 通話をまたいだ誤相関を防ぐ。
+        let phoneCommitCallGeneration = null;
+        // 手動commit送信後に観測したい4種の反応それぞれについて、一度だけ
+        // elapsed_msを記録済みかどうか（二重ログ防止。NAME PoC/Short Choiceと
+        // 同じ構造）。
+        let phoneCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+
         // ===== Conversation Takeover Observation PoC: 追加の最小状態（今回追加） =====
         // 目的・設計方針の詳細はファイル冒頭のtakeoverPocEnabled定義の
         // コメントを参照。NAME Forced Commit Observation PoCとは完全に独立した
@@ -998,6 +1051,14 @@
                     nameAnswerGeneration += 1;
                     nameTurnNormalCompletionSeen = false;
                 }
+                if (type === 'PHONE') {
+                    // PHONE Forced Commit（今回追加）: NAMEと同じく、型が変化して
+                    // 新たにPHONEと判定された瞬間のみ新しい世代として扱う。この
+                    // 世代の「正常完了済み」フラグもここでリセットする。
+                    phoneAnswerGeneration += 1;
+                    phoneTurnNormalCompletionSeen = false;
+                    pushTimelineEvent('PHONE_TURN_DETECTED (generation=' + phoneAnswerGeneration + ')');
+                }
                 pushTimelineEvent('EXPECTED_ANSWER_SET (type=' + type + ')');
             }
             // Short Choice 3-Second Turn（今回追加）: 上のNAMEと異なり、
@@ -1054,6 +1115,11 @@
                 // input_audio_buffer.commitを最大1回だけ送信する。それ以外の
                 // 場合、この呼び出しは内部で何もせずに戻る。
                 maybeSendShortAnswerCommit(type, myGeneration);
+                // PHONE Forced Commit（今回追加・全店舗適用）: type==='PHONE'の
+                // 場合、maybeSendPhoneCommit()が改めて全条件を確認したうえで
+                // input_audio_buffer.commitを最大1回だけ送信する。それ以外の
+                // 場合、この呼び出しは内部で何もせずに戻る。
+                maybeSendPhoneCommit(type, myGeneration);
             }, limitMs);
         }
 
@@ -1198,6 +1264,80 @@
             if (shortAnswerCommitPendingEvents[key]) return;
             shortAnswerCommitPendingEvents[key] = true;
             pushTimelineEvent('SHORT_ANSWER_COMMIT_REACTION (' + label + ', elapsed_ms=' + Math.round(performance.now() - shortAnswerCommitSentAt) + ')');
+        }
+
+        // ===== PHONE Forced Commit: 2つの中核関数（今回追加・全店舗適用） =====
+        // NAME Forced Commit Observation PoC・Short Choice 3-Second Turnで実機
+        // 検証済みの安全なパターン（commitは1世代につき最大1回・送信直前に
+        // 正常完了フラグを再確認・response.createは絶対に追加送信しない・
+        // datachannel未オープンやsend例外は非fatal）をそのまま踏襲する。
+        // Short Choiceと同じく店舗gatingを一切行わない（全店舗の本番通話で
+        // 動作する）。
+
+        // Expected Answer Window（startAnswerWindowIfNeeded）が期限切れになった
+        // 時点で、answerType が PHONE で、かつまだ正常なターン終了
+        // （speech_stopped/committed/item_created）が届いていない場合に限り、
+        // input_audio_buffer.commitを最大1回だけ手動送信する。response.createは
+        // 絶対に追加送信しない（NAME PoC/Short Choiceと全く同じ理由:
+        // サーバー側semantic_vadが既に内部的にauto-commit＋auto-responseを
+        // 開始している可能性を排除できず、手動response.createを重ねると
+        // 二重応答を招くリスクがあるため）。
+        //
+        // 「10秒は待ち時間ではなく安全上限」について: この関数はExpected
+        // Answer Window（PHONE=10秒）が期限切れになった時点、つまり通常の
+        // semantic_vadがそれより先にspeech_stopped等へ進んでいない場合にのみ
+        // 呼ばれる。通常のsemantic_vadが先に完了すればこの関数は呼ばれる前に
+        // cancelAnswerWindow()でタイマー自体がキャンセルされているため、通常
+        // ケースの応答速度には一切影響しない。
+        function maybeSendPhoneCommit(answerType, myGeneration) {
+            if (answerType !== 'PHONE') return; // PHONEのみが対象
+            if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない（保険）
+            if (!dc || dc.readyState !== 'open') {
+                pushTimelineEvent('PHONE_COMMIT_SKIPPED (reason=datachannel_not_open)');
+                return;
+            }
+            if (phoneCommitSentGeneration === phoneAnswerGeneration) {
+                // このPHONE世代についてはすでに手動commit送信済み（最大1回/世代）
+                return;
+            }
+            pushTimelineEvent('PHONE_COMMIT_ELIGIBLE (generation=' + phoneAnswerGeneration + ')');
+            // 送信直前にもう一度だけ、正常完了フラグがその間に立っていないか
+            // 最終確認する（NAME PoC/Short Choiceと同じレース対策。「semantic_vadの
+            // 正常完了がタイマーとほぼ同時に確定した場合の二重commit防止」の
+            // 中核ガード）。
+            if (phoneTurnNormalCompletionSeen) {
+                pushTimelineEvent('PHONE_COMMIT_SKIPPED (reason=normal_completion_won_race)');
+                return;
+            }
+            pushTimelineEvent('PHONE_COMMIT_REQUESTED (generation=' + phoneAnswerGeneration + ')');
+            try {
+                // NAME PoC/Short Choiceと全く同じくinput_audio_buffer.commitのみ。
+                // この直後にresponse.createを送ることは絶対にしない（既存の
+                // Realtimeライフサイクルにそのまま委ねる）。
+                dc.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+                phoneCommitSentGeneration = phoneAnswerGeneration;
+                phoneCommitCallGeneration = myGeneration;
+                phoneCommitSentAt = performance.now();
+                phoneCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+                pushTimelineEvent('PHONE_COMMIT_SENT (generation=' + phoneAnswerGeneration + ')');
+            } catch (e) {
+                // send自体が例外を投げた場合も非fatal扱い（endCall/
+                // cleanupConnectionは呼ばない）。既存のsemantic_vadに以後を委ねる。
+                pushTimelineEvent('PHONE_COMMIT_ERROR (reason=send_exception): ' + (e && e.message));
+            }
+        }
+
+        // PHONE Forced Commit: 手動commit送信後に観測したい4種の反応
+        // （committed/item_created/response.created/AI音声開始）を、各イベント
+        // につき一度だけelapsed_msとしてタイムラインに記録する（NAME PoC/Short
+        // Choiceと同じ構造）。手動commitを送信していない通常の通話では
+        // phoneCommitSentAt が null のままのため、何もしない。
+        function maybeLogPhoneReactionElapsed(key, label) {
+            if (phoneCommitSentAt === null) return;
+            if (callGeneration !== phoneCommitCallGeneration) return;
+            if (phoneCommitPendingEvents[key]) return;
+            phoneCommitPendingEvents[key] = true;
+            pushTimelineEvent('PHONE_COMMIT_REACTION (' + label + ', elapsed_ms=' + Math.round(performance.now() - phoneCommitSentAt) + ')');
         }
 
         // ===== Conversation Takeover Observation PoC: 4つの中核関数（今回追加） =====
@@ -3274,6 +3414,8 @@
                 maybeLogTakeoverReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
                 // Short Choice 3-Second Turn（今回追加。全店舗適用・独立）
                 maybeLogShortAnswerReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
+                // PHONE Forced Commit（今回追加。全店舗適用・独立）
+                maybeLogPhoneReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
             } else if (type === 'output_audio_buffer.stopped') {
                 aiAudioOutputActive = false;
                 lastAiAudioEventAt = performance.now();
@@ -3351,6 +3493,9 @@
                 // Short Choice 3-Second Turn（今回追加。全店舗適用・独立）
                 shortChoiceTurnNormalCompletionSeen = true;
                 maybeLogShortAnswerReactionElapsed('committed', 'input_audio_buffer.committed');
+                // PHONE Forced Commit（今回追加。全店舗適用・独立）
+                phoneTurnNormalCompletionSeen = true;
+                maybeLogPhoneReactionElapsed('committed', 'input_audio_buffer.committed');
             } else if (type === 'conversation.item.created' && msg.item && msg.item.role === 'user') {
                 // PHASE8（会話停止調査・最重要）: ユーザー発話が会話アイテムとして
                 // 確定したことを示すイベント。「名前を答えた後に止まる」等の症状で、
@@ -3368,6 +3513,9 @@
                 // Short Choice 3-Second Turn（今回追加。全店舗適用・独立）
                 shortChoiceTurnNormalCompletionSeen = true;
                 maybeLogShortAnswerReactionElapsed('item', 'conversation.item.created');
+                // PHONE Forced Commit（今回追加。全店舗適用・独立）
+                phoneTurnNormalCompletionSeen = true;
+                maybeLogPhoneReactionElapsed('item', 'conversation.item.created');
             } else if (type === 'input_audio_buffer.speech_started') {
                 if (!initialGreetingSent) userSpokeBeforeGreeting = true;
                 // ISSUE2調査用（PIIなし）: speech_started発生時点のローカルマイク
@@ -3407,6 +3555,10 @@
                 updateAudioDiagnosticsPanel();
                 // Expected Answer Window（PHASE6: 起点はユーザーの発話開始）。
                 startAnswerWindowIfNeeded(callGeneration);
+                // PHONE Forced Commit（今回追加）: PHONEターン中のユーザー発話
+                // 開始を専用マーカーとしても記録する（既存の汎用USER_SPEECH_STARTED
+                // に加え、実機ログでPHONEターンだけを追いやすくするため）。
+                if (expectedAnswerType === 'PHONE') pushTimelineEvent('PHONE_SPEECH_STARTED');
                 // Conversation Takeover Observation PoC（今回追加。NAME PoCとは独立。
                 // 起点も同じくユーザーの発話開始）。
                 startTakeoverTimerIfNeeded(callGeneration);
@@ -3433,6 +3585,12 @@
                 // で既にキャンセル済み（NAME/YES_NO/SHORT_CHOICE等で共有している
                 // 同一のanswerWindowTimerIdのため、専用のキャンセル関数は不要）。
                 shortChoiceTurnNormalCompletionSeen = true;
+                // PHONE Forced Commit（今回追加。全店舗適用・独立）: 同じく正常
+                // 終了したため、この電話番号ターンの世代についてはもう手動commitを
+                // 送らない。Answer Window自体は上のcancelAnswerWindow()で既に
+                // キャンセル済み（PHONE/NAME/YES_NO/SHORT_CHOICEで共有している
+                // 同一のanswerWindowTimerIdのため、専用のキャンセル関数は不要）。
+                phoneTurnNormalCompletionSeen = true;
                 // PHASE6相関用（PIIなし）: 対応するspeech_startedからの経過時間
                 // （＝サーバーがユーザー発話と判定していた継続時間）を記録する。
                 // 短時間の相槌（「はい」「違います」等）も本物の短い発話として
@@ -3464,6 +3622,8 @@
                 maybeLogTakeoverReactionElapsed('responseCreated', 'response.created');
                 // Short Choice 3-Second Turn（今回追加。全店舗適用・独立）
                 maybeLogShortAnswerReactionElapsed('responseCreated', 'response.created');
+                // PHONE Forced Commit（今回追加。全店舗適用・独立）
+                maybeLogPhoneReactionElapsed('responseCreated', 'response.created');
                 // Silence Timeout: この回の応答にfunction_callが含まれるかどうかを
                 // 新しい応答サイクルの開始時点でリセットする（response.doneで判定に使う）。
                 responseHasFunctionCall = false;
@@ -3564,6 +3724,17 @@
                     const scErrMessage = (msg.error && msg.error.message) || null;
                     pushTimelineEvent('SHORT_ANSWER_COMMIT_ERROR (code=' + scErrCode + ', type=' + scErrType
                         + ', elapsed_ms=' + Math.round(performance.now() - shortAnswerCommitSentAt) + ', message=' + scErrMessage + ')');
+                }
+                // PHONE Forced Commit（今回追加。全店舗適用・独立）: 同じ理由で、
+                // 手動commit送信後に発生したerrorを専用イベントとして記録する。
+                // このハンドラは元々fatal処理を一切行っていないため、そのままの
+                // 挙動を維持するだけで非fatal要件を満たす。
+                if (phoneCommitSentAt !== null && callGeneration === phoneCommitCallGeneration) {
+                    const phErrCode = (msg.error && msg.error.code) || null;
+                    const phErrType = (msg.error && msg.error.type) || null;
+                    const phErrMessage = (msg.error && msg.error.message) || null;
+                    pushTimelineEvent('PHONE_COMMIT_ERROR (code=' + phErrCode + ', type=' + phErrType
+                        + ', elapsed_ms=' + Math.round(performance.now() - phoneCommitSentAt) + ', message=' + phErrMessage + ')');
                 }
             }
         }
@@ -3748,6 +3919,15 @@
             shortAnswerCommitSentAt = null;
             shortAnswerCommitCallGeneration = null;
             shortAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+            // PHONE Forced Commit: 新しい通話ごとに必ずリセットする（前回通話の
+            // 状態を持ち越さない。NAME PoC/Takeover PoC/Short Choiceとは独立した
+            // 状態のため個別にリセットする）。
+            phoneAnswerGeneration = 0;
+            phoneCommitSentGeneration = null;
+            phoneTurnNormalCompletionSeen = false;
+            phoneCommitSentAt = null;
+            phoneCommitCallGeneration = null;
+            phoneCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。

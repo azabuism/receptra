@@ -60,6 +60,11 @@ const FN = {
     maybeLogPocReactionElapsed: extractFunctionSource(SRC, 'maybeLogPocReactionElapsed'),
     maybeSendShortAnswerCommit: extractFunctionSource(SRC, 'maybeSendShortAnswerCommit'),
     maybeLogShortAnswerReactionElapsed: extractFunctionSource(SRC, 'maybeLogShortAnswerReactionElapsed'),
+    // PHONE Forced Commit（PHONE NUMBER TURN FIXフェーズで追加）: startAnswerWindowIfNeeded()の
+    // タイマー期限切れハンドラが直接呼び出すため、抽出しないとReferenceErrorになる
+    // （maybeSendNameCommitPoc/maybeSendShortAnswerCommitと同じ理由）。
+    maybeSendPhoneCommit: extractFunctionSource(SRC, 'maybeSendPhoneCommit'),
+    maybeLogPhoneReactionElapsed: extractFunctionSource(SRC, 'maybeLogPhoneReactionElapsed'),
     cancelAnswerWindow: extractFunctionSource(SRC, 'cancelAnswerWindow'),
     startTakeoverTimerIfNeeded: extractFunctionSource(SRC, 'startTakeoverTimerIfNeeded'),
 };
@@ -100,6 +105,14 @@ function buildSandbox(overrides) {
         shortAnswerCommitSentAt: null,
         shortAnswerCommitCallGeneration: null,
         shortAnswerCommitPendingEvents: { committed: false, item: false, responseCreated: false, aiAudioStarted: false },
+        // PHONE Forced Commit（PHONE NUMBER TURN FIXフェーズで追加。このテストの
+        // 対象ではないが、startAnswerWindowIfNeeded()経由で参照されるため必要）
+        phoneAnswerGeneration: 0,
+        phoneCommitSentGeneration: null,
+        phoneTurnNormalCompletionSeen: false,
+        phoneCommitSentAt: null,
+        phoneCommitCallGeneration: null,
+        phoneCommitPendingEvents: { committed: false, item: false, responseCreated: false, aiAudioStarted: false },
         takeoverTimerId: null,
         takeoverSpeechEpisodeId: 0,
         takeoverPocEnabled: false, // このテストではTakeover PoC自体の有効性は問わない
