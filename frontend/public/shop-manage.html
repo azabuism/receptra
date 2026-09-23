@@ -180,6 +180,9 @@
         .res-reschedule-row { display: none; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; width: 100%; }
         .res-reschedule-row.open { display: flex; }
         .res-reschedule-row input[type="datetime-local"] { padding: 6px 10px; border: var(--border); border-radius: 8px; font-family: inherit; font-size: 13px; }
+        .res-people-row { display: none; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; width: 100%; }
+        .res-people-row.open { display: flex; }
+        .res-people-row input[type="number"] { width: 80px; padding: 6px 10px; border: var(--border); border-radius: 8px; font-family: inherit; font-size: 13px; }
         .status-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; margin-bottom: 4px; }
         .status-badge.pending { background: #fef3c7; color: #b45309; }
         .status-badge.confirmed { background: #d1fae5; color: #047857; }
@@ -2843,11 +2846,17 @@
                         '<button type="button" class="btn-outline res-update-btn">更新</button>' +
                         (canQuickNoShow ? '<button type="button" class="btn-outline btn-danger res-noshow-btn">無断キャンセル</button>' : '') +
                         '<button type="button" class="btn-outline res-reschedule-toggle-btn">日時を変更</button>' +
+                        '<button type="button" class="btn-outline res-people-toggle-btn">人数を変更</button>' +
                         '</div>' +
                         '<div class="res-reschedule-row">' +
                         '<input type="datetime-local" class="res-reschedule-input" value="' + toDatetimeLocalValue(r.reservation_date) + '">' +
                         '<button type="button" class="btn-outline res-reschedule-save-btn">保存</button>' +
                         '<button type="button" class="btn-outline res-reschedule-cancel-btn">やめる</button>' +
+                        '</div>' +
+                        '<div class="res-people-row">' +
+                        '<input type="number" class="res-people-input" min="1" max="999" value="' + r.number_of_people + '">' +
+                        '<button type="button" class="btn-outline res-people-save-btn">保存</button>' +
+                        '<button type="button" class="btn-outline res-people-cancel-btn">やめる</button>' +
                         '</div>' +
                         '</div>';
                 }).join('');
@@ -2886,6 +2895,23 @@
                             return;
                         }
                         updateReservationDate(id, input.value);
+                    });
+
+                    const peopleRow = item.querySelector('.res-people-row');
+                    item.querySelector('.res-people-toggle-btn').addEventListener('click', function () {
+                        peopleRow.classList.toggle('open');
+                    });
+                    item.querySelector('.res-people-cancel-btn').addEventListener('click', function () {
+                        peopleRow.classList.remove('open');
+                    });
+                    item.querySelector('.res-people-save-btn').addEventListener('click', function () {
+                        const input = item.querySelector('.res-people-input');
+                        const value = parseInt(input.value, 10);
+                        if (!value || value < 1) {
+                            alert('変更後の人数を入力してください');
+                            return;
+                        }
+                        updateReservationPeople(id, value);
                     });
                 });
             } catch (e) {
@@ -2928,6 +2954,31 @@
                 loadReservations();
             } catch (err) {
                 alert(typeof err.message === 'string' ? err.message : '日時の変更に失敗しました');
+            }
+        }
+
+        // Capacity Mutation Safety: 人数の変更もupdateReservationDateと同じ
+        // パターン（PUT /api/v1/reservations/{id}、失敗時はerrData.detailを
+        // そのままalert表示）を踏襲する。容量不足の場合、サーバー側は
+        // 「この席の定員を超えています」という非技術的な文言をdetailに
+        // 返すため、ここで新しいエラーメッセージのマッピングを追加する
+        // 必要はない（新しいUIを作らない・値を黙って元に戻さない。保存に
+        // 失敗した場合はloadReservations()を呼ばないため、入力欄の値は
+        // そのまま残り、オーナーは値を確認しながら再試行できる）。
+        async function updateReservationPeople(reservationId, numberOfPeople) {
+            try {
+                const res = await authFetch('/api/v1/reservations/' + encodeURIComponent(reservationId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ number_of_people: numberOfPeople })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '人数の変更に失敗しました');
+                }
+                loadReservations();
+            } catch (err) {
+                alert(typeof err.message === 'string' ? err.message : '人数の変更に失敗しました');
             }
         }
 

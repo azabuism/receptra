@@ -504,6 +504,36 @@ def _validate_reservation_time_window(
     return None
 
 
+def _validate_table_capacity(table: ShopTable, party_size: int) -> Optional[str]:
+    """
+    Reservation Intelligence "Capacity Mutation Safety": 割り当て対象／
+    割り当て済みのテーブル1件が、指定人数を収容できるかどうかを判定する
+    共通ロジック。_validate_reservation_time_window()と同じ設計方針
+    （唯一のsource of truthとして複数箇所から呼ばれる、Optional[str]で
+    reason_codeを返す）に揃えている。
+
+    容量判定は「number_of_people <= table.capacity」（境界値=ちょうど定員
+    ぴったりはOK。_validate_reservation_time_window()の「触れるのはOK」
+    という既存の境界値方針と揃えた解釈）。
+
+    このhelperは「特定の1テーブルが指定人数を収容できるか」だけを判定する
+    ものであり、Time-overlap（重複時間帯）判定とは完全に独立した別概念
+    のまま維持する（一つの巨大なhelperへ統合しない）。テーブル自動再割当は
+    一切行わない・呼び出し元にその責務も持たせない。
+
+    将来、テーブル以外のResource（部屋・車両等）にも拡張する可能性がある
+    ため、呼び出し境界（table.capacity と party_size という2つの整数の
+    比較）はシンプルなまま保っているが、Generic Resource抽象は今回
+    構築しない（YAGNI。今回はShopTableのみを対象とする）。
+
+    戻り値: 問題なければNone。問題があれば新規reason_code文字列
+    "insufficient_capacity"。
+    """
+    if party_size > table.capacity:
+        return "insufficient_capacity"
+    return None
+
+
 async def _find_available_table(
     db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int,
     default_duration_minutes: int, excluded_table_ids: Optional[set] = None,
@@ -536,7 +566,7 @@ async def _find_available_table(
 
     excluded = excluded_table_ids or set()
     candidates = sorted(
-        [t for t in tables if t.capacity >= party_size and t.id not in excluded],
+        [t for t in tables if _validate_table_capacity(t, party_size) is None and t.id not in excluded],
         key=lambda t: (t.capacity, t.id),
     )
     if not candidates:
@@ -1669,6 +1699,30 @@ async def update_reservation(
                 reservation.status = new_status
 
         if request.number_of_people:
+            # Capacity Mutation Safety: number_of_peopleの変更は、
+            # reservation_dateが同時に変更されるかどうかに関係なく、常に
+            # 割り当て済みテーブルのcapacityを再検証する（今回の最重要修正。
+            # 以前は検証が一切なく、例えば4人定員のテーブルへ6人への変更が
+            # 無条件で成立してしまっていた）。
+            #
+            # table_idが設定されていない予約（サービス単位の美容院・
+            # クリニック等）は元々テーブル自体を使わない正当な状態のため、
+            # このブロックでは一切ブロックしない（Section15-16）。
+            #
+            # 検証はここでのみ行い、reservation_date変更時の一連の検証
+            # （下のifブロック）とは完全に独立させる。自動的な別テーブルへの
+            # 再割当は行わない。容量不足の場合は単純に拒否する（Section17）。
+            if reservation.table_id:
+                assigned_table = await db.get(ShopTable, reservation.table_id)
+                # table_idはあるがテーブル実体が見つからない場合（削除済み
+                # テーブルが割り当てられたままの、ごく古い/レガシーな予約
+                # など）は、今回新たに判定不能なブロッキングエラーを発明
+                # しない。判定材料がないため容量チェックをスキップし、従来
+                # 通りnumber_of_peopleの変更のみを許可する（Section23）。
+                if assigned_table is not None:
+                    capacity_reason = _validate_table_capacity(assigned_table, request.number_of_people)
+                    if capacity_reason is not None:
+                        raise HTTPException(status_code=400, detail="この席の定員を超えています")
             reservation.number_of_people = request.number_of_people
         if request.special_requests is not None:
             reservation.special_requests = request.special_requests
