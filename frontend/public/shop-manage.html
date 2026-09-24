@@ -303,7 +303,12 @@
         .board-sheet-row .label { color: #888; font-size: 12px; flex: 0 0 auto; }
         .board-sheet-row .value { text-align: right; font-weight: 600; }
         .board-sheet-phone-error { color: var(--error); font-size: 11px; display: block; margin-top: 4px; }
-        .board-sheet-close-btn { display: block; margin: 14px auto 0; }
+        /* UX FINAL POLISH P3: タップターゲットは既存の.seg-btn基準（コード内
+           コメント通り44px以上）に合わせる。「閉じる」「表示」ボタンは.btn-outline
+           の共通クラスそのものは変更せず（他の無関係な画面へ影響させないため）、
+           ここで個別に44pxへ引き上げる。 */
+        .board-sheet-close-btn { display: block; margin: 14px auto 0; min-height: 44px; padding: 10px 16px; }
+        #board-sheet-reveal-btn, .res-phone-reveal-btn { min-height: 44px; padding: 8px 14px; }
         /* Resource Lane V1: 「すべて/担当者別/テーブル別」モード切替。
            存在しないモード（Staff/ShopTableが0件）のボタンはJS側でhiddenクラスを
            付与して非表示にする（Section15「存在しないmodeは表示しない」）。 */
@@ -311,6 +316,7 @@
         .board-mode-btn {
             padding: 6px 14px; border-radius: 16px; font-size: 12px; font-weight: 700;
             background: #f0f0f0; color: #888; border: none; font-family: inherit; cursor: pointer;
+            min-height: 44px; display: inline-flex; align-items: center; justify-content: center;
         }
         .board-mode-btn.active { background: #fff0e6; color: var(--primary-dark); }
         .board-mode-btn.hidden { display: none; }
@@ -324,7 +330,7 @@
         .board-view-btn {
             padding: 7px 20px; border-radius: 16px; font-size: 13px; font-weight: 700;
             background: #f0f0f0; color: #888; border: none; font-family: inherit; cursor: pointer;
-            min-height: 36px;
+            min-height: 44px; display: inline-flex; align-items: center; justify-content: center;
         }
         .board-view-btn.active { background: #fff0e6; color: var(--primary-dark); }
         .board-week-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
@@ -359,6 +365,17 @@
         }
         .board-week-mini-hours { position: absolute; top: 0; bottom: 0; background: #f3f4f6; }
         .board-week-mini-block { position: absolute; top: 3px; bottom: 3px; border-radius: 3px; background: var(--primary); }
+        /* UX FINAL POLISH P1: Week時刻目盛り。週共有スケールから動的に生成した
+           2〜4個の目盛りを、カード一覧の直前に1回だけ描画する（各カードへの
+           重複描画はしない）。日カードのミニタイムラインと同じ%位置計算のため、
+           視覚的にそのまま揃う。 */
+        .board-week-ticks-wrap { padding: 0 2px; margin-bottom: 8px; }
+        .board-week-ticks { position: relative; height: 18px; border-bottom: 1px solid #e5e5e5; }
+        .board-week-tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid #ddd; }
+        .board-week-tick .board-week-tick-label {
+            position: absolute; top: -1px; left: 3px; font-size: 10px; color: #999; white-space: nowrap;
+        }
+        .board-week-tick.align-end .board-week-tick-label { left: auto; right: 3px; }
         @media (max-width: 400px) {
             .board-week-label { min-width: 110px; font-size: 12px; padding: 10px 4px; }
             .board-week-today-btn { padding: 6px 8px; font-size: 11px; }
@@ -1450,9 +1467,9 @@
 
             <div id="res-tabpanel-board" style="display: none;">
                 <p class="hint">1日の予約を時間軸で確認できます。ブロックをタップすると詳細が開きます。</p>
-                <div class="board-view-toggle" id="board-view-toggle">
-                    <button type="button" class="board-view-btn active" id="board-view-day-btn" data-view="day">日</button>
-                    <button type="button" class="board-view-btn" id="board-view-week-btn" data-view="week">週</button>
+                <div class="board-view-toggle" id="board-view-toggle" role="tablist">
+                    <button type="button" class="board-view-btn active" id="board-view-day-btn" data-view="day" role="tab" aria-selected="true">日</button>
+                    <button type="button" class="board-view-btn" id="board-view-week-btn" data-view="week" role="tab" aria-selected="false">週</button>
                 </div>
                 <div id="board-day-view">
                     <div class="board-date-nav">
@@ -1467,10 +1484,10 @@
                         </div>
                         <button type="button" class="btn-outline board-nav-btn" id="board-next-btn" aria-label="次の日">▶</button>
                     </div>
-                    <div class="board-mode-toggle" id="board-mode-toggle">
-                        <button type="button" class="board-mode-btn active" id="board-mode-all-btn" data-mode="all">すべて</button>
-                        <button type="button" class="board-mode-btn hidden" id="board-mode-staff-btn" data-mode="staff">担当者別</button>
-                        <button type="button" class="board-mode-btn hidden" id="board-mode-table-btn" data-mode="table">テーブル別</button>
+                    <div class="board-mode-toggle" id="board-mode-toggle" role="radiogroup" aria-label="表示モード">
+                        <button type="button" class="board-mode-btn active" id="board-mode-all-btn" data-mode="all" aria-pressed="true">すべて</button>
+                        <button type="button" class="board-mode-btn hidden" id="board-mode-staff-btn" data-mode="staff" aria-pressed="false">担当者別</button>
+                        <button type="button" class="board-mode-btn hidden" id="board-mode-table-btn" data-mode="table" aria-pressed="false">テーブル別</button>
                     </div>
                     <div id="board-body"></div>
                 </div>
@@ -4219,6 +4236,68 @@
             return { min: min, span: (max - min) };
         }
 
+        // ★★★ UX FINAL POLISH P1: Week時刻目盛り。週共有スケール(weekScale)から
+        // 「キリの良い」時刻目盛りを2〜4個だけ生成する純粋関数。9/12/18等の
+        // 固定時刻をハードコードせず、その週の実際の営業時間範囲から動的に
+        // 算出する（Section15/17）。日跨ぎで1440分(24h)を超える内部座標は
+        // _boardWeekFormatTickLabelが「翌H:MM」形式に変換するため、
+        // 「25:00」のような表記は構造的に発生しない（Section18/52）。
+        const BOARD_WEEK_TICK_STEP_CANDIDATES_MIN = [60, 120, 180, 240, 360, 480, 720];
+        function _boardWeekFormatTickLabel(minutesFromMidnight) {
+            const wrapped = ((minutesFromMidnight % 1440) + 1440) % 1440;
+            const h = Math.floor(wrapped / 60);
+            const m = wrapped % 60;
+            const pad = function (n) { return ('0' + n).slice(-2); };
+            const label = h + ':' + pad(m);
+            return (minutesFromMidnight >= 1440) ? ('翌' + label) : label;
+        }
+        function _boardWeekBuildTimeTicks(weekScale) {
+            if (!weekScale || weekScale.span <= 0) return [];
+            const start = weekScale.min, span = weekScale.span, end = start + span;
+
+            let chosenStep = BOARD_WEEK_TICK_STEP_CANDIDATES_MIN[BOARD_WEEK_TICK_STEP_CANDIDATES_MIN.length - 1];
+            for (let i = 0; i < BOARD_WEEK_TICK_STEP_CANDIDATES_MIN.length; i++) {
+                const step = BOARD_WEEK_TICK_STEP_CANDIDATES_MIN[i];
+                const first = Math.ceil(start / step) * step;
+                const count = (first <= end) ? (Math.floor((end - first) / step) + 1) : 0;
+                if (count >= 2 && count <= 4) { chosenStep = step; break; }
+                chosenStep = step; // 最後まで条件を満たさなければ最大刻みを使う
+            }
+
+            const first = Math.ceil(start / chosenStep) * chosenStep;
+            const ticks = [];
+            for (let t = first; t <= end; t += chosenStep) {
+                ticks.push({ offset: t, pct: ((t - start) / span) * 100, label: _boardWeekFormatTickLabel(t) });
+            }
+            // 保険: 想定通りの本数(2〜4)に収まらなかった場合のフォールバック
+            // （原則2〜4個。Section16「増やしすぎない」）。
+            if (ticks.length < 2) {
+                return [
+                    { offset: start, pct: 0, label: _boardWeekFormatTickLabel(start) },
+                    { offset: end, pct: 100, label: _boardWeekFormatTickLabel(end) },
+                ];
+            }
+            if (ticks.length > 4) {
+                const thinned = [];
+                for (let i = 0; i < 4; i++) {
+                    const idx = Math.round(i * (ticks.length - 1) / 3);
+                    if (thinned.indexOf(ticks[idx]) === -1) thinned.push(ticks[idx]);
+                }
+                return thinned;
+            }
+            return ticks;
+        }
+        function _boardBuildWeekTicksHtml(weekScale) {
+            const ticks = _boardWeekBuildTimeTicks(weekScale);
+            if (!ticks.length) return '';
+            const marksHtml = ticks.map(function (tk) {
+                const alignEnd = tk.pct > 85;
+                return '<div class="board-week-tick' + (alignEnd ? ' align-end' : '') + '" style="left:' + tk.pct + '%;">' +
+                    '<span class="board-week-tick-label">' + escapeHtml(tk.label) + '</span></div>';
+            }).join('');
+            return '<div class="board-week-ticks-wrap"><div class="board-week-ticks">' + marksHtml + '</div></div>';
+        }
+
         // 1日分のカードHTML（縦スタック用）。ミニタイムラインは読み取り専用・
         // 非インタラクティブ（タップはカード全体で受ける。個別ブロックは
         // タップ対象にしない）。日跨ぎでも内部座標(>24h)のまま計算するだけで、
@@ -4271,7 +4350,12 @@
         function _boardRenderWeek(data) {
             const todayStr = _receptraTodayJST();
             const weekScale = _boardComputeWeekScale(data.days);
-            const html = '<div class="board-week-list">' +
+            // ★★★ UX FINAL POLISH P1: 時刻目盛りは週全体で共有する単一のスケール
+            // から1回だけ生成し、カード一覧の直前に1度だけ描画する（各カードへ
+            // 重複描画しない。各カードのミニタイムラインは同じweekScaleで
+            // 位置計算しているため、この目盛りの下にそのまま視覚的に揃う）。
+            const ticksHtml = _boardBuildWeekTicksHtml(weekScale);
+            const html = ticksHtml + '<div class="board-week-list">' +
                 (data.days || []).map(function (day) { return _boardBuildWeekDayCardHtml(day, todayStr, weekScale); }).join('') +
                 '</div>';
             document.getElementById('board-week-body').innerHTML = html;
@@ -4352,8 +4436,15 @@
             if (mode !== 'day' && mode !== 'week') return;
             boardViewMode = mode;
             const isWeek = (mode === 'week');
-            document.getElementById('board-view-day-btn').classList.toggle('active', !isWeek);
-            document.getElementById('board-view-week-btn').classList.toggle('active', isWeek);
+            const dayBtn = document.getElementById('board-view-day-btn');
+            const weekBtn = document.getElementById('board-view-week-btn');
+            dayBtn.classList.toggle('active', !isWeek);
+            weekBtn.classList.toggle('active', isWeek);
+            // UX FINAL POLISH P5: 既存の一覧/予約表タブ(role="tab")と同じ
+            // aria-selected管理をここでも行う（[日][週]は概念的に同種のタブ
+            // 切替のため）。
+            dayBtn.setAttribute('aria-selected', String(!isWeek));
+            weekBtn.setAttribute('aria-selected', String(isWeek));
             document.getElementById('board-day-view').style.display = isWeek ? 'none' : '';
             document.getElementById('board-week-view').style.display = isWeek ? '' : 'none';
             if (isWeek) {
@@ -4805,6 +4896,11 @@
             allBtn.classList.toggle('active', boardMode === 'all');
             staffBtn.classList.toggle('active', boardMode === 'staff');
             tableBtn.classList.toggle('active', boardMode === 'table');
+            // UX FINAL POLISH P5: 既存のseg-control(radiogroup)パターンと同じ
+            // aria-pressed管理をここでも行う。
+            allBtn.setAttribute('aria-pressed', String(boardMode === 'all'));
+            staffBtn.setAttribute('aria-pressed', String(boardMode === 'staff'));
+            tableBtn.setAttribute('aria-pressed', String(boardMode === 'table'));
         }
 
         // モードボタン押下: 新しい通信は発生させず、直近のBoardデータをそのまま
