@@ -58,6 +58,12 @@ from app.models.customer_memory import CustomerMemory
 # alembicは使わずBase.metadata.create_all()で自動作成される）
 from app.models.callback_request import CallbackRequest, CallbackRequestStatus, CallbackRequestReasonCode
 
+# Generic Resource Foundation Phase R1: 予約リソース（部屋・ベッド・椅子・
+# 車両・カラオケルーム・教室・設備など）。新規テーブル。他のPhase3系モデルと
+# 同様、alembicは使わずBase.metadata.create_all()で自動作成される。
+# 既存のShopTable/Staffには一切変更を加えていない（別モデルとして共存）。
+from app.models.resource import Resource
+
 __all__ = [
     # User/Tenant
     "Tenant",
@@ -124,4 +130,7 @@ __all__ = [
     "CallbackRequest",
     "CallbackRequestStatus",
     "CallbackRequestReasonCode",
+
+    # Generic Resource Foundation Phase R1
+    "Resource",
 ]

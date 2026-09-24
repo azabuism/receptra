@@ -32,6 +32,7 @@ from app.routers.shop_media import router as shop_media_router, media_router as 
 from app.routers.reservations import router as reservations_router
 from app.routers.customers import router as customers_router
 from app.routers.shop_tables import router as shop_tables_router
+from app.routers.shop_resources import router as shop_resources_router
 from app.routers.shop_closures import router as shop_closures_router
 from app.routers.shop_break_time import router as shop_break_time_router
 from app.routers.shop_hours_override import router as shop_hours_override_router
@@ -446,6 +447,7 @@ def create_app() -> FastAPI:
     app.include_router(reservations_router)
     app.include_router(customers_router)
     app.include_router(shop_tables_router)
+    app.include_router(shop_resources_router)
     app.include_router(shop_closures_router)
     app.include_router(shop_break_time_router)
     app.include_router(shop_hours_override_router)

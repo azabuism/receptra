@@ -457,11 +457,11 @@
         .image-slot-actions .btn-outline { font-size: 11px; padding: 5px 10px; }
         .closure-item { display: flex; justify-content: space-between; align-items: center;
             padding: 12px 14px; border: var(--border); border-radius: 10px; margin-bottom: 8px; gap: 12px; flex-wrap: wrap; }
-        .service-item, .staff-item { padding: 12px 14px; border: var(--border); border-radius: 10px; margin-bottom: 10px; }
-        .service-item .row-top, .staff-item .row-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
-        .service-item .name, .staff-item .name { font-weight: 700; }
-        .service-item .meta, .staff-item .meta { color: #888; font-size: 13px; margin-top: 2px; }
-        .service-item .actions, .staff-item .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+        .service-item, .staff-item, .resource-item { padding: 12px 14px; border: var(--border); border-radius: 10px; margin-bottom: 10px; }
+        .service-item .row-top, .staff-item .row-top, .resource-item .row-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .service-item .name, .staff-item .name, .resource-item .name { font-weight: 700; }
+        .service-item .meta, .staff-item .meta, .resource-item .meta { color: #888; font-size: 13px; margin-top: 2px; }
+        .service-item .actions, .staff-item .actions, .resource-item .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
         .inactive-badge { font-size: 11px; background: #f3f4f6; color: #999; padding: 2px 8px; border-radius: 10px; font-weight: 700; }
         .staff-services-row { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
         .service-chip {
@@ -872,6 +872,39 @@
                 <div class="msg" id="table-msg"></div>
             </form>
             <div id="table-list" style="margin-top: 18px;"></div>
+        </div>
+
+        <div class="card">
+            <h2>予約リソースの管理</h2>
+            <p class="hint">部屋・ベッド・椅子・車両・カラオケルーム・教室・設備など、予約に使う場所や設備を登録できます。まだ予約の割り当てには使われません（登録・編集のみの機能です）。</p>
+            <form id="resource-form">
+                <div class="row-2">
+                    <div class="field">
+                        <label for="resource-name">リソース名 *</label>
+                        <input type="text" id="resource-name" placeholder="例：個室A、施術ベッド1" required>
+                    </div>
+                    <div class="field">
+                        <label for="resource-type">種別 *</label>
+                        <select id="resource-type" required>
+                            <option value="room">部屋</option>
+                            <option value="bed">ベッド</option>
+                            <option value="chair">椅子</option>
+                            <option value="vehicle">車両</option>
+                            <option value="karaoke_room">カラオケルーム</option>
+                            <option value="classroom">教室</option>
+                            <option value="equipment">設備</option>
+                            <option value="other">その他</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="resource-capacity">定員（任意）</label>
+                    <input type="number" id="resource-capacity" min="1" placeholder="収容人数の概念がある場合のみ入力">
+                </div>
+                <button type="submit" class="btn" id="resource-add-btn">予約リソースを追加</button>
+                <div class="msg" id="resource-msg"></div>
+            </form>
+            <div id="resource-list" style="margin-top: 18px;"></div>
         </div>
 
         <div class="card" id="service-staff-card" style="display: none;">
@@ -2086,6 +2119,7 @@
             loadPhotos();
             loadMenu();
             loadTables();
+            loadResources();
             await loadServices();
             loadStaff();
             loadReservations();
@@ -3000,6 +3034,115 @@
                     throw new Error(errData.detail || '削除に失敗しました');
                 }
                 loadTables();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
+            }
+        }
+
+        // ---------- 予約リソースの管理 (Generic Resource Foundation Phase R1) ----------
+        // ★★★ Phase R1ではReservationとの統合が無いため、ここは登録・編集・
+        // 有効/無効切替・削除のみのCRUD UI（既存のtable-item/staff-itemの
+        // toggle-then-deleteパターンをそのまま踏襲）。
+        const RESOURCE_TYPE_LABELS = {
+            room: '部屋', bed: 'ベッド', chair: '椅子', vehicle: '車両',
+            karaoke_room: 'カラオケルーム', classroom: '教室', equipment: '設備', other: 'その他',
+        };
+
+        async function loadResources() {
+            const container = document.getElementById('resource-list');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/resources');
+                if (!res.ok) throw new Error('読み込みに失敗しました');
+                const resources = await res.json();
+                if (!resources.length) {
+                    container.innerHTML = '<p class="empty-hint">まだ予約リソースが登録されていません</p>';
+                    return;
+                }
+                container.innerHTML = resources.map(function (r) {
+                    const typeLabel = RESOURCE_TYPE_LABELS[r.resource_type] || r.resource_type;
+                    const capacityPart = (r.capacity !== null && r.capacity !== undefined) ? '・定員' + r.capacity + '名' : '';
+                    return '<div class="resource-item">' +
+                        '<div class="row-top">' +
+                            '<div>' +
+                                '<div class="name">' + escapeHtml(r.name) + (r.is_active ? '' : ' <span class="inactive-badge">無効</span>') + '</div>' +
+                                '<div class="meta">' + escapeHtml(typeLabel) + escapeHtml(capacityPart) + '</div>' +
+                            '</div>' +
+                            '<div class="actions">' +
+                                '<button type="button" class="btn-outline resource-toggle-btn" data-id="' + r.id + '" data-active="' + r.is_active + '">' +
+                                    (r.is_active ? '無効にする' : '有効にする') + '</button>' +
+                                '<button type="button" class="btn-outline btn-danger resource-delete-btn" data-id="' + r.id + '">削除</button>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>';
+                }).join('');
+                container.querySelectorAll('.resource-toggle-btn').forEach(function (btn) {
+                    btn.addEventListener('click', function () {
+                        toggleResourceActive(btn.dataset.id, btn.dataset.active !== 'true');
+                    });
+                });
+                container.querySelectorAll('.resource-delete-btn').forEach(function (btn) {
+                    btn.addEventListener('click', function () { deleteResource(btn.dataset.id); });
+                });
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        document.getElementById('resource-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const msg = document.getElementById('resource-msg');
+            const btn = document.getElementById('resource-add-btn');
+            const name = document.getElementById('resource-name').value.trim();
+            const resourceType = document.getElementById('resource-type').value;
+            const capacityRaw = document.getElementById('resource-capacity').value.trim();
+            const capacity = capacityRaw === '' ? null : parseInt(capacityRaw, 10);
+            btn.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/resources', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, resource_type: resourceType, capacity: capacity })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '追加に失敗しました');
+                }
+                showMsg(msg, '追加しました', 'success');
+                document.getElementById('resource-form').reset();
+                loadResources();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '追加に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        async function toggleResourceActive(resourceId, nextActive) {
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/resources/' + encodeURIComponent(resourceId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ is_active: nextActive })
+                });
+                if (!res.ok) throw new Error();
+                loadResources();
+            } catch (e) {
+                showMsg(document.getElementById('resource-msg'), '変更を保存できませんでした。もう一度お試しください。', 'error');
+            }
+        }
+
+        async function deleteResource(resourceId) {
+            if (!confirm('この予約リソースを削除しますか？')) return;
+            const msg = document.getElementById('resource-msg');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/resources/' + encodeURIComponent(resourceId), {
+                    method: 'DELETE'
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '削除に失敗しました');
+                }
+                loadResources();
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
             }
