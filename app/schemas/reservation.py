@@ -190,6 +190,63 @@ class BoardResponse(BaseModel):
     table_roster: List[BoardTableRosterItem] = []
 
 
+class WeekReservationBlock(BaseModel):
+    """週表示（Week View）のミニタイムライン用の最小限の1予約分。
+
+    ★★★ Week View V1: PII最小化のため、guest_name/guest_phone(_masked)/
+    guest_email/special_requests/service_name/staff_name/table_name/
+    staff_id/table_id/statusは一切含めない（Daily Board側のBoardReservationItemとは
+    意図的に別モデル。フィールドを間違って追加しないよう、共有せず新規定義する）。
+
+    reservation_dateのみで開始位置の算出に十分（Reservationモデルの実装を確認済み:
+    reservation_dateは「予約日時（開始時刻）」を表す単一のdatetime列であり、
+    別途の開始時刻専用フィールドは存在しない）。effective_duration_minutesは
+    Board APIと同じ_existing_duration_minutes()経由の値（NULLはデフォルト分数へ
+    フォールバック済み）。
+    """
+    reservation_date: datetime
+    effective_duration_minutes: int
+
+
+class WeekDaySummary(BaseModel):
+    """週表示（Week View）の1日分のサマリー。
+
+    day_statusはBoardResponseと同じ4値（open/closed_regular/closed_temporary/
+    hours_not_configured）を、_get_closure_for_date/_resolve_day_hoursという
+    既存のReservation Intelligenceヘルパーをそのまま再利用して判定する
+    （新しい休業判定ロジックは一切追加しない）。
+
+    reservation_countとreservationsは、Daily Board側の「表示予約」定義
+    （status !== 'cancelled'、shop-manage.htmlの_boardRenderBoard内activeCount等と
+    完全に同一の定義）で事前にフィルタ済みの件数・一覧。個々のstatusは
+    フロントに返す必要がないため含めない（キャンセル済み予約はcountにも
+    reservations配列にも一切現れない）。
+    """
+    date: str
+    day_status: str
+    opening_time: Optional[str] = None
+    closing_time: Optional[str] = None
+    closes_next_day: bool = False
+    session_start: Optional[datetime] = None
+    session_end: Optional[datetime] = None
+    closure_reason: Optional[str] = None
+    reservation_count: int = 0
+    reservations: List[WeekReservationBlock] = []
+
+
+class WeekResponse(BaseModel):
+    """週表示（Week View）V1のレスポンス。start_dateを月曜日として、
+    必ず月曜〜日曜の7日分（daysの長さは常に7）を返す。
+
+    ★★★ PII最小化: staff_roster/table_rosterを含め、Resource Lane
+    （担当者別/テーブル別）に関する情報は一切含めない
+    （Week ViewではResource Laneを表示しない仕様のため）。
+    """
+    shop_id: str
+    start_date: str
+    days: List[WeekDaySummary] = []
+
+
 class AvailabilitySlot(BaseModel):
     """空き状況の1枠"""
     time: str = Field(..., description="開始時刻（HH:MM）")

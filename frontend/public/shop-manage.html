@@ -314,6 +314,55 @@
         }
         .board-mode-btn.active { background: #fff0e6; color: var(--primary-dark); }
         .board-mode-btn.hidden { display: none; }
+        /* BOOKING BOARD WEEK VIEW V1: Daily Boardの上位に立つ一覧レイヤー。
+           営業時間・休業判定ロジックは一切ここに複製せず、サーバーの
+           /week APIの結果をそのまま表示するだけの読み取り専用UI
+           （Daily Boardと同じ設計方針）。375px幅を最重要ターゲットとし、
+           7列グリッドではなく縦方向の7枚カードスタックをV1のデフォルトとする
+           （デスクトップも複雑化を避けるため同じ縦スタックで統一）。 */
+        .board-view-toggle { display: flex; gap: 6px; margin-bottom: 12px; }
+        .board-view-btn {
+            padding: 7px 20px; border-radius: 16px; font-size: 13px; font-weight: 700;
+            background: #f0f0f0; color: #888; border: none; font-family: inherit; cursor: pointer;
+            min-height: 36px;
+        }
+        .board-view-btn.active { background: #fff0e6; color: var(--primary-dark); }
+        .board-week-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+        .board-week-nav .board-nav-btn { min-width: 44px; min-height: 44px; padding: 0; font-size: 16px; flex: 0 0 auto; }
+        .board-week-label {
+            flex: 1; min-width: 140px; text-align: center; font-size: 14px; font-weight: 700;
+            border: var(--border); border-radius: 10px; padding: 10px 6px; color: var(--dark); min-height: 44px;
+            display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+        }
+        .board-week-today-btn { min-height: 44px; flex: 0 0 auto; }
+        .board-week-state { color: #999; font-size: 13px; padding: 28px 10px; text-align: center; }
+        .board-week-state .board-state-title { font-size: 14px; font-weight: 700; color: #888; margin-bottom: 4px; }
+        .board-week-state.board-week-state-error .board-state-title { color: var(--error); }
+        .board-week-state .btn-outline { margin-top: 12px; }
+        .board-week-list { display: flex; flex-direction: column; gap: 10px; }
+        .board-week-day-card {
+            display: block; width: 100%; box-sizing: border-box; text-align: left; font-family: inherit;
+            border: var(--border); border-radius: 12px; padding: 12px 14px; background: var(--white); cursor: pointer;
+        }
+        .board-week-day-card:hover, .board-week-day-card:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+        .board-week-day-card.is-today { border-color: var(--primary); background: #fffaf7; }
+        .board-week-day-header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+        .board-week-day-date { font-size: 14px; font-weight: 700; color: var(--dark); }
+        .board-week-today-badge {
+            font-size: 10px; font-weight: 700; color: var(--white); background: var(--primary);
+            padding: 1px 7px; border-radius: 10px; flex-shrink: 0;
+        }
+        .board-week-day-count { font-size: 13px; color: var(--dark); font-weight: 700; margin-bottom: 6px; }
+        .board-week-day-status { font-size: 13px; color: #b45309; font-weight: 700; }
+        .board-week-mini-timeline {
+            position: relative; height: 20px; background: var(--white); border: 1px solid #eee; border-radius: 6px; overflow: hidden;
+        }
+        .board-week-mini-hours { position: absolute; top: 0; bottom: 0; background: #f3f4f6; }
+        .board-week-mini-block { position: absolute; top: 3px; bottom: 3px; border-radius: 3px; background: var(--primary); }
+        @media (max-width: 400px) {
+            .board-week-label { min-width: 110px; font-size: 12px; padding: 10px 4px; }
+            .board-week-today-btn { padding: 6px 8px; font-size: 11px; }
+        }
         /* Resource Lane V1: 担当者別／テーブル別レーン表示。
            時刻軸（左, sticky）・レーンヘッダー（上, sticky）・その交点（左上, sticky）を
            CSS Gridの1レーン=1列として構成する（Section23-27）。列数はJSがレーン数に
@@ -1401,24 +1450,39 @@
 
             <div id="res-tabpanel-board" style="display: none;">
                 <p class="hint">1日の予約を時間軸で確認できます。ブロックをタップすると詳細が開きます。</p>
-                <div class="board-date-nav">
-                    <button type="button" class="btn-outline board-nav-btn" id="board-prev-btn" aria-label="前の日">◀</button>
-                    <button type="button" class="board-date-label" id="board-date-label-btn">
-                        <span class="board-today-badge" id="board-today-badge">今日</span>
-                        <span id="board-date-label-text">&nbsp;</span>
-                    </button>
-                    <button type="button" class="btn-outline board-today-btn" id="board-today-btn">今日</button>
-                    <div class="board-date-nav-picker-wrap">
-                        <input type="date" id="board-date-picker" class="board-date-picker" aria-label="日付を選択">
+                <div class="board-view-toggle" id="board-view-toggle">
+                    <button type="button" class="board-view-btn active" id="board-view-day-btn" data-view="day">日</button>
+                    <button type="button" class="board-view-btn" id="board-view-week-btn" data-view="week">週</button>
+                </div>
+                <div id="board-day-view">
+                    <div class="board-date-nav">
+                        <button type="button" class="btn-outline board-nav-btn" id="board-prev-btn" aria-label="前の日">◀</button>
+                        <button type="button" class="board-date-label" id="board-date-label-btn">
+                            <span class="board-today-badge" id="board-today-badge">今日</span>
+                            <span id="board-date-label-text">&nbsp;</span>
+                        </button>
+                        <button type="button" class="btn-outline board-today-btn" id="board-today-btn">今日</button>
+                        <div class="board-date-nav-picker-wrap">
+                            <input type="date" id="board-date-picker" class="board-date-picker" aria-label="日付を選択">
+                        </div>
+                        <button type="button" class="btn-outline board-nav-btn" id="board-next-btn" aria-label="次の日">▶</button>
                     </div>
-                    <button type="button" class="btn-outline board-nav-btn" id="board-next-btn" aria-label="次の日">▶</button>
+                    <div class="board-mode-toggle" id="board-mode-toggle">
+                        <button type="button" class="board-mode-btn active" id="board-mode-all-btn" data-mode="all">すべて</button>
+                        <button type="button" class="board-mode-btn hidden" id="board-mode-staff-btn" data-mode="staff">担当者別</button>
+                        <button type="button" class="board-mode-btn hidden" id="board-mode-table-btn" data-mode="table">テーブル別</button>
+                    </div>
+                    <div id="board-body"></div>
                 </div>
-                <div class="board-mode-toggle" id="board-mode-toggle">
-                    <button type="button" class="board-mode-btn active" id="board-mode-all-btn" data-mode="all">すべて</button>
-                    <button type="button" class="board-mode-btn hidden" id="board-mode-staff-btn" data-mode="staff">担当者別</button>
-                    <button type="button" class="board-mode-btn hidden" id="board-mode-table-btn" data-mode="table">テーブル別</button>
+                <div id="board-week-view" style="display: none;">
+                    <div class="board-week-nav">
+                        <button type="button" class="btn-outline board-nav-btn" id="board-week-prev-btn" aria-label="前の週">◀</button>
+                        <div class="board-week-label" id="board-week-label"><span id="board-week-label-text">&nbsp;</span></div>
+                        <button type="button" class="btn-outline board-week-today-btn" id="board-week-today-btn">今週</button>
+                        <button type="button" class="btn-outline board-nav-btn" id="board-week-next-btn" aria-label="次の週">▶</button>
+                    </div>
+                    <div id="board-week-body"></div>
                 </div>
-                <div id="board-body"></div>
             </div>
         </div>
 
@@ -3782,6 +3846,20 @@
         // の修正——以前は_boardSetMode経由の再描画でも毎回自動スクロールが
         // 走ってしまっていたバグを、本フェーズの監査で発見し修正）。
         let boardPreserveScroll = null;
+
+        // ★★★ BOOKING BOARD WEEK VIEW V1: 上位ナビゲーション層の表示モード
+        // （'day' | 'week'）。boardMode（すべて/担当者別/テーブル別）と同じく、
+        // DBやlocalStorageへの永続化は行わないsession-only（ページを開いている
+        // 間だけ保持すれば良い）in-memory state。
+        let boardViewMode = 'day';
+        let boardWeekStartDate = null; // 表示中の週の月曜日（'YYYY-MM-DD'）
+        let boardWeekRequestGeneration = 0; // Daily BoardのboardRequestGenerationと同じ思想のstale-request対策
+        let boardWeekLastData = null; // 直近に取得済みのWeekレスポンス
+        // 「同じ週へ戻ってきた時の簡易キャッシュ」のみ（Section「複雑なcache
+        // invalidationは作らない」）。開始日(YYYY-MM-DD) -> Weekレスポンス。
+        // ページを再読み込みすれば消える（永続化しない）。
+        let boardWeekCache = {};
+
         // Resource Lane描画で使う定数。既存のBOARD_PX_PER_MINUTE（縦方向）とは
         // 独立した「横方向のレーン幅」の単一の情報源。
         const BOARD_RESOURCE_AXIS_WIDTH_PX = 54; // 既存の.board-laneのleft:54pxに合わせる
@@ -4068,6 +4146,222 @@
             document.getElementById('board-date-label-text').textContent = _boardFormatDateLabel(dateStr);
             document.getElementById('board-date-picker').value = dateStr;
             loadBoard();
+        }
+
+        // ===== BOOKING BOARD WEEK VIEW V1 =====
+        //
+        // Week ViewはDaily Boardの上位に立つ「一覧レイヤー」であり、営業時間・
+        // 休業判定ロジックは一切ここで再実装しない（サーバーの
+        // GET /shop/{shop_id}/week の結果をそのまま表示するだけ）。
+        // Resource Lane（担当者別/テーブル別）はWeek Viewには一切表示しない
+        // （board-mode-toggleごとboard-day-viewに含まれているため、Week View
+        // 表示中はboard-day-view自体が非表示になり、自然に隠れる）。
+
+        // 月曜始まりの週の月曜日を返す（Date.UTCの曜日番号: 0=日,1=月,...,6=土。
+        // _boardAddDaysと同じ「純粋なカレンダー計算」でブラウザのローカル
+        // タイムゾーンに左右されない）。
+        function _boardGetMondayOf(dateStr) {
+            const p = _boardParseDateParts(dateStr);
+            const dow = new Date(Date.UTC(p.y, p.mo - 1, p.d)).getUTCDay();
+            const deltaToMonday = (dow === 0) ? -6 : (1 - dow);
+            return _boardAddDays(dateStr, deltaToMonday);
+        }
+
+        // 週範囲ラベル（同月/月またぎ/年またぎの3パターン）。
+        function _boardFormatWeekRangeLabel(weekStartDateStr) {
+            const sp = _boardParseDateParts(weekStartDateStr);
+            const endDateStr = _boardAddDays(weekStartDateStr, 6);
+            const ep = _boardParseDateParts(endDateStr);
+            if (sp.y !== ep.y) {
+                return sp.y + '年' + sp.mo + '月' + sp.d + '日 〜 ' + ep.y + '年' + ep.mo + '月' + ep.d + '日';
+            }
+            if (sp.mo !== ep.mo) {
+                return sp.y + '年' + sp.mo + '月' + sp.d + '日 〜 ' + ep.mo + '月' + ep.d + '日';
+            }
+            return sp.y + '年' + sp.mo + '月' + sp.d + '日 〜 ' + ep.d + '日';
+        }
+
+        function _boardWeekDayStatusLabel(day) {
+            if (day.day_status === 'closed_regular') return '定休日';
+            if (day.day_status === 'closed_temporary') {
+                return day.closure_reason ? '臨時休業（' + day.closure_reason + '）' : '臨時休業';
+            }
+            if (day.day_status === 'hours_not_configured') return '営業時間未設定';
+            return null;
+        }
+
+        // その日の0:00の内部座標（_boardMinutesCoordと同じ「実タイムゾーン変換を
+        // 一切介さない、分単位の直線上の座標」）。各日の予約時刻・営業時間を
+        // 「その日の0:00からの相対分」に変換し、週全体で共有する単一の
+        // タイムスケールに載せるための基準点として使う。
+        function _boardWeekDayMidnightCoord(dateStr) {
+            const p = _boardParseDateParts(dateStr);
+            return _boardMinutesCoord({ y: p.y, mo: p.mo, d: p.d, h: 0, mi: 0 });
+        }
+
+        // 週全体で共有する単一のタイムスケール（Section「独立したper-day
+        // スケールにしない」）。営業日(open)の営業時間（session_start〜
+        // session_end、日跨ぎ含む）の「その日0:00からの相対分」の最小値〜
+        // 最大値を週全体の表示範囲にする。営業日が1日も無ければnullを返す
+        // （その場合、どの日もclosed/未設定なのでミニタイムライン自体を描画
+        // しない）。
+        function _boardComputeWeekScale(days) {
+            let min = null, max = null;
+            (days || []).forEach(function (day) {
+                if (day.day_status !== 'open' || !day.session_start || !day.session_end) return;
+                const midnight = _boardWeekDayMidnightCoord(day.date);
+                const startOffset = _boardMinutesCoordFromIso(day.session_start) - midnight;
+                const endOffset = _boardMinutesCoordFromIso(day.session_end) - midnight;
+                if (min === null || startOffset < min) min = startOffset;
+                if (max === null || endOffset > max) max = endOffset;
+            });
+            if (min === null || max === null || max <= min) return null;
+            return { min: min, span: (max - min) };
+        }
+
+        // 1日分のカードHTML（縦スタック用）。ミニタイムラインは読み取り専用・
+        // 非インタラクティブ（タップはカード全体で受ける。個別ブロックは
+        // タップ対象にしない）。日跨ぎでも内部座標(>24h)のまま計算するだけで、
+        // 表示上の時刻ラベル自体を一切出さないため「25:00」のような表記が
+        // 生まれる余地がない（Daily Board V1.1と同じ方針）。
+        function _boardBuildWeekDayCardHtml(day, todayStr, weekScale) {
+            const p = _boardParseDateParts(day.date);
+            const weekdayName = BOARD_WEEKDAY_NAMES_JA[new Date(Date.UTC(p.y, p.mo - 1, p.d)).getUTCDay()];
+            const isToday = _boardIsViewingToday(day.date, todayStr);
+            const dateLabel = p.mo + '/' + p.d + '（' + weekdayName + '）';
+
+            let bodyHtml;
+            if (day.day_status !== 'open') {
+                bodyHtml = '<div class="board-week-day-status">' + escapeHtml(_boardWeekDayStatusLabel(day)) + '</div>';
+            } else {
+                const countText = '予約' + day.reservation_count + '件';
+                let timelineHtml = '';
+                if (weekScale) {
+                    const midnight = _boardWeekDayMidnightCoord(day.date);
+                    const clampPct = function (v) { return Math.max(0, Math.min(100, v)); };
+                    let hoursHtml = '';
+                    if (day.session_start && day.session_end) {
+                        const hStart = _boardMinutesCoordFromIso(day.session_start) - midnight;
+                        const hEnd = _boardMinutesCoordFromIso(day.session_end) - midnight;
+                        const hLeft = clampPct(((hStart - weekScale.min) / weekScale.span) * 100);
+                        const hWidth = clampPct(((hEnd - hStart) / weekScale.span) * 100);
+                        hoursHtml = '<div class="board-week-mini-hours" style="left:' + hLeft + '%;width:' + hWidth + '%;"></div>';
+                    }
+                    const blocksHtml = (day.reservations || []).map(function (rb) {
+                        const bStart = _boardMinutesCoordFromIso(rb.reservation_date) - midnight;
+                        const bEnd = bStart + rb.effective_duration_minutes;
+                        const left = clampPct(((bStart - weekScale.min) / weekScale.span) * 100);
+                        const width = Math.max(clampPct(((bEnd - bStart) / weekScale.span) * 100), 1.5);
+                        return '<div class="board-week-mini-block" style="left:' + left + '%;width:' + width + '%;"></div>';
+                    }).join('');
+                    timelineHtml = '<div class="board-week-mini-timeline">' + hoursHtml + blocksHtml + '</div>';
+                }
+                bodyHtml = '<div class="board-week-day-count">' + escapeHtml(countText) + '</div>' + timelineHtml;
+            }
+
+            return '<button type="button" class="board-week-day-card' + (isToday ? ' is-today' : '') + '" data-date="' + escapeHtml(day.date) + '">' +
+                '<div class="board-week-day-header">' +
+                '<span class="board-week-day-date">' + escapeHtml(dateLabel) + '</span>' +
+                (isToday ? '<span class="board-week-today-badge">今日</span>' : '') +
+                '</div>' +
+                bodyHtml +
+                '</button>';
+        }
+
+        function _boardRenderWeek(data) {
+            const todayStr = _receptraTodayJST();
+            const weekScale = _boardComputeWeekScale(data.days);
+            const html = '<div class="board-week-list">' +
+                (data.days || []).map(function (day) { return _boardBuildWeekDayCardHtml(day, todayStr, weekScale); }).join('') +
+                '</div>';
+            document.getElementById('board-week-body').innerHTML = html;
+            document.querySelectorAll('#board-week-body .board-week-day-card').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    const dateStr = btn.dataset.date;
+                    boardSetViewMode('day');
+                    boardSetDate(dateStr);
+                });
+            });
+        }
+
+        function _boardRenderWeekState(kind, title, showRetry) {
+            const cls = (kind === 'error') ? ' board-week-state-error' : '';
+            const retryBtn = showRetry
+                ? '<button type="button" class="btn-outline" id="board-week-retry-btn">再読み込み</button>' : '';
+            document.getElementById('board-week-body').innerHTML =
+                '<div class="board-week-state' + cls + '"><div class="board-state-title">' + escapeHtml(title) + '</div>' + retryBtn + '</div>';
+            if (showRetry) {
+                document.getElementById('board-week-retry-btn').addEventListener('click', loadBoardWeek);
+            }
+        }
+
+        function _boardUpdateWeekNavLabel() {
+            document.getElementById('board-week-label-text').textContent = _boardFormatWeekRangeLabel(boardWeekStartDate);
+        }
+
+        async function loadBoardWeek() {
+            if (!boardWeekStartDate) return;
+            _boardUpdateWeekNavLabel();
+            const requestedStart = boardWeekStartDate;
+
+            // 簡易キャッシュ: 同じ週へ戻ってきた場合は再フェッチしない
+            // （複雑なcache invalidationは実装しない、というV1の方針）。
+            if (boardWeekCache[requestedStart]) {
+                boardWeekLastData = boardWeekCache[requestedStart];
+                _boardRenderWeek(boardWeekLastData);
+                return;
+            }
+
+            // Rapid Prev/Next Week対策: Daily BoardのboardRequestGenerationと
+            // 同じ思想のstale-request対策（古いレスポンスで新しい表示を
+            // 上書きしない）。
+            const myGeneration = ++boardWeekRequestGeneration;
+            _boardRenderWeekState('loading', '読み込み中…', false);
+            let res;
+            try {
+                res = await authFetch(
+                    '/api/v1/reservations/shop/' + encodeURIComponent(shopId) + '/week?start_date=' + encodeURIComponent(requestedStart)
+                );
+            } catch (e) {
+                if (myGeneration !== boardWeekRequestGeneration) return;
+                _boardRenderWeekState('error', '週表示を読み込めませんでした', true);
+                return;
+            }
+            if (myGeneration !== boardWeekRequestGeneration) return;
+            if (!res.ok) {
+                _boardRenderWeekState('error', '週表示を読み込めませんでした', true);
+                return;
+            }
+            let data;
+            try {
+                data = await res.json();
+            } catch (e) {
+                _boardRenderWeekState('error', '週表示を読み込めませんでした', true);
+                return;
+            }
+            if (myGeneration !== boardWeekRequestGeneration) return;
+            boardWeekCache[requestedStart] = data;
+            boardWeekLastData = data;
+            _boardRenderWeek(data);
+        }
+
+        // [日][週] 上位トグル。Resource Laneのboard-mode-toggleはboard-day-view
+        // の内側にあるため、Week View表示中はboard-day-view自体が非表示になり
+        // 自然に隠れる（Week View自身が個別にmode-toggleを制御する必要はない）。
+        function boardSetViewMode(mode) {
+            if (mode !== 'day' && mode !== 'week') return;
+            boardViewMode = mode;
+            const isWeek = (mode === 'week');
+            document.getElementById('board-view-day-btn').classList.toggle('active', !isWeek);
+            document.getElementById('board-view-week-btn').classList.toggle('active', isWeek);
+            document.getElementById('board-day-view').style.display = isWeek ? 'none' : '';
+            document.getElementById('board-week-view').style.display = isWeek ? '' : 'none';
+            if (isWeek) {
+                if (!boardWeekStartDate) {
+                    boardWeekStartDate = _boardGetMondayOf(boardActiveDate || _receptraTodayJST());
+                }
+                loadBoardWeek();
+            }
         }
 
         function _boardRenderState(kind, title, showRetry) {
@@ -4668,6 +4962,20 @@
         });
         document.querySelectorAll('.board-mode-btn').forEach(function (btn) {
             btn.addEventListener('click', function () { _boardSetMode(btn.dataset.mode); });
+        });
+        document.getElementById('board-view-day-btn').addEventListener('click', function () { boardSetViewMode('day'); });
+        document.getElementById('board-view-week-btn').addEventListener('click', function () { boardSetViewMode('week'); });
+        document.getElementById('board-week-prev-btn').addEventListener('click', function () {
+            boardWeekStartDate = _boardAddDays(boardWeekStartDate, -7);
+            loadBoardWeek();
+        });
+        document.getElementById('board-week-next-btn').addEventListener('click', function () {
+            boardWeekStartDate = _boardAddDays(boardWeekStartDate, 7);
+            loadBoardWeek();
+        });
+        document.getElementById('board-week-today-btn').addEventListener('click', function () {
+            boardWeekStartDate = _boardGetMondayOf(_receptraTodayJST());
+            loadBoardWeek();
         });
         document.getElementById('board-sheet-close-btn').addEventListener('click', _boardCloseDetail);
         document.getElementById('board-sheet-overlay').addEventListener('click', _boardCloseDetail);
