@@ -3558,6 +3558,22 @@
                     if (r.special_requests) noteBits.push('備考：' + escapeHtml(r.special_requests));
                     if (r.status === 'cancelled' && r.cancellation_reason) noteBits.push('理由：' + escapeHtml(r.cancellation_reason));
                     const canQuickNoShow = (r.status === 'pending' || r.status === 'confirmed');
+                    // RESOURCE LANE V1.1 + PRIVACY CONSISTENCY: 一覧はBooking Boardと
+                    // 同じくデフォルトでマスク済み電話番号（guest_phone_masked）のみを
+                    // 表示し、「表示」ボタン押下時だけフルの電話番号を取得する
+                    // （Section10/12「PRIVACY BY DEFAULT / DETAIL ON DEMAND」）。
+                    // reveal前はtel:リンクを一切作らない（Section21）。同一ページ
+                    // セッション中に既にreveal済みなら、キャッシュからボタンなしで
+                    // 直接フル電話番号を表示する（Section19）。
+                    const cachedPhone = Object.prototype.hasOwnProperty.call(_revealedPhoneCache, r.id)
+                        ? _revealedPhoneCache[r.id] : undefined;
+                    const phoneRevealed = cachedPhone !== undefined;
+                    const phoneValueHtml = phoneRevealed
+                        ? (cachedPhone ? '<a href="tel:' + escapeHtml(cachedPhone) + '">' + escapeHtml(cachedPhone) + '</a>' : '未登録')
+                        : escapeHtml(r.guest_phone_masked || '---');
+                    const phoneHtml = '<span class="res-phone-value">' + phoneValueHtml + '</span>' +
+                        (phoneRevealed ? '' : ' <button type="button" class="btn-outline res-phone-reveal-btn">表示</button>') +
+                        '<span class="res-phone-error" style="display:none;"></span>';
                     return '<div class="reservation-item" data-id="' + r.id + '">' +
                         '<div class="res-main">' +
                         '<span class="status-badge ' + r.status + '">' + STATUS_LABELS[r.status] + '</span><br>' +
@@ -3565,7 +3581,7 @@
                         r.number_of_people + '名' + tableInfo +
                         (serviceBits.length ? '<div class="res-service">' + serviceBits.join('　') + '</div>' : '') +
                         '<div class="res-guest">' + escapeHtml(r.guest_name || '') + '　' +
-                        (r.guest_phone ? '<a href="tel:' + escapeHtml(r.guest_phone) + '">' + escapeHtml(r.guest_phone) + '</a>' : '') +
+                        phoneHtml +
                         (r.guest_email ? '　<a href="mailto:' + escapeHtml(r.guest_email) + '">' + escapeHtml(r.guest_email) + '</a>' : '') + '</div>' +
                         (noteBits.length ? '<div class="res-note">' + noteBits.join('　') + '</div>' : '') +
                         '</div>' +
@@ -3590,6 +3606,17 @@
                 }).join('');
                 container.querySelectorAll('.reservation-item').forEach(function (item) {
                     const id = item.dataset.id;
+
+                    const phoneRevealBtn = item.querySelector('.res-phone-reveal-btn');
+                    if (phoneRevealBtn) {
+                        phoneRevealBtn.addEventListener('click', function () {
+                            _revealReservationPhone(
+                                id, phoneRevealBtn,
+                                item.querySelector('.res-phone-value'),
+                                item.querySelector('.res-phone-error')
+                            );
+                        });
+                    }
 
                     item.querySelector('.res-update-btn').addEventListener('click', function () {
                         const select = item.querySelector('.res-status-select');
@@ -3748,12 +3775,28 @@
         // （Section46「date change時にmodeを勝手にリセットしない」）。
         let boardMode = 'all';
         let boardLastData = null; // 直近に取得済みのBoardレスポンス（モード切替時の再描画専用。新規fetchはしない）
+        // RESOURCE LANE V1.1: モード切替（_boardSetMode）の直前にキャプチャした
+        // スクロール位置。null以外の場合、次の描画では自動スクロール（現在時刻/
+        // 次の予約へのジャンプ）を行わず、代わりにこの位置へ復元する
+        // （Section40「mode toggleでユーザーの縦scroll位置を不必要にリセットしない」
+        // の修正——以前は_boardSetMode経由の再描画でも毎回自動スクロールが
+        // 走ってしまっていたバグを、本フェーズの監査で発見し修正）。
+        let boardPreserveScroll = null;
         // Resource Lane描画で使う定数。既存のBOARD_PX_PER_MINUTE（縦方向）とは
         // 独立した「横方向のレーン幅」の単一の情報源。
         const BOARD_RESOURCE_AXIS_WIDTH_PX = 54; // 既存の.board-laneのleft:54pxに合わせる
         const BOARD_RESOURCE_LANE_WIDTH_PX = 132; // Section24の目安(120〜160px)の範囲内
         const BOARD_RESOURCE_HEADER_HEIGHT_PX = 40;
         const BOARD_UNASSIGNED_LANE_ID = "__unassigned__"; // null（未割当）を表す内部キー。実際のIDと衝突しない
+
+        // RESOURCE LANE V1.1 + PRIVACY CONSISTENCY: 同一ページセッション中に一度
+        // フル電話番号をreveal済みの予約は、再描画（一覧の絞込変更等）が起きても
+        // 同じdetail APIを再度呼ばずに済むよう、メモリ内だけでキャッシュする
+        // （Section19「memory-only cacheなら可」）。localStorage等への永続化は
+        // 行わない——ページを再読み込みすればこのキャッシュも消え、再びマスク
+        // 表示に戻る（Section20「reloadでmaskedへ戻ってよい」）。key: reservationId,
+        // value: フル電話番号の文字列（空文字列の場合は「未登録」を表す）。
+        let _revealedPhoneCache = {};
 
         // 「今日」はRECEPTRA全体の基準（JST壁時計）に揃える。
         // new Date().toISOString().slice(0,10)（ブラウザのUTC基準）は使わない
@@ -4124,7 +4167,12 @@
         // 単一laneでも、担当者別/テーブル別の各lane内でも、全く同じロジックで
         // 描画する（表示ロジックの二重管理を避けるための抽出。V1.1で確立した
         // 情報密度ルール自体は一切変更していない）。
-        function _boardBuildBlockHtml(r) {
+        // RESOURCE LANE V1.1: hideStaffNameがtrueの場合（担当者別レーン内）は
+        // カードからstaff_nameを省く——レーンヘッダー自体が既にその担当者名を
+        // 示しているため、カードへ重複表示しない（Section35「レーンでは
+        // card情報を減らす」）。「すべて」モード・テーブル別レーンでは従来通り
+        // 表示する（省略時のデフォルトはfalse=従来動作）。
+        function _boardBuildBlockHtml(r, hideStaffName) {
             const top = r._startOffset * BOARD_PX_PER_MINUTE;
             const height = Math.max(r.effective_duration_minutes * BOARD_PX_PER_MINUTE, BOARD_MIN_BLOCK_HEIGHT_PX);
             const widthPct = 100 / r._colCount;
@@ -4140,7 +4188,7 @@
             const statusLabel = STATUS_LABELS[r.status] || r.status;
             const extraBits = [];
             if (!isCompact) {
-                if (r.staff_name) extraBits.push(escapeHtml(r.staff_name));
+                if (r.staff_name && !hideStaffName) extraBits.push(escapeHtml(r.staff_name));
                 if (r.service_name) extraBits.push(escapeHtml(r.service_name));
                 if (r.number_of_people) extraBits.push(r.number_of_people + '名');
             }
@@ -4314,14 +4362,12 @@
                     '<div class="board-now-line" style="top:' + nowTop + 'px;"><span class="board-now-line-label">' + escapeHtml(nowLabel) + ' 現在</span></div>');
             }
 
-            // Auto Scroll（Section13/14）: 初回描画（＝日付切り替え時）だけの
-            // タイミングで行う。_boardRenderTimelineはloadBoard経由でのみ呼ばれる
-            // ため、ユーザーが手動scrollした後に毎回scroll位置を強制的に戻す
-            // ことはない。
-            if (ctx.timeState.autoScrollTarget) {
-                const wrap = document.getElementById('board-timeline-wrap');
-                wrap.scrollTop = Math.max(ctx.timeState.autoScrollTarget.offset * BOARD_PX_PER_MINUTE - 80, 0);
-            }
+            // Auto Scroll（Section13/14）: 日付切り替え（loadBoard経由の初回描画）
+            // だけ現在時刻/次の予約へ自動スクロールする。_boardSetMode経由の
+            // モード切替による再描画では、boardPreserveScrollが設定されており
+            // 直前のスクロール位置を復元するだけで、自動スクロールは走らない
+            // （Section40）。
+            _boardApplyScrollPosition('board-timeline-wrap', ctx.timeState.autoScrollTarget, -80);
         }
 
         // 休憩時間1件分のHTML（top/heightの計算含む）。「すべて」モードのlaneでも
@@ -4395,11 +4441,15 @@
                 overlayHtml += '<div class="board-now-line" style="top:' + nowTop + 'px;"><span class="board-now-line-label">' + escapeHtml(nowLabel) + ' 現在</span></div>';
             }
 
+            // Section35: 担当者別レーンではレーンヘッダーが既に担当者名を示している
+            // ため、カード側のstaff_name表示は省く（テーブル別・未割当レーンでは
+            // 担当者名はレーン名と重複しないため従来通り表示する）。
+            const hideStaffNameOnCard = (boardMode === 'staff');
             let bodyHtml = '<div class="board-cross-lane-overlay" style="height:' + ctx.totalHeight + 'px;">' + overlayHtml + '</div>';
             lanes.forEach(function (lane, i) {
                 const left = i * BOARD_RESOURCE_LANE_WIDTH_PX;
                 let colHtml = '';
-                lane.reservations.forEach(function (r) { colHtml += _boardBuildBlockHtml(r); });
+                lane.reservations.forEach(function (r) { colHtml += _boardBuildBlockHtml(r, hideStaffNameOnCard); });
                 bodyHtml += '<div class="board-resource-lane-col" style="left:' + left + 'px; width:' + BOARD_RESOURCE_LANE_WIDTH_PX + 'px; height:' + ctx.totalHeight + 'px;">' +
                     colHtml + '</div>';
             });
@@ -4416,12 +4466,30 @@
             });
 
             // Auto Scroll: 縦方向は「すべて」モードと同じ考え方（現在時刻/最初の予約/
-            // 最後の予約に自動スクロール）。横方向は初期スクロール不要（左端=時刻軸を
-            // 基準に、常に左端から見えるようにする。Section23「Desktopの巨大calendarを
-            // iPhoneへ縮小しない」——横に長くなること自体は許容し、横scrollで対応する）。
-            if (ctx.timeState.autoScrollTarget) {
-                const wrap = document.getElementById('board-resource-scroll');
-                wrap.scrollTop = Math.max(ctx.timeState.autoScrollTarget.offset * BOARD_PX_PER_MINUTE + BOARD_RESOURCE_HEADER_HEIGHT_PX - 80, 0);
+            // 最後の予約に自動スクロール、ただし日付切り替え時のみ）。横方向は初期
+            // スクロール不要（左端=時刻軸を基準に、常に左端から見えるようにする。
+            // Section23「Desktopの巨大calendarをiPhoneへ縮小しない」——横に長くなる
+            // こと自体は許容し、横scrollで対応する）。モード切替時はboardPreserveScroll
+            // に従って縦横とも直前のスクロール位置を復元する（Section40）。
+            _boardApplyScrollPosition('board-resource-scroll', ctx.timeState.autoScrollTarget, BOARD_RESOURCE_HEADER_HEIGHT_PX - 80);
+        }
+
+        // RESOURCE LANE V1.1: 「すべて」モード・Resource Laneモード共通のスクロール
+        // 位置適用処理。boardPreserveScrollが設定されていれば（=直前のモード切替に
+        // よる再描画）、自動スクロールは行わず直前の位置（縦・横とも）へ復元するだけ
+        // にする。設定されていなければ（=日付切り替え/初回読み込み）、従来通り
+        // autoScrollTargetに基づいて自動スクロールする（Section13/14/40）。
+        function _boardApplyScrollPosition(wrapId, autoScrollTarget, extraOffsetPx) {
+            const wrap = document.getElementById(wrapId);
+            if (!wrap) return;
+            if (boardPreserveScroll) {
+                wrap.scrollTop = boardPreserveScroll.top;
+                wrap.scrollLeft = boardPreserveScroll.left;
+                boardPreserveScroll = null;
+                return;
+            }
+            if (autoScrollTarget) {
+                wrap.scrollTop = Math.max(autoScrollTarget.offset * BOARD_PX_PER_MINUTE + (extraOffsetPx || 0), 0);
             }
         }
 
@@ -4449,8 +4517,15 @@
         // 再描画するだけ（Section46「date change時にmodeを勝手にリセットしない」の
         // 裏返しとして、mode変更時もdateは変えない。同じ日付のデータはモードが
         // 変わっても変化しないため再フェッチ不要）。
+        // RESOURCE LANE V1.1: 切替前に現在のスクロールコンテナ（すべてモードなら
+        // board-timeline-wrap、Resource Laneモードならboard-resource-scroll）の
+        // scrollTop/scrollLeftをboardPreserveScrollへ保存しておく。再描画後の
+        // _boardApplyScrollPositionがこれを見て、自動スクロールの代わりに直前の
+        // 位置へ復元する（Section40のバグ修正）。
         function _boardSetMode(mode) {
             if (mode === boardMode) return;
+            const prevWrap = document.getElementById('board-resource-scroll') || document.getElementById('board-timeline-wrap');
+            boardPreserveScroll = prevWrap ? { top: prevWrap.scrollTop, left: prevWrap.scrollLeft } : null;
             boardMode = mode;
             if (boardLastData) _boardRenderBoard(boardLastData);
         }
@@ -4522,38 +4597,61 @@
             boardSheetLastFocusedEl = null;
         }
 
-        async function _boardRevealPhone(reservationId, btn) {
-            // Booking Boardの一覧はプライバシー保護のため電話番号をマスク済みで
-            // 返す（app.schemas.callback_request.mask_phone_for_listと同じ
-            // "****"+末尾4桁の規約）。フル電話番号は、既存かつPhase Hで
-            // オーナー認証・tenant分離を追加した GET /api/v1/reservations/{id}
-            // を呼び出したときだけ表示する（新しい「reveal」専用APIは作らない）。
-            // 二重tap防止のためbtn.disabledで即座にガードする（Section26）。
+        // RESOURCE LANE V1.1 + PRIVACY CONSISTENCY: Booking Board Bottom Sheetの
+        // 「電話番号を表示」ボタンと、予約一覧タブの各行の「表示」ボタンの両方が
+        // 使う共通のreveal処理。既存のマスク済み一覧・フル電話番号detail取得
+        // （オーナー認証・tenant分離済みGET /api/v1/reservations/{id}）という
+        // パターンを一箇所にまとめ、独自の表示規約を複数作らない（Section14）。
+        // valueEl/errorElは呼び出し側のDOM構造に依存させないため、固定IDではなく
+        // 要素そのものを引数で受け取る（一覧タブは行ごとに複数同時に存在するため）。
+        async function _revealReservationPhone(reservationId, btn, valueEl, errorEl) {
             if (btn.disabled) return;
             btn.disabled = true;
-            const errorEl = document.getElementById('board-sheet-phone-error');
             if (errorEl) { errorEl.style.display = 'none'; errorEl.textContent = ''; }
+
+            // Section19: 同一ページセッション中に既にreveal済みなら再フェッチしない。
+            if (Object.prototype.hasOwnProperty.call(_revealedPhoneCache, reservationId)) {
+                _applyRevealedPhone(valueEl, _revealedPhoneCache[reservationId]);
+                btn.remove();
+                return;
+            }
+
             try {
                 const res = await authFetch('/api/v1/reservations/' + encodeURIComponent(reservationId));
                 if (!res.ok) throw new Error('failed');
                 const data = await res.json();
-                const valueEl = document.getElementById('board-sheet-phone-value');
-                if (data.guest_phone) {
-                    valueEl.innerHTML = '<a href="tel:' + escapeHtml(data.guest_phone) + '">' + escapeHtml(data.guest_phone) + '</a>';
-                } else {
-                    valueEl.textContent = '未登録';
-                }
+                _revealedPhoneCache[reservationId] = data.guest_phone || '';
+                _applyRevealedPhone(valueEl, data.guest_phone || '');
                 btn.remove();
             } catch (e) {
                 btn.disabled = false;
-                // Board全体をエラー状態にはせず、この電話番号欄だけにエラーを
-                // 表示する（Section26。alertによるブロッキングダイアログは
+                // 一覧・Board全体をエラー状態にはせず、この電話番号欄だけにエラーを
+                // 表示する（Section17/26。alertによるブロッキングダイアログは
                 // 使わない）。
                 if (errorEl) {
                     errorEl.textContent = '電話番号を表示できませんでした';
                     errorEl.style.display = 'block';
                 }
             }
+        }
+
+        // reveal後のみtel:リンクを作る（Section21「masked valueをtel: hrefに使わない」
+        // の裏返し。reveal前はそもそもリンクを作らない設計のため、ここに到達する時点で
+        // 常にフル電話番号のみを対象にする）。
+        function _applyRevealedPhone(valueEl, fullPhone) {
+            if (fullPhone) {
+                valueEl.innerHTML = '<a href="tel:' + escapeHtml(fullPhone) + '">' + escapeHtml(fullPhone) + '</a>';
+            } else {
+                valueEl.textContent = '未登録';
+            }
+        }
+
+        function _boardRevealPhone(reservationId, btn) {
+            _revealReservationPhone(
+                reservationId, btn,
+                document.getElementById('board-sheet-phone-value'),
+                document.getElementById('board-sheet-phone-error')
+            );
         }
 
         document.getElementById('res-tab-list-btn').addEventListener('click', function () { boardShowTab('list'); });

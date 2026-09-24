@@ -54,6 +54,15 @@ class ReservationResponse(BaseModel):
     discount_amount: Optional[int] = None
     guest_name: Optional[str] = None
     guest_phone: Optional[str] = None
+    # Resource Lane V1.1 / Privacy Consistency: 予約一覧（GET /shop/{shop_id}）
+    # では、Booking Board APIと全く同じ表示規約（app.schemas.callback_request.
+    # mask_phone_for_list）でマスクした値をここに入れ、guest_phone自体はNoneに
+    # 差し替えて返す（一覧経由でフルの電話番号がネットワーク越しに出ないように
+    # するため）。既存のguest_phoneフィールド・型は変更しない後方互換の追加のみ。
+    # 詳細取得（GET /{reservation_id}。既にオーナー認証・tenant分離済み）や
+    # 予約作成/更新の直後レスポンスなど、他の用途ではこのフィールドは常にNoneの
+    # まま・guest_phoneは従来通りフル値を返す（_to_response()自体は無変更）。
+    guest_phone_masked: Optional[str] = None
     guest_email: Optional[str] = None
     reservation_date: datetime
     # Reservation Intelligence Phase B: この予約自身が占有する時間（分）。

@@ -133,6 +133,22 @@ def _to_response(reservation: Reservation) -> ReservationResponse:
     )
 
 
+def _to_list_response(reservation: Reservation) -> ReservationResponse:
+    """予約一覧（GET /shop/{shop_id}）専用: _to_response()と全く同じ内容を組み立てた上で、
+    guest_phoneだけをBooking Board APIと同じmask_phone_for_list()でマスクした値に
+    差し替える（guest_phone自体はNoneにし、ネットワーク越しにフルの電話番号が
+    一覧経由で出ないようにする）。フルの電話番号は既存のオーナー認証・tenant分離済み
+    GET /{reservation_id}（Phase H）でのみ取得できる——新しいreveal専用APIは作らない、
+    という設計方針（RESOURCE LANE V1.1 + PRIVACY CONSISTENCY Section12）に基づく。
+    _to_response()自体は変更しないため、予約作成・更新・詳細取得など他の用途では
+    従来通りフルのguest_phoneが返り続ける。
+    """
+    item = _to_response(reservation)
+    item.guest_phone_masked = mask_phone_for_list(reservation.guest_phone)
+    item.guest_phone = None
+    return item
+
+
 def _http_error(status_code: int, detail: str, reason_code: Optional[str] = None) -> HTTPException:
     """
     Phase3B: HTTPExceptionに、Realtime Voice Tool層が文字列の部分一致に頼らず
@@ -1638,7 +1654,11 @@ async def get_reservation(
     "/shop/{shop_id}",
     response_model=ReservationListResponse,
     summary="店舗の予約一覧を取得（オーナー用）",
-    description="指定された店舗の予約一覧を取得（ステータスで絞込可能）。オーナー本人のみ閲覧可能"
+    description=(
+        "指定された店舗の予約一覧を取得（ステータスで絞込可能）。オーナー本人のみ閲覧可能。"
+        "guest_phoneは一覧のため必ずマスク済み（guest_phone_masked）で返す。フルの電話番号が"
+        "必要な場合は既存の GET /api/v1/reservations/{reservation_id} を別途呼び出す"
+    )
 )
 async def get_shop_reservations(
     shop_id: str,
@@ -1668,7 +1688,7 @@ async def get_shop_reservations(
 
     return ReservationListResponse(
         total=total, limit=limit, offset=offset,
-        items=[_to_response(r) for r in reservations]
+        items=[_to_list_response(r) for r in reservations]
     )
 
 
