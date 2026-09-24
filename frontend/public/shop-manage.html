@@ -210,14 +210,20 @@
            結果をそのまま表示するだけの読み取り専用UI。ブロックの高さ・位置を
            決める「1分あたりのpx数」はJS側のBOARD_PX_PER_MINUTE定数1箇所のみで
            定義する（CSSと二重管理しない）。 */
-        .board-date-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+        .board-date-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
         .board-date-nav .board-nav-btn { min-width: 44px; min-height: 44px; padding: 0; font-size: 16px; flex: 0 0 auto; }
         .board-date-label {
-            flex: 1; min-width: 150px; text-align: center; font-size: 15px; font-weight: 700;
-            background: none; border: var(--border); border-radius: 10px; padding: 10px 8px;
+            flex: 1; min-width: 120px; text-align: center; font-size: 15px; font-weight: 700;
+            background: none; border: var(--border); border-radius: 10px; padding: 10px 6px;
             font-family: inherit; color: var(--dark); cursor: pointer; min-height: 44px;
+            display: flex; align-items: center; justify-content: center; gap: 6px;
         }
         .board-date-label:hover { border-color: var(--primary); }
+        .board-today-badge {
+            display: none; font-size: 11px; font-weight: 700; color: var(--white); background: var(--primary);
+            padding: 2px 8px; border-radius: 10px; flex-shrink: 0;
+        }
+        .board-today-badge.show { display: inline-block; }
         .board-date-nav-picker-wrap { position: relative; flex: 0 0 auto; }
         .board-date-picker {
             position: absolute; width: 1px; height: 1px; opacity: 0; border: none; padding: 0;
@@ -228,13 +234,24 @@
         .board-state .board-state-title { font-size: 14px; font-weight: 700; color: #888; margin-bottom: 4px; }
         .board-state.board-state-error .board-state-title { color: var(--error); }
         .board-state .btn-outline { margin-top: 12px; }
-        .board-hours-summary { font-size: 12px; color: #888; margin-bottom: 10px; }
+        .board-summary-bar { margin-bottom: 10px; font-size: 12px; color: #888; }
+        .board-summary-bar .board-hours-summary { margin-bottom: 2px; }
+        .board-next-reservation { font-size: 13px; color: var(--dark); font-weight: 700; margin-top: 2px; }
+        .board-next-reservation .label { color: #888; font-weight: 400; margin-right: 4px; }
         .board-timeline-wrap { position: relative; border: var(--border); border-radius: 10px; overflow-x: hidden; overflow-y: auto; max-height: 70vh; background: var(--white); }
         .board-timeline { position: relative; }
         .board-hour-row { position: absolute; left: 0; right: 0; border-top: 1px solid #f0f0f0; }
         .board-hour-label {
             position: absolute; left: 4px; top: -8px; font-size: 11px; color: #aaa;
             background: var(--white); padding: 0 4px; z-index: 2;
+        }
+        .board-day-separator { position: absolute; left: 0; right: 0; z-index: 3; }
+        .board-day-separator::before {
+            content: ''; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px dashed #ddd;
+        }
+        .board-day-separator .board-day-separator-label {
+            position: relative; display: block; margin: 0 auto; width: fit-content; background: var(--light);
+            color: #888; font-size: 11px; font-weight: 700; padding: 2px 10px; border-radius: 10px;
         }
         .board-lane { position: absolute; top: 0; bottom: 0; left: 54px; right: 6px; }
         .board-break-block {
@@ -249,6 +266,7 @@
             box-sizing: border-box; min-height: 30px; text-align: left; font-family: inherit;
         }
         .board-block:hover, .board-block:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+        .board-block .board-block-status-badge { font-size: 9px; font-weight: 700; color: #888; display: block; }
         .board-block .board-block-time { font-size: 11px; font-weight: 700; color: var(--dark); display: block; }
         .board-block .board-block-name { font-size: 12px; color: var(--dark); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
         .board-block .board-block-extra { font-size: 10px; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
@@ -256,10 +274,17 @@
         .board-block.status-confirmed { border-left-color: #047857; background: #d1fae5; }
         .board-block.status-no_show { border-left-color: var(--error); background: #fee2e2; }
         .board-block.status-completed { border-left-color: #1d4ed8; background: #dbeafe; }
+        .board-block.narrow { padding: 2px 4px; }
+        .board-block.narrow .board-block-status-badge, .board-block.narrow .board-block-extra { display: none; }
+        .board-block.narrow .board-block-time, .board-block.narrow .board-block-name { font-size: 10px; }
         .board-now-line { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid #ef4444; z-index: 5; pointer-events: none; }
         .board-now-line::before {
             content: ''; position: absolute; left: -50px; top: -4px; width: 8px; height: 8px;
             border-radius: 50%; background: #ef4444;
+        }
+        .board-now-line .board-now-line-label {
+            position: absolute; left: 58px; top: -9px; font-size: 10px; font-weight: 700; color: var(--white);
+            background: #ef4444; padding: 1px 6px; border-radius: 8px; white-space: nowrap;
         }
         .board-sheet-overlay {
             display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 100;
@@ -277,7 +302,17 @@
         .board-sheet-row:last-of-type { border-bottom: none; }
         .board-sheet-row .label { color: #888; font-size: 12px; flex: 0 0 auto; }
         .board-sheet-row .value { text-align: right; font-weight: 600; }
+        .board-sheet-phone-error { color: var(--error); font-size: 11px; display: block; margin-top: 4px; }
         .board-sheet-close-btn { display: block; margin: 14px auto 0; }
+        /* Mobile Boarding: iPhone SE等の狭い画面でも「←日付→今日」が1行に
+           収まるよう、狭幅では余白・フォントを詰める（大規模なレイアウト
+           再設計はしない）。 */
+        @media (max-width: 400px) {
+            .board-date-label { min-width: 100px; font-size: 13px; padding: 10px 4px; }
+            .board-date-nav .board-nav-btn { min-width: 38px; padding: 0 2px; }
+            .board-today-btn { padding: 6px 8px; font-size: 11px; }
+        }
+        body.board-scroll-locked { overflow: hidden; }
         @media (min-width: 640px) {
             .board-sheet { left: auto; right: 24px; bottom: 24px; width: 380px; border-radius: 16px; max-height: 70vh; }
         }
@@ -1324,7 +1359,10 @@
                 <p class="hint">1日の予約を時間軸で確認できます。ブロックをタップすると詳細が開きます。</p>
                 <div class="board-date-nav">
                     <button type="button" class="btn-outline board-nav-btn" id="board-prev-btn" aria-label="前の日">◀</button>
-                    <button type="button" class="board-date-label" id="board-date-label-btn">&nbsp;</button>
+                    <button type="button" class="board-date-label" id="board-date-label-btn">
+                        <span class="board-today-badge" id="board-today-badge">今日</span>
+                        <span id="board-date-label-text">&nbsp;</span>
+                    </button>
                     <button type="button" class="btn-outline board-today-btn" id="board-today-btn">今日</button>
                     <div class="board-date-nav-picker-wrap">
                         <input type="date" id="board-date-picker" class="board-date-picker" aria-label="日付を選択">
@@ -3623,7 +3661,7 @@
             }
         }
 
-        // ---------- 予約表（Owner Booking Board V1） ----------
+        // ---------- 予約表（Owner Booking Board V1 / V1.1 Owner Daily Operations UX Polish） ----------
         //
         // 設計方針（重要・必ず守ること）:
         // Booking Boardは「新しい予約エンジン」ではない。既存Reservation
@@ -3632,16 +3670,26 @@
         // 計算済みの結果をそのまま可視化するだけで、同じ判定ロジックをここに
         // 複製しない（例えば「日跨ぎ営業セッションの範囲」は一切JS側で
         // 再計算しない。session_start/session_endをサーバーの計算結果として
-        // そのまま使う）。
+        // そのまま使う）。V1.1ではBoard APIは一切変更していない
+        // （新API追加なし・DB変更なし・既存Reservation Engineへの変更なし）。
+        //
+        // V1.1の最重要修正（Section3）: 日跨ぎ営業の内部計算は
+        // session-relative minutes（開始時刻からの経過分数。24を超えて
+        // 増え続けてよい）のまま一切変更しない。変更したのは「その分数を
+        // オーナーへどう表示するか」という表示層だけ——24:00/25:00という
+        // システム内部の延長表記はオーナー向け画面には一切出さず、通常の
+        // 時計表記（0:00, 1:00, 2:00...）＋「翌日」の区切り線で表現する。
         //
         // 「1分あたりのpx数」はBOARD_PX_PER_MINUTE定数1箇所だけで定義する
         // （CSSと二重管理しない。タップ target確保のため60分=64pxを基準にする）。
         const BOARD_PX_PER_MINUTE = 64 / 60;
         const BOARD_MIN_BLOCK_HEIGHT_PX = 30; // 非常に短い予約でもタップできる最小高さ
+        const BOARD_COMPACT_HEIGHT_THRESHOLD_PX = 46; // これより低いブロックは情報を間引く
 
         let boardActiveDate = null; // 'YYYY-MM-DD'（表示中の営業セッション開始日）
         let boardRequestGeneration = 0; // 連打対応: 古いレスポンスで新しい表示を上書きしない
         let boardTabInitialized = false;
+        let boardSheetLastFocusedEl = null; // Bottom Sheetを閉じた時にフォーカスを戻す先
 
         // 「今日」はRECEPTRA全体の基準（JST壁時計）に揃える。
         // new Date().toISOString().slice(0,10)（ブラウザのUTC基準）は使わない
@@ -3669,6 +3717,10 @@
             return p.y + '-' + pad(p.mo) + '-' + pad(p.d);
         }
 
+        function _boardIsViewingToday(viewedDateStr, todayDateStr) {
+            return viewedDateStr === todayDateStr;
+        }
+
         function _boardParseDateParts(dateStr) {
             const bits = dateStr.split('-').map(Number);
             return { y: bits[0], mo: bits[1], d: bits[2] };
@@ -3692,6 +3744,13 @@
             return p.y + '年' + p.mo + '月' + p.d + '日（' + w + '）';
         }
 
+        // 「翌日 9月25日（金）」区切り線用。年は表示しない（Section5の表示例通り）。
+        function _boardFormatShortDateLabel(dateStr) {
+            const p = _boardParseDateParts(dateStr);
+            const w = BOARD_WEEKDAY_NAMES_JA[new Date(Date.UTC(p.y, p.mo - 1, p.d)).getUTCDay()];
+            return p.mo + '月' + p.d + '日（' + w + '）';
+        }
+
         // ISO日時文字列（"YYYY-MM-DDTHH:MM:SS"、タイムゾーン情報なし＝サーバー側の
         // JST-naive値）から年月日時分だけを取り出す。new Date(iso)は使わない
         // ——ブラウザのローカルタイムゾーン解釈に一切依存させないため。
@@ -3704,6 +3763,9 @@
         // 実際のUTC時刻としての意味は持たせず、単に「分単位の直線上の座標」として
         // Date.UTCの計算結果(ms)を流用する。両端に同じ変換を適用するため、差分は
         // 常に正しい壁時計の経過分数になる（実タイムゾーン変換は一切発生しない）。
+        // ★これがV1.1でも変更しない「内部座標系」——日跨ぎでも24を超えて自然に
+        // 増え続ける値であり、collision/position/height/breakの計算は全てこの
+        // 座標のまま行う（Section6）。表示（ラベル）だけを別関数で変換する。
         function _boardMinutesCoord(parts) {
             return Date.UTC(parts.y, parts.mo - 1, parts.d, parts.h, parts.mi) / 60000;
         }
@@ -3713,13 +3775,28 @@
             return parts ? _boardMinutesCoord(parts) : null;
         }
 
-        function _boardExtendedHourLabel(h) {
-            // 24時以降も折り返さず「25:00」のように延長表記する（日跨ぎ営業を
-            // 1本の連続したセッションとして表示するため。00:00に折り返すと、
-            // 同じ「01:00」ラベルが1つの営業セッション内に2回現れる可能性があり、
-            // 「セッションを分割しない」という要件の意図に反する）。
+        // 座標(分)から実際の暦日時分を逆算する（表示専用）。
+        function _boardCoordToParts(coordMinutes) {
+            const d = new Date(coordMinutes * 60000);
+            return { y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes() };
+        }
+
+        // オーナー向け表示専用の時計ラベル。24:00/25:00等には決してしない
+        // ——24時間で自然に折り返した「普通の時計」の時刻を返す（V1.1 Section3/4/7）。
+        // 時は0埋めしない（仕様書の表示例「0:00」「1:00」「18:00」に合わせる）。
+        // 分は常に2桁。
+        function _boardWallClockLabel(coordMinutes) {
+            const p = _boardCoordToParts(coordMinutes);
             const pad = function (n) { return ('0' + n).slice(-2); };
-            return pad(h) + ':00';
+            return p.h + ':' + pad(p.mi);
+        }
+
+        // 1時間ごとの罫線ラベル。internalHourはBuildHourMarks内部のカウンタで
+        // 24を超えて増え続けてよい値（例:26）。表示だけ24で折り返す
+        // （例: 26 -> "2:00"）。
+        function _boardWallHourLabel(internalHour) {
+            const wallHour = ((internalHour % 24) + 24) % 24;
+            return wallHour + ':00';
         }
 
         function _boardBuildHourMarks(startParts, totalMinutes) {
@@ -3727,20 +3804,46 @@
             let offset = (startParts.mi === 0) ? 0 : (60 - startParts.mi);
             let displayHour = startParts.h + (offset === 0 ? 0 : 1);
             if (offset === 0) {
-                marks.push({ offset: 0, label: _boardExtendedHourLabel(startParts.h) });
+                marks.push({ offset: 0, label: _boardWallHourLabel(startParts.h) });
                 offset = 60;
                 displayHour = startParts.h + 1;
             }
             while (offset <= totalMinutes) {
-                marks.push({ offset: offset, label: _boardExtendedHourLabel(displayHour) });
+                marks.push({ offset: offset, label: _boardWallHourLabel(displayHour) });
                 offset += 60;
                 displayHour += 1;
             }
             return marks;
         }
 
+        // 「翌日」区切り線を描画すべきsession-relative offsetを返す（無ければnull）。
+        // 開始時刻がちょうど0:00の場合は、営業セッション自体が既にカレンダー日の
+        // 先頭から始まっているため区切りは不要。開始時刻がその他の場合、次の
+        // 0:00（＝24:00 - 開始時刻の分）が区切り位置になる。その位置がセッションの
+        // 表示範囲(totalMinutes)を超えていれば区切りは表示しない（Section5）。
+        function _boardComputeNextDayBoundaryOffset(startParts, totalMinutes) {
+            const startOfDayMinute = startParts.h * 60 + startParts.mi;
+            if (startOfDayMinute === 0) return null;
+            const offset = 1440 - startOfDayMinute;
+            if (offset <= 0 || offset > totalMinutes) return null;
+            return offset;
+        }
+
+        // 「18:00〜翌3:00」のような、時計として読める形の営業時間サマリー文字列を
+        // 作る（Section33。「18:00〜27:00」という延長表記は禁止）。
+        function _boardFormatHoursRangeLabel(openingTime, closingTime, closesNextDay) {
+            const stripPad = function (hhmm) {
+                const bits = hhmm.split(':');
+                return parseInt(bits[0], 10) + ':' + bits[1];
+            };
+            const openLabel = stripPad(openingTime);
+            const closeLabel = (closesNextDay ? '翌' : '') + stripPad(closingTime);
+            return openLabel + '〜' + closeLabel;
+        }
+
         // 列ベースの単純な衝突配置アルゴリズム（V1のスコープ。外部カレンダー
-        // ライブラリは使わない——既存依存関係の監査の上での判断）。
+        // ライブラリは使わない——既存依存関係の監査の上での判断。V1.1でも
+        // このアルゴリズム自体は変更しない。Section18）。
         // 重なっている予約同士だけをグループ化し、グループ内で使う列数の
         // 最小値を「区間グラフ彩色」の標準的な貪欲法で求める。
         function _boardComputeLayout(items) {
@@ -3786,6 +3889,53 @@
             });
         }
 
+        // 次の予約（Section11/12）: cancelledを除外し、nowCoord以降で最も早く
+        // 始まる予約を返す（無ければnull）。itemsは各要素に絶対座標の
+        // _absStartを持つこと。
+        function _boardFindNextReservation(items, nowCoord) {
+            const candidates = items.filter(function (it) {
+                return it.status !== 'cancelled' && it._absStart >= nowCoord;
+            });
+            if (!candidates.length) return null;
+            candidates.sort(function (a, b) { return a._absStart - b._absStart; });
+            return candidates[0];
+        }
+
+        // 「今日のBoardを開いた時にどこへ注目させるか」を1箇所にまとめた純粋関数
+        // （Section9/10/11/13。実際の「今」の取得(_boardGetNowJSTParts)とは
+        // 分離してあるため、nowCoordを直接与えて単体テストできる）。
+        //
+        // 過去日・未来日を見ている場合はnowOffset/nextReservation/
+        // autoScrollTargetのいずれもnull（現在時刻に基づく表示は「今日」だけの
+        // 機能というSection12の方針）。
+        function _boardComputeTimelineTimeState(opts) {
+            const isToday = _boardIsViewingToday(opts.viewedDate, opts.todayDate);
+            const result = { isToday: isToday, nowOffset: null, nextReservation: null, autoScrollTarget: null };
+            if (!isToday) return result;
+
+            const active = (opts.reservations || []).filter(function (r) { return r.status !== 'cancelled'; });
+            const sortedByStart = active.slice().sort(function (a, b) { return a._absStart - b._absStart; });
+
+            if (opts.nowCoord >= opts.sessionStartCoord && opts.nowCoord < opts.sessionEndCoord) {
+                result.nowOffset = opts.nowCoord - opts.sessionStartCoord;
+                result.autoScrollTarget = { type: 'now', offset: result.nowOffset };
+            } else if (opts.nowCoord < opts.sessionStartCoord) {
+                // 営業開始前: 最初の予約、無ければ営業開始位置へ
+                result.autoScrollTarget = sortedByStart.length
+                    ? { type: 'first-reservation', offset: sortedByStart[0]._absStart - opts.sessionStartCoord }
+                    : { type: 'start', offset: 0 };
+            } else {
+                // 営業終了後: 最後の予約付近、無ければtimeline末尾へ
+                const last = sortedByStart.length ? sortedByStart[sortedByStart.length - 1] : null;
+                result.autoScrollTarget = last
+                    ? { type: 'last-reservation', offset: last._absStart - opts.sessionStartCoord }
+                    : { type: 'end', offset: opts.sessionEndCoord - opts.sessionStartCoord };
+            }
+
+            result.nextReservation = _boardFindNextReservation(active, opts.nowCoord);
+            return result;
+        }
+
         function boardShowTab(tab) {
             const listPanel = document.getElementById('res-tabpanel-list');
             const boardPanel = document.getElementById('res-tabpanel-board');
@@ -3806,7 +3956,9 @@
 
         function boardSetDate(dateStr) {
             boardActiveDate = dateStr;
-            document.getElementById('board-date-label-btn').textContent = _boardFormatDateLabel(dateStr);
+            const isToday = _boardIsViewingToday(dateStr, _receptraTodayJST());
+            document.getElementById('board-today-badge').classList.toggle('show', isToday);
+            document.getElementById('board-date-label-text').textContent = _boardFormatDateLabel(dateStr);
             document.getElementById('board-date-picker').value = dateStr;
             loadBoard();
         }
@@ -3869,19 +4021,22 @@
                 _boardRenderState('empty', '営業時間が設定されていません', false);
                 return;
             }
-            // day_status === 'open'
-            if (!data.reservations.length) {
-                const hoursNote = data.opening_time
-                    ? '（営業時間 ' + data.opening_time + '〜' + data.closing_time + (data.closes_next_day ? '（翌日）' : '') + '）'
-                    : '';
+            // day_status === 'open'。cancelledはSection30/32の方針により件数・
+            // 表示のいずれからも除外する（一覧タブでは従来通り確認可能）。
+            const activeCount = data.reservations.filter(function (r) { return r.status !== 'cancelled'; }).length;
+            const hoursLabel = data.opening_time ? _boardFormatHoursRangeLabel(data.opening_time, data.closing_time, data.closes_next_day) : '';
+
+            if (!activeCount) {
                 document.getElementById('board-body').innerHTML =
-                    '<p class="board-hours-summary">' + escapeHtml(hoursNote) + '</p>' +
+                    '<div class="board-summary-bar"><p class="board-hours-summary">' + (hoursLabel ? '営業時間 ' + escapeHtml(hoursLabel) : '') + '</p></div>' +
                     '<div class="board-state">この日の予約はありません</div>';
                 return;
             }
             document.getElementById('board-body').innerHTML =
-                '<p class="board-hours-summary">営業時間 ' + escapeHtml(data.opening_time) + '〜' + escapeHtml(data.closing_time) +
-                (data.closes_next_day ? '（翌日）' : '') + '</p>' +
+                '<div class="board-summary-bar">' +
+                '<p class="board-hours-summary">営業時間 ' + escapeHtml(hoursLabel) + '　予約 ' + activeCount + '件</p>' +
+                '<div id="board-next-reservation"></div>' +
+                '</div>' +
                 '<div class="board-timeline-wrap" id="board-timeline-wrap"><div class="board-timeline" id="board-timeline"></div></div>';
             _boardRenderTimeline(data);
         }
@@ -3899,12 +4054,23 @@
             let html = '';
 
             // 30分刻みの罫線は推奨だが、視認性を優先しV1では1時間ラベルのみ描画する
-            // （仕様書Section34「1時間ラベルでも可」の許容範囲内）。
+            // （仕様書Section34「1時間ラベルでも可」の許容範囲内）。ラベルは
+            // 24:00/25:00にはせず、普通の時計表記に折り返す（V1.1 Section3/4）。
             const marks = _boardBuildHourMarks(sessionStartParts, totalMinutes);
             marks.forEach(function (mk) {
                 const top = mk.offset * BOARD_PX_PER_MINUTE;
                 html += '<div class="board-hour-row" style="top:' + top + 'px;"><span class="board-hour-label">' + mk.label + '</span></div>';
             });
+
+            // 「翌日」区切り線（Section5）。タイムライン自体は分割しない
+            // ——1本の連続したセッションのまま、区切りは視覚的な目印だけ。
+            const boundaryOffset = _boardComputeNextDayBoundaryOffset(sessionStartParts, totalMinutes);
+            if (boundaryOffset !== null) {
+                const nextDayDateStr = _boardAddDays(data.date, 1);
+                const top = boundaryOffset * BOARD_PX_PER_MINUTE;
+                html += '<div class="board-day-separator" style="top:' + top + 'px;">' +
+                    '<span class="board-day-separator-label">翌日 ' + escapeHtml(_boardFormatShortDateLabel(nextDayDateStr)) + '</span></div>';
+            }
 
             html += '<div class="board-lane" id="board-lane"></div>';
             timeline.innerHTML = html;
@@ -3914,6 +4080,8 @@
 
             // 休憩時間（Reservation Intelligence Phase D-2の既存データをそのまま
             // 表示するだけ。重なり判定・営業可否判定はここでは一切行わない）。
+            // ラベルはバックエンドが返す素の"HH:MM"文字列をそのまま使う
+            // （日跨ぎでも常にその時刻自体の値であり、25:00等には決してならない）。
             (data.break_times || []).forEach(function (bt) {
                 const startDateStr = bt.start_next_day ? _boardAddDays(data.date, 1) : data.date;
                 const endDateStr = bt.end_next_day ? _boardAddDays(data.date, 1) : data.date;
@@ -3927,18 +4095,21 @@
                 });
                 const top = (startCoord - sessionStartCoord) * BOARD_PX_PER_MINUTE;
                 const height = Math.max((endCoord - startCoord) * BOARD_PX_PER_MINUTE, 16);
+                const startLabel = _boardStripLeadingZeroHour(bt.start_time);
+                const endLabel = _boardStripLeadingZeroHour(bt.end_time);
                 laneHtml += '<div class="board-break-block" style="top:' + top + 'px; height:' + height + 'px; left:0; width:100%;">' +
-                    '<span class="board-break-label">休憩 ' + escapeHtml(bt.start_time) + '〜' + escapeHtml(bt.end_time) + '</span></div>';
+                    '<span class="board-break-label">休憩 ' + escapeHtml(startLabel) + '〜' + escapeHtml(endLabel) + '</span></div>';
             });
 
             // 予約ブロック。キャンセル済みはV1では非表示にする（既存の「一覧」タブで
-            // ステータスフィルタから確認可能。仕様書Section25「V1は非表示推奨」に
+            // ステータスフィルタから確認可能。仕様書Section25/30「V1は非表示維持」に
             // 基づく判断）。
             const visibleReservations = data.reservations.filter(function (r) { return r.status !== 'cancelled'; });
             visibleReservations.forEach(function (r) {
                 const startCoord = _boardMinutesCoordFromIso(r.reservation_date);
                 r._startOffset = startCoord - sessionStartCoord;
                 r._endOffset = r._startOffset + r.effective_duration_minutes;
+                r._absStart = startCoord;
             });
             const layouted = _boardComputeLayout(visibleReservations);
 
@@ -3947,31 +4118,29 @@
                 const height = Math.max(r.effective_duration_minutes * BOARD_PX_PER_MINUTE, BOARD_MIN_BLOCK_HEIGHT_PX);
                 const widthPct = 100 / r._colCount;
                 const leftPct = r._col * widthPct;
-                const startParts = _boardParseNaiveDateTime(r.reservation_date);
-                const endCoord = _boardMinutesCoordFromIso(r.reservation_date) + r.effective_duration_minutes;
-                const endLabel = _boardMinutesToClockLabel(endCoord);
-                const startLabel = ('0' + startParts.h).slice(-2) + ':' + ('0' + startParts.mi).slice(-2);
+                const startCoord = r._absStart;
+                const endCoord = startCoord + r.effective_duration_minutes;
+                const startLabel = _boardWallClockLabel(startCoord);
+                const endLabel = _boardWallClockLabel(endCoord);
+                // Section18/19: 3列以上に詰まっている、または高さが低い予約は
+                // 情報を間引く（「時刻・顧客名」だけは必ず判別できるようにする）。
+                const isCompact = (r._colCount >= 3) || (height < BOARD_COMPACT_HEIGHT_THRESHOLD_PX);
+                const timeText = isCompact ? startLabel : (startLabel + '〜' + endLabel);
+                const statusLabel = STATUS_LABELS[r.status] || r.status;
                 const extraBits = [];
-                if (r.staff_name) extraBits.push(escapeHtml(r.staff_name));
-                if (r.service_name) extraBits.push(escapeHtml(r.service_name));
-                if (r.number_of_people) extraBits.push(r.number_of_people + '名');
-                laneHtml += '<div class="board-block status-' + escapeHtml(r.status) + '" data-id="' + escapeHtml(r.id) +
+                if (!isCompact) {
+                    if (r.staff_name) extraBits.push(escapeHtml(r.staff_name));
+                    if (r.service_name) extraBits.push(escapeHtml(r.service_name));
+                    if (r.number_of_people) extraBits.push(r.number_of_people + '名');
+                }
+                laneHtml += '<div class="board-block status-' + escapeHtml(r.status) + (isCompact ? ' narrow' : '') + '" data-id="' + escapeHtml(r.id) +
                     '" tabindex="0" role="button" style="top:' + top + 'px; height:' + height + 'px; left:' + leftPct + '%; width:calc(' + widthPct + '% - 4px);">' +
-                    '<span class="board-block-time">' + startLabel + '〜' + endLabel + '</span>' +
+                    (isCompact ? '' : '<span class="board-block-status-badge">' + escapeHtml(statusLabel) + '</span>') +
+                    '<span class="board-block-time">' + timeText + '</span>' +
                     '<span class="board-block-name">' + escapeHtml(r.guest_name || '(お名前未登録)') + '</span>' +
                     (extraBits.length ? '<span class="board-block-extra">' + extraBits.join('・') + '</span>' : '') +
                     '</div>';
             });
-
-            // 現在時刻インジケーター（今日の予約表を開いていて、かつ現在時刻がこの
-            // 営業セッションの範囲内にある場合のみ表示。JST壁時計基準）。
-            const nowCoord = _boardMinutesCoord(_boardGetNowJSTParts());
-            let nowOffset = null;
-            if (nowCoord >= sessionStartCoord && nowCoord < sessionEndCoord) {
-                nowOffset = nowCoord - sessionStartCoord;
-                const nowTop = nowOffset * BOARD_PX_PER_MINUTE;
-                laneHtml += '<div class="board-now-line" style="top:' + nowTop + 'px;"></div>';
-            }
 
             lane.innerHTML = laneHtml;
             lane.querySelectorAll('.board-block').forEach(function (block) {
@@ -3983,37 +4152,71 @@
                 });
             });
 
-            // Auto Scroll（Section38・任意対応）: 現在時刻に近い位置までスクロール
-            // する。複雑な「次の予約まで自動スクロール」はV1では見送る。
-            if (nowOffset !== null) {
+            // 現在時刻インジケーター・次の予約・auto scrollの着地点は、すべて
+            // _boardComputeTimelineTimeState()という1つの純粋関数の結果に従う
+            // （Section9/10/11/12/13。「今日」以外の日付では何も表示しない）。
+            const nowCoord = _boardMinutesCoord(_boardGetNowJSTParts());
+            const timeState = _boardComputeTimelineTimeState({
+                viewedDate: boardActiveDate, todayDate: _receptraTodayJST(),
+                sessionStartCoord: sessionStartCoord, sessionEndCoord: sessionEndCoord,
+                nowCoord: nowCoord, reservations: visibleReservations,
+            });
+
+            if (timeState.nowOffset !== null) {
+                const nowTop = timeState.nowOffset * BOARD_PX_PER_MINUTE;
+                const nowLabel = _boardWallClockLabel(nowCoord);
+                lane.insertAdjacentHTML('beforeend',
+                    '<div class="board-now-line" style="top:' + nowTop + 'px;"><span class="board-now-line-label">' + escapeHtml(nowLabel) + ' 現在</span></div>');
+            }
+
+            const nextResEl = document.getElementById('board-next-reservation');
+            if (nextResEl) {
+                if (timeState.isToday) {
+                    if (timeState.nextReservation) {
+                        const nr = timeState.nextReservation;
+                        nextResEl.innerHTML = '<div class="board-next-reservation"><span class="label">次の予約</span>' +
+                            escapeHtml(_boardWallClockLabel(nr._absStart)) + ' ' + escapeHtml(nr.guest_name || '(お名前未登録)') + '様</div>';
+                    } else {
+                        nextResEl.innerHTML = '<div class="board-next-reservation"><span class="label">次の予約</span>この後の予約はありません</div>';
+                    }
+                } else {
+                    nextResEl.innerHTML = '';
+                }
+            }
+
+            // Auto Scroll（Section13/14）: 初回描画（＝日付切り替え時）だけの
+            // タイミングで行う。_boardRenderTimelineはloadBoard経由でのみ呼ばれる
+            // ため、ユーザーが手動scrollした後に毎回scroll位置を強制的に戻す
+            // ことはない。
+            if (timeState.autoScrollTarget) {
                 const wrap = document.getElementById('board-timeline-wrap');
-                wrap.scrollTop = Math.max(nowOffset * BOARD_PX_PER_MINUTE - 80, 0);
+                wrap.scrollTop = Math.max(timeState.autoScrollTarget.offset * BOARD_PX_PER_MINUTE - 80, 0);
             }
         }
 
-        function _boardMinutesToClockLabel(coordMinutes) {
-            // _boardMinutesCoordと同じ座標系の分数を、その場でHH:MM表記に戻す
-            // （Date.UTCで作った座標をそのままUTC時刻として読み戻すだけの、
-            // 実タイムゾーンとは無関係な純粋な逆変換）。
-            const d = new Date(coordMinutes * 60000);
-            const pad = function (n) { return ('0' + n).slice(-2); };
-            return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
+        // "HH:MM"形式の文字列の時だけ0埋めを外す（例:"00:30"->"0:30"、
+        // "18:00"->"18:00"）。休憩時間の表示・営業時間サマリー表示で共通利用。
+        function _boardStripLeadingZeroHour(hhmm) {
+            const bits = hhmm.split(':');
+            return parseInt(bits[0], 10) + ':' + bits[1];
         }
 
         function _boardOpenDetail(item) {
+            boardSheetLastFocusedEl = document.activeElement;
+
+            // Section21: 表示順序を仕様書の指定通りに整理
+            // （顧客名(title) → status → 日付 → 時間+duration → 人数 →
+            //   Service → Staff → Table → 電話番号 → 備考）。
             const rows = [];
+            rows.push(['ステータス', STATUS_LABELS[item.status] || item.status]);
             rows.push(['日付', _boardFormatDateLabel(boardActiveDate)]);
-            const startCoord = _boardMinutesCoordFromIso(item.reservation_date);
-            const startParts = _boardParseNaiveDateTime(item.reservation_date);
-            const startLabel = ('0' + startParts.h).slice(-2) + ':' + ('0' + startParts.mi).slice(-2);
-            const endLabel = _boardMinutesToClockLabel(startCoord + item.effective_duration_minutes);
-            rows.push(['時間', startLabel + '〜' + endLabel + '（' + item.effective_duration_minutes + '分）']);
+            const startCoord = item._absStart != null ? item._absStart : _boardMinutesCoordFromIso(item.reservation_date);
+            const endCoord = startCoord + item.effective_duration_minutes;
+            rows.push(['時間', _boardWallClockLabel(startCoord) + '〜' + _boardWallClockLabel(endCoord) + '（' + item.effective_duration_minutes + '分）']);
             rows.push(['人数', item.number_of_people + '名']);
             if (item.service_name) rows.push([currentServiceLabelMeta.itemLabel, item.service_name]);
             if (item.staff_name) rows.push(['担当', item.staff_name]);
             if (item.table_name) rows.push(['テーブル・席', item.table_name]);
-            rows.push(['ステータス', STATUS_LABELS[item.status] || item.status]);
-            if (item.special_requests) rows.push(['備考', item.special_requests]);
 
             const rowsHtml = rows.map(function (pair) {
                 return '<div class="board-sheet-row"><span class="label">' + escapeHtml(pair[0]) + '</span><span class="value">' + escapeHtml(String(pair[1])) + '</span></div>';
@@ -4023,11 +4226,16 @@
                 '<span class="label">電話番号</span><span class="value">' +
                 '<span id="board-sheet-phone-value">' + escapeHtml(item.guest_phone_masked || '---') + '</span> ' +
                 '<button type="button" class="btn-outline" id="board-sheet-reveal-btn" data-id="' + escapeHtml(item.id) + '">電話番号を表示</button>' +
+                '<span class="board-sheet-phone-error" id="board-sheet-phone-error" style="display:none;"></span>' +
                 '</span></div>';
+
+            const notesRowHtml = item.special_requests
+                ? '<div class="board-sheet-row"><span class="label">備考</span><span class="value">' + escapeHtml(item.special_requests) + '</span></div>'
+                : '';
 
             document.getElementById('board-sheet-content').innerHTML =
                 '<div class="board-sheet-title">' + escapeHtml(item.guest_name || '(お名前未登録)') + '</div>' +
-                rowsHtml + phoneRowHtml;
+                rowsHtml + phoneRowHtml + notesRowHtml;
 
             document.getElementById('board-sheet-reveal-btn').addEventListener('click', function (e) {
                 _boardRevealPhone(e.target.dataset.id, e.target);
@@ -4035,20 +4243,35 @@
 
             document.getElementById('board-sheet-overlay').classList.add('open');
             document.getElementById('board-sheet').classList.add('open');
+            // Mobile Safariでのbackground scroll対策（Section22）。
+            document.body.classList.add('board-scroll-locked');
+            // Accessibility（Section23）: 大規模focus trap libraryは使わず、
+            // 開いた時に閉じるボタンへフォーカスを移し、閉じた時に元の
+            // フォーカス位置へ戻すだけの最小限の実装にする。
+            document.getElementById('board-sheet-close-btn').focus();
         }
 
         function _boardCloseDetail() {
             document.getElementById('board-sheet-overlay').classList.remove('open');
             document.getElementById('board-sheet').classList.remove('open');
+            document.body.classList.remove('board-scroll-locked');
+            if (boardSheetLastFocusedEl && typeof boardSheetLastFocusedEl.focus === 'function') {
+                boardSheetLastFocusedEl.focus();
+            }
+            boardSheetLastFocusedEl = null;
         }
 
         async function _boardRevealPhone(reservationId, btn) {
             // Booking Boardの一覧はプライバシー保護のため電話番号をマスク済みで
             // 返す（app.schemas.callback_request.mask_phone_for_listと同じ
-            // "****"+末尾4桁の規約）。フル電話番号は、既存かつ本フェーズで
+            // "****"+末尾4桁の規約）。フル電話番号は、既存かつPhase Hで
             // オーナー認証・tenant分離を追加した GET /api/v1/reservations/{id}
             // を呼び出したときだけ表示する（新しい「reveal」専用APIは作らない）。
+            // 二重tap防止のためbtn.disabledで即座にガードする（Section26）。
+            if (btn.disabled) return;
             btn.disabled = true;
+            const errorEl = document.getElementById('board-sheet-phone-error');
+            if (errorEl) { errorEl.style.display = 'none'; errorEl.textContent = ''; }
             try {
                 const res = await authFetch('/api/v1/reservations/' + encodeURIComponent(reservationId));
                 if (!res.ok) throw new Error('failed');
@@ -4062,7 +4285,13 @@
                 btn.remove();
             } catch (e) {
                 btn.disabled = false;
-                alert('電話番号の取得に失敗しました');
+                // Board全体をエラー状態にはせず、この電話番号欄だけにエラーを
+                // 表示する（Section26。alertによるブロッキングダイアログは
+                // 使わない）。
+                if (errorEl) {
+                    errorEl.textContent = '電話番号を表示できませんでした';
+                    errorEl.style.display = 'block';
+                }
             }
         }
 
@@ -4080,6 +4309,12 @@
         });
         document.getElementById('board-sheet-close-btn').addEventListener('click', _boardCloseDetail);
         document.getElementById('board-sheet-overlay').addEventListener('click', _boardCloseDetail);
+        // Section22: Escapeキーで閉じる（開いている時だけ反応する）。
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && document.getElementById('board-sheet').classList.contains('open')) {
+                _boardCloseDetail();
+            }
+        });
 
         // ---------- 基本情報 ----------
         // PHASE5-B: 「全体を保存」からも個別の保存ボタンからも同じロジックを
