@@ -133,7 +133,28 @@ class BoardReservationItem(BaseModel):
     service_name: Optional[str] = None
     staff_name: Optional[str] = None
     table_name: Optional[str] = None
+    # ★★★ Resource Lane V1: 既存のstaff_name/table_name（表示用の名前文字列のみ）に
+    # 加えて追加。担当者別/テーブル別レーンへ予約をグループ化するための安定した
+    # キーとして使う（名前の文字列一致でグループ化すると、同姓同名や表示名変更に
+    # 弱いため）。既存フィールドは一切変更しない、後方互換の追加のみ。
+    staff_id: Optional[str] = None
+    table_id: Optional[str] = None
     special_requests: Optional[str] = None
+
+
+class BoardStaffRosterItem(BaseModel):
+    """Resource Lane V1: 担当者別レーンのヘッダー用（その日の予約の有無に関わらず、
+    有効な（is_active="active"）スタッフ全員を安定した並び順で返す）。"""
+    id: str
+    name: str
+
+
+class BoardTableRosterItem(BaseModel):
+    """Resource Lane V1: テーブル別レーンのヘッダー用（is_active=Trueのテーブル全員を
+    安定した並び順で返す）。"""
+    id: str
+    name: str
+    capacity: int
 
 
 class BoardResponse(BaseModel):
@@ -153,6 +174,11 @@ class BoardResponse(BaseModel):
     closure_reason: Optional[str] = None
     break_times: List[BoardBreakTimeItem] = []
     reservations: List[BoardReservationItem] = []
+    # ★★★ Resource Lane V1: 営業日か休業日かに関わらず常に含める（モード切替
+    # 「担当者別」「テーブル別」の表示可否をBoard取得だけで決定でき、日付を
+    # 切り替えるたびにモード選択肢が消えたり増えたりしないようにするため）。
+    staff_roster: List[BoardStaffRosterItem] = []
+    table_roster: List[BoardTableRosterItem] = []
 
 
 class AvailabilitySlot(BaseModel):

@@ -29,6 +29,7 @@ from app.schemas.reservation import (
     ReservationUpdateRequest, ReservationListResponse,
     AvailabilityResponse, AvailabilitySlot,
     BoardResponse, BoardBreakTimeItem, BoardReservationItem,
+    BoardStaffRosterItem, BoardTableRosterItem,
 )
 # Owner Booking Board: CallbackRequestの一覧マスク表示規約（"****"＋末尾4桁）を
 # そのまま再利用する（新しいマスク方式を作らない。Reservationのguest_phoneに
@@ -1722,7 +1723,33 @@ async def get_shop_reservations_board(
     except ValueError:
         raise HTTPException(status_code=400, detail="日付の形式が正しくありません（YYYY-MM-DD）")
 
-    common = dict(shop_id=shop_id, date=date)
+    # ★★★ Resource Lane V1: 「担当者別」「テーブル別」レーンのヘッダーは、その日の
+    # 予約の有無に関わらず店舗の有効なスタッフ／テーブル全員を安定した並び順で
+    # 表示する必要がある（0件の担当者も見えないと「今日は休みなのか、単に予約が
+    # 無いだけなのか」が分からない）。そのためday_status（休業日等）に関わらず
+    # 常に同じロスターを返す（commonへ含め、以下の全return箇所で共通適用する）。
+    # モード（すべて/担当者別/テーブル別）の表示可否はロスターの件数だけで判定し、
+    # 業種（category/business_type）は一切参照しない（監査の結果、業種別の呼称
+    # 切り替えは既存コードにも無く、今回もStaff=「担当者」、ShopTable=
+    # 「テーブル・席」で統一する）。
+    staff_roster_result = await db.execute(
+        select(Staff)
+        .filter(Staff.shop_id == shop_id, Staff.is_active == "active")
+        .order_by(Staff.sort_order, Staff.created_at)
+    )
+    staff_roster = [
+        BoardStaffRosterItem(id=s.id, name=s.name) for s in staff_roster_result.scalars().all()
+    ]
+    table_roster_result = await db.execute(
+        select(ShopTable)
+        .filter(ShopTable.shop_id == shop_id, ShopTable.is_active == True)  # noqa: E712
+        .order_by(ShopTable.display_order, ShopTable.created_at)
+    )
+    table_roster = [
+        BoardTableRosterItem(id=t.id, name=t.name, capacity=t.capacity) for t in table_roster_result.scalars().all()
+    ]
+
+    common = dict(shop_id=shop_id, date=date, staff_roster=staff_roster, table_roster=table_roster)
 
     # 臨時休業（ShopClosure）が最優先。Phase D-1の他の呼び出し元
     # （create_reservation等）と同じく、判定はセッションの開始日（=target_date）
@@ -1802,6 +1829,11 @@ async def get_shop_reservations_board(
             service_name=(r.service.name if r.service else None),
             staff_name=(r.staff.name if r.staff else None),
             table_name=(r.table.name if r.table else None),
+            # ★★★ Resource Lane V1: staff/tableは既にselectinload済みのため、
+            # このstaff_id/table_id追加による追加クエリは発生しない
+            # （Reservation行自体が持つ列をそのまま返すだけ）。
+            staff_id=r.staff_id,
+            table_id=r.table_id,
             special_requests=r.special_requests,
         )
         for r in reservations

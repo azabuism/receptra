@@ -110,13 +110,14 @@ async def main():
             wed = mon + timedelta(days=2)
             mon_str, tue_str, wed_str = mon.isoformat(), tue.isoformat(), wed.isoformat()
 
-            async def _insert_reservation(shop_id, dt, duration_minutes, guest_name="太郎", guest_phone="09012345678", status="confirmed", number_of_people=2):
+            async def _insert_reservation(shop_id, dt, duration_minutes, guest_name="太郎", guest_phone="09012345678", status="confirmed", number_of_people=2, staff_id=None, table_id=None):
                 async with AsyncSessionLocal() as session:
                     res = Reservation(
                         id=str(uuid.uuid4()), shop_id=shop_id,
                         guest_name=guest_name, guest_phone=guest_phone,
                         reservation_date=dt, duration_minutes=duration_minutes,
                         number_of_people=number_of_people, status=status,
+                        staff_id=staff_id, table_id=table_id,
                         created_at=datetime.utcnow(), updated_at=datetime.utcnow(),
                     )
                     session.add(res)
@@ -294,6 +295,129 @@ async def main():
             assert r.status_code == 200, f"正しいオーナーは200のはずが: {r.status_code} {r.text}"
             assert r.json()["guest_phone"] == "08099998888", f"正しいオーナーはフル電話番号を取得できるはずが: {r.json()}"
             print("I. GET /reservations/{id} の認証必須化・tenant分離・フル電話番号取得: OK")
+
+            # ===== J. Resource Lane V1: staff_id/table_id・staff_roster/table_roster =====
+            await _clear(AsyncSessionLocal, Reservation, shop_a)
+
+            # スタッフ2名（sort_orderで安定順序を明示的に確認）・テーブル2件を作成
+            r = await client.post("/api/v1/staff", json={
+                "shop_id": shop_a, "name": "佐藤", "sort_order": 1,
+            }, headers=owner_a)
+            assert r.status_code in (200, 201), f"create staff 佐藤 failed: {r.status_code} {r.text}"
+            staff_sato = r.json()["id"]
+
+            r = await client.post("/api/v1/staff", json={
+                "shop_id": shop_a, "name": "山田", "sort_order": 0,
+            }, headers=owner_a)
+            assert r.status_code in (200, 201), f"create staff 山田 failed: {r.status_code} {r.text}"
+            staff_yamada = r.json()["id"]
+
+            r = await client.post(f"/api/v1/shops/{shop_a}/tables", json={
+                "name": "テーブル1", "capacity": 4,
+            }, headers=owner_a)
+            assert r.status_code in (200, 201), f"create table テーブル1 failed: {r.status_code} {r.text}"
+            table_1 = r.json()["id"]
+
+            r = await client.post(f"/api/v1/shops/{shop_a}/tables", json={
+                "name": "テーブル2", "capacity": 2,
+            }, headers=owner_a)
+            assert r.status_code in (200, 201), f"create table テーブル2 failed: {r.status_code} {r.text}"
+            table_2 = r.json()["id"]
+
+            # 担当者あり・テーブルあり／担当者のみ／テーブルのみ／両方なし（未割当）の4パターン
+            res_staff_table = await _insert_reservation(
+                shop_a, datetime(mon.year, mon.month, mon.day, 19, 0), duration_minutes=60,
+                staff_id=staff_sato, table_id=table_1,
+            )
+            res_staff_only = await _insert_reservation(
+                shop_a, datetime(mon.year, mon.month, mon.day, 20, 0), duration_minutes=60,
+                staff_id=staff_yamada,
+            )
+            res_table_only = await _insert_reservation(
+                shop_a, datetime(mon.year, mon.month, mon.day, 21, 0), duration_minutes=60,
+                table_id=table_2,
+            )
+            res_unassigned = await _insert_reservation(
+                shop_a, datetime(mon.year, mon.month, mon.day, 22, 0), duration_minutes=60,
+            )
+
+            r = await _board(shop_a, mon_str, owner_a)
+            assert r.status_code == 200
+            body = r.json()
+
+            # sort_order順（山田=0, 佐藤=1）で安定して並ぶこと。作成順（佐藤→山田）とは逆順になるはず
+            assert [s["name"] for s in body["staff_roster"]] == ["山田", "佐藤"], (
+                f"staff_rosterはsort_order順（山田→佐藤）のはずが: {body['staff_roster']}"
+            )
+            assert {s["id"] for s in body["staff_roster"]} == {staff_sato, staff_yamada}
+
+            assert [t["name"] for t in body["table_roster"]] == ["テーブル1", "テーブル2"], (
+                f"table_rosterはdisplay_order順のはずが: {body['table_roster']}"
+            )
+            assert body["table_roster"][0]["capacity"] == 4 and body["table_roster"][1]["capacity"] == 2
+
+            items_by_id = {it["id"]: it for it in body["reservations"]}
+            assert items_by_id[res_staff_table]["staff_id"] == staff_sato
+            assert items_by_id[res_staff_table]["table_id"] == table_1
+            assert items_by_id[res_staff_only]["staff_id"] == staff_yamada
+            assert items_by_id[res_staff_only]["table_id"] is None
+            assert items_by_id[res_table_only]["staff_id"] is None
+            assert items_by_id[res_table_only]["table_id"] == table_2
+            assert items_by_id[res_unassigned]["staff_id"] is None
+            assert items_by_id[res_unassigned]["table_id"] is None
+            print("J. Resource Lane: staff_id/table_id・staff_roster/table_roster（安定順序含む）: OK")
+
+            # ===== K. is_active="inactive"のスタッフはrosterから除外されるが、
+            #          既に割り当て済みの予約のstaff_id/staff_nameは消えない =====
+            r = await client.put(f"/api/v1/staff/{staff_yamada}", json={"is_active": False}, headers=owner_a)
+            assert r.status_code == 200, f"deactivate staff failed: {r.status_code} {r.text}"
+
+            r = await _board(shop_a, mon_str, owner_a)
+            body = r.json()
+            assert [s["name"] for s in body["staff_roster"]] == ["佐藤"], (
+                f"無効化したスタッフはstaff_rosterに出ないはずが: {body['staff_roster']}"
+            )
+            items_by_id = {it["id"]: it for it in body["reservations"]}
+            assert items_by_id[res_staff_only]["staff_id"] == staff_yamada, (
+                "スタッフを無効化しても、既存予約のstaff_idは維持されるはず"
+            )
+            assert items_by_id[res_staff_only]["staff_name"] == "山田", (
+                "スタッフを無効化しても、既存予約のstaff_nameは維持されるはず"
+            )
+            print("K. 無効化スタッフ: rosterから除外・既存予約の紐付けは維持: OK")
+
+            # ===== L. 定休日／営業時間未設定／臨時休業でもroster自体は返す =====
+            r = await _board(shop_a, tue_str, owner_a)  # 火曜はまだ予約を1件も入れていない通常営業日
+            assert r.status_code == 200
+            tue_body = r.json()
+            assert len(tue_body["staff_roster"]) == 1 and len(tue_body["table_roster"]) == 2, (
+                f"営業日であればrosterは常に返るはずが: {tue_body}"
+            )
+
+            # 水曜を再度定休日にしてrosterが引き続き返ることを確認（テスト後に必ず戻す）
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(ShopHours).filter(ShopHours.shop_id == shop_a, ShopHours.day_of_week == wed.weekday())
+                )
+                wed_hours = result.scalar_one()
+                wed_hours.is_closed = True
+                await session.commit()
+            r = await _board(shop_a, wed_str, owner_a)
+            wed_body = r.json()
+            assert wed_body["day_status"] == "closed_regular"
+            assert len(wed_body["staff_roster"]) == 1 and len(wed_body["table_roster"]) == 2, (
+                f"定休日でもrosterは返るはずが: {wed_body}"
+            )
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(ShopHours).filter(ShopHours.shop_id == shop_a, ShopHours.day_of_week == wed.weekday())
+                )
+                wed_hours = result.scalar_one()
+                wed_hours.is_closed = False
+                await session.commit()
+            print("L. rosterはday_statusに関わらず一貫して返る: OK")
+
+            await _clear(AsyncSessionLocal, Reservation, shop_a)
 
             print("\nALL BOOKING BOARD CHECKS PASSED")
 

@@ -304,6 +304,50 @@
         .board-sheet-row .value { text-align: right; font-weight: 600; }
         .board-sheet-phone-error { color: var(--error); font-size: 11px; display: block; margin-top: 4px; }
         .board-sheet-close-btn { display: block; margin: 14px auto 0; }
+        /* Resource Lane V1: 「すべて/担当者別/テーブル別」モード切替。
+           存在しないモード（Staff/ShopTableが0件）のボタンはJS側でhiddenクラスを
+           付与して非表示にする（Section15「存在しないmodeは表示しない」）。 */
+        .board-mode-toggle { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+        .board-mode-btn {
+            padding: 6px 14px; border-radius: 16px; font-size: 12px; font-weight: 700;
+            background: #f0f0f0; color: #888; border: none; font-family: inherit; cursor: pointer;
+        }
+        .board-mode-btn.active { background: #fff0e6; color: var(--primary-dark); }
+        .board-mode-btn.hidden { display: none; }
+        /* Resource Lane V1: 担当者別／テーブル別レーン表示。
+           時刻軸（左, sticky）・レーンヘッダー（上, sticky）・その交点（左上, sticky）を
+           CSS Gridの1レーン=1列として構成する（Section23-27）。列数はJSがレーン数に
+           合わせてstyle="grid-template-columns"を都度設定する。 */
+        .board-resource-scroll {
+            position: relative; border: var(--border); border-radius: 10px; overflow: auto;
+            max-height: 70vh; background: var(--white);
+        }
+        .board-resource-grid { position: relative; display: grid; }
+        .board-resource-corner {
+            grid-row: 1; grid-column: 1; position: sticky; top: 0; left: 0; z-index: 6; background: var(--white);
+            border-bottom: 1px solid #eee; border-right: 1px solid #eee;
+        }
+        .board-resource-lane-header {
+            grid-row: 1; position: sticky; top: 0; z-index: 5; background: var(--white);
+            border-bottom: 1px solid #eee; border-right: 1px solid #f5f5f5;
+            padding: 8px 6px; font-size: 12px; font-weight: 700; color: var(--dark);
+            text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .board-resource-lane-header.unassigned { color: #999; font-weight: 400; }
+        .board-resource-lane-header .board-resource-lane-capacity { display: block; font-size: 10px; color: #aaa; font-weight: 400; }
+        .board-resource-axis {
+            grid-row: 2; grid-column: 1; position: sticky; left: 0; z-index: 4; background: var(--white); border-right: 1px solid #eee;
+        }
+        .board-resource-body { grid-row: 2; grid-column: 2 / -1; position: relative; }
+        .board-resource-lane-col {
+            position: absolute; top: 0; bottom: 0; border-right: 1px solid #f5f5f5; box-sizing: border-box;
+        }
+        .board-cross-lane-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+        .board-cross-lane-overlay .board-now-line,
+        .board-cross-lane-overlay .board-break-block,
+        .board-cross-lane-overlay .board-day-separator { pointer-events: none; }
+        .board-resource-lane-col .board-block { z-index: 2; pointer-events: auto; }
+        .board-resource-empty-hint { color: #999; font-size: 12px; padding: 10px 4px; }
         /* Mobile Boarding: iPhone SE等の狭い画面でも「←日付→今日」が1行に
            収まるよう、狭幅では余白・フォントを詰める（大規模なレイアウト
            再設計はしない）。 */
@@ -1368,6 +1412,11 @@
                         <input type="date" id="board-date-picker" class="board-date-picker" aria-label="日付を選択">
                     </div>
                     <button type="button" class="btn-outline board-nav-btn" id="board-next-btn" aria-label="次の日">▶</button>
+                </div>
+                <div class="board-mode-toggle" id="board-mode-toggle">
+                    <button type="button" class="board-mode-btn active" id="board-mode-all-btn" data-mode="all">すべて</button>
+                    <button type="button" class="board-mode-btn hidden" id="board-mode-staff-btn" data-mode="staff">担当者別</button>
+                    <button type="button" class="board-mode-btn hidden" id="board-mode-table-btn" data-mode="table">テーブル別</button>
                 </div>
                 <div id="board-body"></div>
             </div>
@@ -3691,6 +3740,21 @@
         let boardTabInitialized = false;
         let boardSheetLastFocusedEl = null; // Bottom Sheetを閉じた時にフォーカスを戻す先
 
+        // ★★★ Resource Lane V1: 表示モード（'all' | 'staff' | 'table'）。
+        // DBへの保存やlocalStorageへの永続化は行わない（Section45「同一page
+        // session中だけ保持する程度で良い」）——このモジュールスコープの変数
+        // だけでページを開いている間だけ保持すれば十分。日付を切り替えても
+        // （boardSetDate/loadBoard経由では）このモードは一切リセットしない
+        // （Section46「date change時にmodeを勝手にリセットしない」）。
+        let boardMode = 'all';
+        let boardLastData = null; // 直近に取得済みのBoardレスポンス（モード切替時の再描画専用。新規fetchはしない）
+        // Resource Lane描画で使う定数。既存のBOARD_PX_PER_MINUTE（縦方向）とは
+        // 独立した「横方向のレーン幅」の単一の情報源。
+        const BOARD_RESOURCE_AXIS_WIDTH_PX = 54; // 既存の.board-laneのleft:54pxに合わせる
+        const BOARD_RESOURCE_LANE_WIDTH_PX = 132; // Section24の目安(120〜160px)の範囲内
+        const BOARD_RESOURCE_HEADER_HEIGHT_PX = 40;
+        const BOARD_UNASSIGNED_LANE_ID = "__unassigned__"; // null（未割当）を表す内部キー。実際のIDと衝突しない
+
         // 「今日」はRECEPTRA全体の基準（JST壁時計）に揃える。
         // new Date().toISOString().slice(0,10)（ブラウザのUTC基準）は使わない
         // ——JST深夜0時〜9時の間はUTCではまだ前日のため、日付がズレるバグになる
@@ -4004,10 +4068,22 @@
                 return;
             }
             if (myGeneration !== boardRequestGeneration) return;
+            // ★★★ Resource Lane V1: モード切替（すべて/担当者別/テーブル別）は
+            // 新しい通信を発生させず、直近に取得済みのBoardデータをそのまま
+            // 再描画するだけにする（同じ日付のデータはモードが変わっても
+            // 変化しないため）。日付を跨ぐ場合は必ずloadBoard()経由で新しい
+            // データを取得するため、古いboardLastDataを誤って別日付に使う
+            // ことはない。
+            boardLastData = data;
             _boardRenderBoard(data);
         }
 
         function _boardRenderBoard(data) {
+            // ★★★ Resource Lane V1: モード切替ボタンの表示可否・有効モードの
+            // フォールバックは、day_status（休業日等）に関わらず常に同じ
+            // ロスターに基づいて決める（Board APIは常にstaff_roster/
+            // table_rosterを返す）。
+            _boardUpdateModeToggle(data.staff_roster, data.table_roster);
             if (data.day_status === 'closed_temporary') {
                 const reason = data.closure_reason ? '（' + escapeHtml(data.closure_reason) + '）' : '';
                 _boardRenderState('empty', '臨時休業' + reason, false);
@@ -4037,8 +4113,85 @@
                 '<p class="board-hours-summary">営業時間 ' + escapeHtml(hoursLabel) + '　予約 ' + activeCount + '件</p>' +
                 '<div id="board-next-reservation"></div>' +
                 '</div>' +
-                '<div class="board-timeline-wrap" id="board-timeline-wrap"><div class="board-timeline" id="board-timeline"></div></div>';
+                (boardMode === 'all'
+                    ? '<div class="board-timeline-wrap" id="board-timeline-wrap"><div class="board-timeline" id="board-timeline"></div></div>'
+                    : '<div class="board-resource-scroll" id="board-resource-scroll"><div class="board-resource-grid" id="board-resource-grid"></div></div>');
             _boardRenderTimeline(data);
+        }
+
+        // Resource Lane V1: 予約1件分のブロックHTML（時刻・客名・ステータス・
+        // staff/service/人数の情報密度含む）を作る共通関数。「すべて」モードの
+        // 単一laneでも、担当者別/テーブル別の各lane内でも、全く同じロジックで
+        // 描画する（表示ロジックの二重管理を避けるための抽出。V1.1で確立した
+        // 情報密度ルール自体は一切変更していない）。
+        function _boardBuildBlockHtml(r) {
+            const top = r._startOffset * BOARD_PX_PER_MINUTE;
+            const height = Math.max(r.effective_duration_minutes * BOARD_PX_PER_MINUTE, BOARD_MIN_BLOCK_HEIGHT_PX);
+            const widthPct = 100 / r._colCount;
+            const leftPct = r._col * widthPct;
+            const startCoord = r._absStart;
+            const endCoord = startCoord + r.effective_duration_minutes;
+            const startLabel = _boardWallClockLabel(startCoord);
+            const endLabel = _boardWallClockLabel(endCoord);
+            // Section18/19: 3列以上に詰まっている、または高さが低い予約は
+            // 情報を間引く（「時刻・顧客名」だけは必ず判別できるようにする）。
+            const isCompact = (r._colCount >= 3) || (height < BOARD_COMPACT_HEIGHT_THRESHOLD_PX);
+            const timeText = isCompact ? startLabel : (startLabel + '〜' + endLabel);
+            const statusLabel = STATUS_LABELS[r.status] || r.status;
+            const extraBits = [];
+            if (!isCompact) {
+                if (r.staff_name) extraBits.push(escapeHtml(r.staff_name));
+                if (r.service_name) extraBits.push(escapeHtml(r.service_name));
+                if (r.number_of_people) extraBits.push(r.number_of_people + '名');
+            }
+            return '<div class="board-block status-' + escapeHtml(r.status) + (isCompact ? ' narrow' : '') + '" data-id="' + escapeHtml(r.id) +
+                '" tabindex="0" role="button" style="top:' + top + 'px; height:' + height + 'px; left:' + leftPct + '%; width:calc(' + widthPct + '% - 4px);">' +
+                (isCompact ? '' : '<span class="board-block-status-badge">' + escapeHtml(statusLabel) + '</span>') +
+                '<span class="board-block-time">' + timeText + '</span>' +
+                '<span class="board-block-name">' + escapeHtml(r.guest_name || '(お名前未登録)') + '</span>' +
+                (extraBits.length ? '<span class="board-block-extra">' + extraBits.join('・') + '</span>' : '') +
+                '</div>';
+        }
+
+        // Resource Lane V1: 予約配列 + ロスターから、レーンの配列を組み立てる
+        // 純粋関数（Section37/38）。DOMは一切触らない。
+        // mode: 'staff' | 'table'。戻り値: [{id, label, reservations: [...]}]
+        // 最後の要素は必ず{id: null, label: '未割当', reservations: [...]}
+        // （0件でも常に含める。Section18「非常に重要。消さない」）。
+        function _boardBuildResourceLanes(mode, visibleReservations, staffRoster, tableRoster) {
+            const roster = mode === 'staff' ? (staffRoster || []) : (tableRoster || []);
+            const idKey = mode === 'staff' ? 'staff_id' : 'table_id';
+            const nameFallbackKey = mode === 'staff' ? 'staff_name' : 'table_name';
+
+            const lanesById = {};
+            const laneOrder = [];
+            // Section39: 安定順序はロスターの並び順（バックエンドのsort_order/
+            // display_order）をそのまま使う。フロントエンドで独自に並べ替えない。
+            roster.forEach(function (res) {
+                lanesById[res.id] = { id: res.id, label: res.name, reservations: [] };
+                laneOrder.push(res.id);
+            });
+
+            visibleReservations.forEach(function (r) {
+                const resId = r[idKey];
+                if (resId === null || resId === undefined) return; // 未割当は最後にまとめて処理
+                if (!lanesById[resId]) {
+                    // Section40: ロスターに存在しない（無効化・削除等）が実際には
+                    // 割り当てられている予約を消さない。その予約自身が持つ名前で
+                    // 追加のレーンを作る（順序はreservationsの出現順=既に日時昇順
+                    // のため決定的）。
+                    lanesById[resId] = { id: resId, label: r[nameFallbackKey] || '(不明)', reservations: [] };
+                    laneOrder.push(resId);
+                }
+                lanesById[resId].reservations.push(r);
+            });
+
+            const lanes = laneOrder.map(function (id) { return lanesById[id]; });
+            const unassignedReservations = visibleReservations.filter(function (r) {
+                return r[idKey] === null || r[idKey] === undefined;
+            });
+            lanes.push({ id: null, label: '未割当', reservations: unassignedReservations });
+            return lanes;
         }
 
         function _boardRenderTimeline(data) {
@@ -4048,62 +4201,10 @@
             const totalMinutes = sessionEndCoord - sessionStartCoord;
             const totalHeight = Math.max(totalMinutes * BOARD_PX_PER_MINUTE, 40);
 
-            const timeline = document.getElementById('board-timeline');
-            timeline.style.height = totalHeight + 'px';
-
-            let html = '';
-
-            // 30分刻みの罫線は推奨だが、視認性を優先しV1では1時間ラベルのみ描画する
-            // （仕様書Section34「1時間ラベルでも可」の許容範囲内）。ラベルは
-            // 24:00/25:00にはせず、普通の時計表記に折り返す（V1.1 Section3/4）。
-            const marks = _boardBuildHourMarks(sessionStartParts, totalMinutes);
-            marks.forEach(function (mk) {
-                const top = mk.offset * BOARD_PX_PER_MINUTE;
-                html += '<div class="board-hour-row" style="top:' + top + 'px;"><span class="board-hour-label">' + mk.label + '</span></div>';
-            });
-
-            // 「翌日」区切り線（Section5）。タイムライン自体は分割しない
-            // ——1本の連続したセッションのまま、区切りは視覚的な目印だけ。
-            const boundaryOffset = _boardComputeNextDayBoundaryOffset(sessionStartParts, totalMinutes);
-            if (boundaryOffset !== null) {
-                const nextDayDateStr = _boardAddDays(data.date, 1);
-                const top = boundaryOffset * BOARD_PX_PER_MINUTE;
-                html += '<div class="board-day-separator" style="top:' + top + 'px;">' +
-                    '<span class="board-day-separator-label">翌日 ' + escapeHtml(_boardFormatShortDateLabel(nextDayDateStr)) + '</span></div>';
-            }
-
-            html += '<div class="board-lane" id="board-lane"></div>';
-            timeline.innerHTML = html;
-
-            const lane = document.getElementById('board-lane');
-            let laneHtml = '';
-
-            // 休憩時間（Reservation Intelligence Phase D-2の既存データをそのまま
-            // 表示するだけ。重なり判定・営業可否判定はここでは一切行わない）。
-            // ラベルはバックエンドが返す素の"HH:MM"文字列をそのまま使う
-            // （日跨ぎでも常にその時刻自体の値であり、25:00等には決してならない）。
-            (data.break_times || []).forEach(function (bt) {
-                const startDateStr = bt.start_next_day ? _boardAddDays(data.date, 1) : data.date;
-                const endDateStr = bt.end_next_day ? _boardAddDays(data.date, 1) : data.date;
-                const startCoord = _boardMinutesCoord({
-                    y: _boardParseDateParts(startDateStr).y, mo: _boardParseDateParts(startDateStr).mo, d: _boardParseDateParts(startDateStr).d,
-                    h: parseInt(bt.start_time.split(':')[0], 10), mi: parseInt(bt.start_time.split(':')[1], 10),
-                });
-                const endCoord = _boardMinutesCoord({
-                    y: _boardParseDateParts(endDateStr).y, mo: _boardParseDateParts(endDateStr).mo, d: _boardParseDateParts(endDateStr).d,
-                    h: parseInt(bt.end_time.split(':')[0], 10), mi: parseInt(bt.end_time.split(':')[1], 10),
-                });
-                const top = (startCoord - sessionStartCoord) * BOARD_PX_PER_MINUTE;
-                const height = Math.max((endCoord - startCoord) * BOARD_PX_PER_MINUTE, 16);
-                const startLabel = _boardStripLeadingZeroHour(bt.start_time);
-                const endLabel = _boardStripLeadingZeroHour(bt.end_time);
-                laneHtml += '<div class="board-break-block" style="top:' + top + 'px; height:' + height + 'px; left:0; width:100%;">' +
-                    '<span class="board-break-label">休憩 ' + escapeHtml(startLabel) + '〜' + escapeHtml(endLabel) + '</span></div>';
-            });
-
-            // 予約ブロック。キャンセル済みはV1では非表示にする（既存の「一覧」タブで
-            // ステータスフィルタから確認可能。仕様書Section25/30「V1は非表示維持」に
-            // 基づく判断）。
+            // 予約ブロックの座標付与・キャンセル除外はモードに関わらず共通
+            // （キャンセル済みはV1では非表示。既存の「一覧」タブでステータス
+            // フィルタから確認可能。仕様書Section25/30「V1は非表示維持」に基づく
+            // 判断。Resource Lane V1でも変更しない）。
             const visibleReservations = data.reservations.filter(function (r) { return r.status !== 'cancelled'; });
             visibleReservations.forEach(function (r) {
                 const startCoord = _boardMinutesCoordFromIso(r.reservation_date);
@@ -4111,63 +4212,26 @@
                 r._endOffset = r._startOffset + r.effective_duration_minutes;
                 r._absStart = startCoord;
             });
-            const layouted = _boardComputeLayout(visibleReservations);
 
-            layouted.forEach(function (r) {
-                const top = r._startOffset * BOARD_PX_PER_MINUTE;
-                const height = Math.max(r.effective_duration_minutes * BOARD_PX_PER_MINUTE, BOARD_MIN_BLOCK_HEIGHT_PX);
-                const widthPct = 100 / r._colCount;
-                const leftPct = r._col * widthPct;
-                const startCoord = r._absStart;
-                const endCoord = startCoord + r.effective_duration_minutes;
-                const startLabel = _boardWallClockLabel(startCoord);
-                const endLabel = _boardWallClockLabel(endCoord);
-                // Section18/19: 3列以上に詰まっている、または高さが低い予約は
-                // 情報を間引く（「時刻・顧客名」だけは必ず判別できるようにする）。
-                const isCompact = (r._colCount >= 3) || (height < BOARD_COMPACT_HEIGHT_THRESHOLD_PX);
-                const timeText = isCompact ? startLabel : (startLabel + '〜' + endLabel);
-                const statusLabel = STATUS_LABELS[r.status] || r.status;
-                const extraBits = [];
-                if (!isCompact) {
-                    if (r.staff_name) extraBits.push(escapeHtml(r.staff_name));
-                    if (r.service_name) extraBits.push(escapeHtml(r.service_name));
-                    if (r.number_of_people) extraBits.push(r.number_of_people + '名');
-                }
-                laneHtml += '<div class="board-block status-' + escapeHtml(r.status) + (isCompact ? ' narrow' : '') + '" data-id="' + escapeHtml(r.id) +
-                    '" tabindex="0" role="button" style="top:' + top + 'px; height:' + height + 'px; left:' + leftPct + '%; width:calc(' + widthPct + '% - 4px);">' +
-                    (isCompact ? '' : '<span class="board-block-status-badge">' + escapeHtml(statusLabel) + '</span>') +
-                    '<span class="board-block-time">' + timeText + '</span>' +
-                    '<span class="board-block-name">' + escapeHtml(r.guest_name || '(お名前未登録)') + '</span>' +
-                    (extraBits.length ? '<span class="board-block-extra">' + extraBits.join('・') + '</span>' : '') +
-                    '</div>';
-            });
-
-            lane.innerHTML = laneHtml;
-            lane.querySelectorAll('.board-block').forEach(function (block) {
-                const item = visibleReservations.find(function (r) { return r.id === block.dataset.id; });
-                if (!item) return;
-                block.addEventListener('click', function () { _boardOpenDetail(item); });
-                block.addEventListener('keydown', function (e) {
-                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _boardOpenDetail(item); }
-                });
-            });
+            // 30分刻みの罫線は推奨だが、視認性を優先しV1では1時間ラベルのみ描画する
+            // （仕様書Section34「1時間ラベルでも可」の許容範囲内）。ラベルは
+            // 24:00/25:00にはせず、普通の時計表記に折り返す（V1.1 Section3/4）。
+            const marks = _boardBuildHourMarks(sessionStartParts, totalMinutes);
+            // 「翌日」区切り線（Section5）。タイムライン自体は分割しない
+            // ——1本の連続したセッションのまま、区切りは視覚的な目印だけ。
+            const boundaryOffset = _boardComputeNextDayBoundaryOffset(sessionStartParts, totalMinutes);
 
             // 現在時刻インジケーター・次の予約・auto scrollの着地点は、すべて
             // _boardComputeTimelineTimeState()という1つの純粋関数の結果に従う
-            // （Section9/10/11/12/13。「今日」以外の日付では何も表示しない）。
+            // （Section9/10/11/12/13。「今日」以外の日付では何も表示しない。
+            // Resource Lane modeでも同じ関数・同じ結果を使う——Section28
+            // 「Resource Lane modeでもcurrent time indicatorを表示」）。
             const nowCoord = _boardMinutesCoord(_boardGetNowJSTParts());
             const timeState = _boardComputeTimelineTimeState({
                 viewedDate: boardActiveDate, todayDate: _receptraTodayJST(),
                 sessionStartCoord: sessionStartCoord, sessionEndCoord: sessionEndCoord,
                 nowCoord: nowCoord, reservations: visibleReservations,
             });
-
-            if (timeState.nowOffset !== null) {
-                const nowTop = timeState.nowOffset * BOARD_PX_PER_MINUTE;
-                const nowLabel = _boardWallClockLabel(nowCoord);
-                lane.insertAdjacentHTML('beforeend',
-                    '<div class="board-now-line" style="top:' + nowTop + 'px;"><span class="board-now-line-label">' + escapeHtml(nowLabel) + ' 現在</span></div>');
-            }
 
             const nextResEl = document.getElementById('board-next-reservation');
             if (nextResEl) {
@@ -4184,14 +4248,211 @@
                 }
             }
 
+            const ctx = {
+                sessionStartParts: sessionStartParts, sessionStartCoord: sessionStartCoord, sessionEndCoord: sessionEndCoord,
+                totalMinutes: totalMinutes, totalHeight: totalHeight, marks: marks, boundaryOffset: boundaryOffset,
+                visibleReservations: visibleReservations, nowCoord: nowCoord, timeState: timeState,
+            };
+
+            if (boardMode === 'all') {
+                _boardRenderAllModeTimeline(data, ctx);
+            } else {
+                _boardRenderResourceLaneTimeline(data, ctx);
+            }
+        }
+
+        // 従来（V1/V1.1）の「すべて」モード: 単一laneに全予約を重ね描画する。
+        // Resource Lane V1導入前と全く同じロジック（共通化した_boardBuildBlockHtml
+        // 呼び出しに置き換えた以外は無変更）。
+        function _boardRenderAllModeTimeline(data, ctx) {
+            const timeline = document.getElementById('board-timeline');
+            timeline.style.height = ctx.totalHeight + 'px';
+
+            let html = '';
+            ctx.marks.forEach(function (mk) {
+                const top = mk.offset * BOARD_PX_PER_MINUTE;
+                html += '<div class="board-hour-row" style="top:' + top + 'px;"><span class="board-hour-label">' + mk.label + '</span></div>';
+            });
+            if (ctx.boundaryOffset !== null) {
+                const nextDayDateStr = _boardAddDays(data.date, 1);
+                const top = ctx.boundaryOffset * BOARD_PX_PER_MINUTE;
+                html += '<div class="board-day-separator" style="top:' + top + 'px;">' +
+                    '<span class="board-day-separator-label">翌日 ' + escapeHtml(_boardFormatShortDateLabel(nextDayDateStr)) + '</span></div>';
+            }
+
+            html += '<div class="board-lane" id="board-lane"></div>';
+            timeline.innerHTML = html;
+
+            const lane = document.getElementById('board-lane');
+            let laneHtml = '';
+
+            // 休憩時間（Reservation Intelligence Phase D-2の既存データをそのまま
+            // 表示するだけ。重なり判定・営業可否判定はここでは一切行わない）。
+            // ラベルはバックエンドが返す素の"HH:MM"文字列をそのまま使う
+            // （日跨ぎでも常にその時刻自体の値であり、25:00等には決してならない）。
+            (data.break_times || []).forEach(function (bt) {
+                laneHtml += _boardBuildBreakBlockHtml(bt, data.date, ctx.sessionStartCoord);
+            });
+
+            const layouted = _boardComputeLayout(ctx.visibleReservations);
+            layouted.forEach(function (r) { laneHtml += _boardBuildBlockHtml(r); });
+
+            lane.innerHTML = laneHtml;
+            lane.querySelectorAll('.board-block').forEach(function (block) {
+                const item = ctx.visibleReservations.find(function (r) { return r.id === block.dataset.id; });
+                if (!item) return;
+                block.addEventListener('click', function () { _boardOpenDetail(item); });
+                block.addEventListener('keydown', function (e) {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _boardOpenDetail(item); }
+                });
+            });
+
+            if (ctx.timeState.nowOffset !== null) {
+                const nowTop = ctx.timeState.nowOffset * BOARD_PX_PER_MINUTE;
+                const nowLabel = _boardWallClockLabel(ctx.nowCoord);
+                lane.insertAdjacentHTML('beforeend',
+                    '<div class="board-now-line" style="top:' + nowTop + 'px;"><span class="board-now-line-label">' + escapeHtml(nowLabel) + ' 現在</span></div>');
+            }
+
             // Auto Scroll（Section13/14）: 初回描画（＝日付切り替え時）だけの
             // タイミングで行う。_boardRenderTimelineはloadBoard経由でのみ呼ばれる
             // ため、ユーザーが手動scrollした後に毎回scroll位置を強制的に戻す
             // ことはない。
-            if (timeState.autoScrollTarget) {
+            if (ctx.timeState.autoScrollTarget) {
                 const wrap = document.getElementById('board-timeline-wrap');
-                wrap.scrollTop = Math.max(timeState.autoScrollTarget.offset * BOARD_PX_PER_MINUTE - 80, 0);
+                wrap.scrollTop = Math.max(ctx.timeState.autoScrollTarget.offset * BOARD_PX_PER_MINUTE - 80, 0);
             }
+        }
+
+        // 休憩時間1件分のHTML（top/heightの計算含む）。「すべて」モードのlaneでも
+        // Resource Laneの全レーン横断overlayでも同じ見た目・同じ計算を使う。
+        function _boardBuildBreakBlockHtml(bt, baseDateStr, sessionStartCoord) {
+            const startDateStr = bt.start_next_day ? _boardAddDays(baseDateStr, 1) : baseDateStr;
+            const endDateStr = bt.end_next_day ? _boardAddDays(baseDateStr, 1) : baseDateStr;
+            const startCoord = _boardMinutesCoord({
+                y: _boardParseDateParts(startDateStr).y, mo: _boardParseDateParts(startDateStr).mo, d: _boardParseDateParts(startDateStr).d,
+                h: parseInt(bt.start_time.split(':')[0], 10), mi: parseInt(bt.start_time.split(':')[1], 10),
+            });
+            const endCoord = _boardMinutesCoord({
+                y: _boardParseDateParts(endDateStr).y, mo: _boardParseDateParts(endDateStr).mo, d: _boardParseDateParts(endDateStr).d,
+                h: parseInt(bt.end_time.split(':')[0], 10), mi: parseInt(bt.end_time.split(':')[1], 10),
+            });
+            const top = (startCoord - sessionStartCoord) * BOARD_PX_PER_MINUTE;
+            const height = Math.max((endCoord - startCoord) * BOARD_PX_PER_MINUTE, 16);
+            const startLabel = _boardStripLeadingZeroHour(bt.start_time);
+            const endLabel = _boardStripLeadingZeroHour(bt.end_time);
+            return '<div class="board-break-block" style="top:' + top + 'px; height:' + height + 'px; left:0; width:100%;">' +
+                '<span class="board-break-label">休憩 ' + escapeHtml(startLabel) + '〜' + escapeHtml(endLabel) + '</span></div>';
+        }
+
+        // Resource Lane V1: 担当者別/テーブル別モードの描画。時刻軸（左, sticky）・
+        // レーンヘッダー（上, sticky）・その交点（左上, sticky）をCSS Gridで構成する
+        // （Section23-27）。休憩・現在時刻はレーンを横断する1本のoverlayとして
+        // 描画する（Section28/29）。既存collision algorithm（_boardComputeLayout）は
+        // 一切変更せず、レーンごとに個別に呼び出すだけ（Section34-37）。
+        function _boardRenderResourceLaneTimeline(data, ctx) {
+            const grid = document.getElementById('board-resource-grid');
+            const lanes = _boardBuildResourceLanes(boardMode, ctx.visibleReservations, data.staff_roster, data.table_roster);
+            lanes.forEach(function (lane) { _boardComputeLayout(lane.reservations); });
+
+            const laneCount = lanes.length;
+            grid.style.gridTemplateColumns = BOARD_RESOURCE_AXIS_WIDTH_PX + 'px repeat(' + laneCount + ', ' + BOARD_RESOURCE_LANE_WIDTH_PX + 'px)';
+            grid.style.gridTemplateRows = BOARD_RESOURCE_HEADER_HEIGHT_PX + 'px ' + ctx.totalHeight + 'px';
+            grid.style.width = (BOARD_RESOURCE_AXIS_WIDTH_PX + laneCount * BOARD_RESOURCE_LANE_WIDTH_PX) + 'px';
+
+            let html = '<div class="board-resource-corner"></div>';
+            lanes.forEach(function (lane, i) {
+                const isUnassigned = lane.id === null;
+                html += '<div class="board-resource-lane-header' + (isUnassigned ? ' unassigned' : '') + '" style="grid-column:' + (i + 2) + ';">' +
+                    escapeHtml(lane.label) + '</div>';
+            });
+
+            // 時刻軸（左, sticky）: 「すべて」モードと同じ_boardBuildHourMarksの結果を
+            // そのまま再利用する（時計表記の折り返し・翌日区切りラベルの位置も同一）。
+            let axisHtml = '';
+            ctx.marks.forEach(function (mk) {
+                const top = mk.offset * BOARD_PX_PER_MINUTE;
+                axisHtml += '<div class="board-hour-row" style="top:' + top + 'px;"><span class="board-hour-label">' + mk.label + '</span></div>';
+            });
+            html += '<div class="board-resource-axis" style="height:' + ctx.totalHeight + 'px;">' + axisHtml + '</div>';
+
+            // レーン本体（右側全体を1つのgridセルにまとめ、内部でabsolute配置する）。
+            let overlayHtml = '';
+            if (ctx.boundaryOffset !== null) {
+                const nextDayDateStr = _boardAddDays(data.date, 1);
+                const top = ctx.boundaryOffset * BOARD_PX_PER_MINUTE;
+                overlayHtml += '<div class="board-day-separator" style="top:' + top + 'px;">' +
+                    '<span class="board-day-separator-label">翌日 ' + escapeHtml(_boardFormatShortDateLabel(nextDayDateStr)) + '</span></div>';
+            }
+            // 休憩時間（Section29: 店舗全体の休憩は全レーンを横断するbandとして表示）。
+            (data.break_times || []).forEach(function (bt) {
+                overlayHtml += _boardBuildBreakBlockHtml(bt, data.date, ctx.sessionStartCoord);
+            });
+            // 現在時刻インジケーター（Section28: 全laneを横断する1本のline）。
+            if (ctx.timeState.nowOffset !== null) {
+                const nowTop = ctx.timeState.nowOffset * BOARD_PX_PER_MINUTE;
+                const nowLabel = _boardWallClockLabel(ctx.nowCoord);
+                overlayHtml += '<div class="board-now-line" style="top:' + nowTop + 'px;"><span class="board-now-line-label">' + escapeHtml(nowLabel) + ' 現在</span></div>';
+            }
+
+            let bodyHtml = '<div class="board-cross-lane-overlay" style="height:' + ctx.totalHeight + 'px;">' + overlayHtml + '</div>';
+            lanes.forEach(function (lane, i) {
+                const left = i * BOARD_RESOURCE_LANE_WIDTH_PX;
+                let colHtml = '';
+                lane.reservations.forEach(function (r) { colHtml += _boardBuildBlockHtml(r); });
+                bodyHtml += '<div class="board-resource-lane-col" style="left:' + left + 'px; width:' + BOARD_RESOURCE_LANE_WIDTH_PX + 'px; height:' + ctx.totalHeight + 'px;">' +
+                    colHtml + '</div>';
+            });
+            html += '<div class="board-resource-body" style="height:' + ctx.totalHeight + 'px;">' + bodyHtml + '</div>';
+
+            grid.innerHTML = html;
+            grid.querySelectorAll('.board-block').forEach(function (block) {
+                const item = ctx.visibleReservations.find(function (r) { return r.id === block.dataset.id; });
+                if (!item) return;
+                block.addEventListener('click', function () { _boardOpenDetail(item); });
+                block.addEventListener('keydown', function (e) {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _boardOpenDetail(item); }
+                });
+            });
+
+            // Auto Scroll: 縦方向は「すべて」モードと同じ考え方（現在時刻/最初の予約/
+            // 最後の予約に自動スクロール）。横方向は初期スクロール不要（左端=時刻軸を
+            // 基準に、常に左端から見えるようにする。Section23「Desktopの巨大calendarを
+            // iPhoneへ縮小しない」——横に長くなること自体は許容し、横scrollで対応する）。
+            if (ctx.timeState.autoScrollTarget) {
+                const wrap = document.getElementById('board-resource-scroll');
+                wrap.scrollTop = Math.max(ctx.timeState.autoScrollTarget.offset * BOARD_PX_PER_MINUTE + BOARD_RESOURCE_HEADER_HEIGHT_PX - 80, 0);
+            }
+        }
+
+        // Resource Lane V1: モード切替ボタンの表示可否・押下時の見た目更新。
+        // 存在しないモード（ロスター0件）は非表示にする（Section15）。現在選択中の
+        // モードのロスターが0件になった場合は「すべて」へフォールバックする
+        // （Section48「モード自体を非表示にできるならそちらを優先」）。
+        function _boardUpdateModeToggle(staffRoster, tableRoster) {
+            const staffBtn = document.getElementById('board-mode-staff-btn');
+            const tableBtn = document.getElementById('board-mode-table-btn');
+            const allBtn = document.getElementById('board-mode-all-btn');
+            const hasStaff = !!(staffRoster && staffRoster.length);
+            const hasTable = !!(tableRoster && tableRoster.length);
+            staffBtn.classList.toggle('hidden', !hasStaff);
+            tableBtn.classList.toggle('hidden', !hasTable);
+            if ((boardMode === 'staff' && !hasStaff) || (boardMode === 'table' && !hasTable)) {
+                boardMode = 'all';
+            }
+            allBtn.classList.toggle('active', boardMode === 'all');
+            staffBtn.classList.toggle('active', boardMode === 'staff');
+            tableBtn.classList.toggle('active', boardMode === 'table');
+        }
+
+        // モードボタン押下: 新しい通信は発生させず、直近のBoardデータをそのまま
+        // 再描画するだけ（Section46「date change時にmodeを勝手にリセットしない」の
+        // 裏返しとして、mode変更時もdateは変えない。同じ日付のデータはモードが
+        // 変わっても変化しないため再フェッチ不要）。
+        function _boardSetMode(mode) {
+            if (mode === boardMode) return;
+            boardMode = mode;
+            if (boardLastData) _boardRenderBoard(boardLastData);
         }
 
         // "HH:MM"形式の文字列の時だけ0埋めを外す（例:"00:30"->"0:30"、
@@ -4306,6 +4567,9 @@
         });
         document.getElementById('board-date-picker').addEventListener('change', function (e) {
             if (e.target.value) boardSetDate(e.target.value);
+        });
+        document.querySelectorAll('.board-mode-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () { _boardSetMode(btn.dataset.mode); });
         });
         document.getElementById('board-sheet-close-btn').addEventListener('click', _boardCloseDetail);
         document.getElementById('board-sheet-overlay').addEventListener('click', _boardCloseDetail);
