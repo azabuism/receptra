@@ -33,6 +33,25 @@ class Reservation(Base):
     user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)  # ログイン中のプラットフォームアカウント（マイページの「よく行く店」集計に使用）
     staff_id = Column(String(36), ForeignKey("staff.id"), nullable=True)  # スタッフ指名（オプション）
     table_id = Column(String(36), ForeignKey("shop_tables.id"), nullable=True)  # 割り当てられたテーブル
+    # ★★★ Generic Resource Foundation Phase R2: この予約に割り当てられた
+    # 汎用リソース（Resource。美容室のチェア・整体のベッド・ホテルの部屋・
+    # レンタカーの車両・カラオケルーム・教室等）。R2ではデータ層の関連付け
+    # 基盤のみを追加し、以下は意図的に一切行っていない（Phase R2完了報告参照）:
+    # - availability engine（check_availability/create_reservation/
+    #   get_availability）による自動割当・空き判定への統合
+    # - Owner/Customer/Realtime AIがresource_idを指定できる書き込みAPI
+    # - update_reservation()でのresource_id再割当
+    # - Booking Board（Resource Lane）・Week Viewへの表示
+    # そのためR2完了時点では、この列は既存の全予約行・新規作成される
+    # 全予約行を含め、常にNULLのままである。
+    #
+    # staff_id/table_idと同じ「DB制約なしの独立したnullable FK列」として
+    # 追加する（Reservation Intelligence Architecture Audit Phase R2で
+    # 検討済み: 将来、美容室のStaff+Chair・整体のPractitioner+Bed等、
+    # staff_idとresource_idを同一行に同時に設定する必要が生じた場合も、
+    # この形であればスキーマ変更なしにそのまま対応できる。「必ず1つだけ」
+    # を強制するCHECK制約は将来の同時割当を壊すため、意図的に追加しない）。
+    resource_id = Column(String(36), ForeignKey("resources.id"), nullable=True, index=True)
     service_id = Column(String(36), ForeignKey("services.id"), nullable=True, index=True)  # 予約対象のサービス（美容院・クリニックなど、サービス単位で予約する業種の場合）
     coupon_id = Column(String(36), ForeignKey("coupons.id"), nullable=True, index=True)  # 予約時に適用されたクーポン（オプション）
 
@@ -118,6 +137,12 @@ class Reservation(Base):
     customer = relationship("Customer", back_populates="reservations")
     staff = relationship("Staff", back_populates="reservations", foreign_keys=[staff_id])
     table = relationship("ShopTable")
+    # Generic Resource Foundation Phase R2: 上のresource_id列に対応する
+    # ORM relationship。Resource側には逆参照（reservations）を持たせない
+    # （shop_tables.py/staff.pyのdelete safetyヘルパーも、Reservationへの
+    # 逆participationではなく素朴なselect+filterで済ませている既存規約に
+    # 合わせ、双方向relationshipを不必要に増やさない）。
+    resource = relationship("Resource", foreign_keys=[resource_id])
     service = relationship("Service", foreign_keys=[service_id])
     coupon = relationship("Coupon", foreign_keys=[coupon_id])
 
@@ -135,6 +160,11 @@ class Reservation(Base):
         Index("ix_reservations_status", "status"),
         Index("ix_reservations_staff", "staff_id"),
         Index("ix_reservations_user", "user_id"),
+        # Generic Resource Foundation Phase R2: table_idにindexが無いという
+        # 既存のギャップ（Architecture Audit Phase R1で発見済み）をここでは
+        # 繰り返さない。table_id index追加自体は本フェーズのスコープ外
+        # （scope creep禁止。Section29）。
+        Index("ix_reservations_resource", "resource_id"),
     )
 
     def __repr__(self):

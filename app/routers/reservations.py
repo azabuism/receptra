@@ -108,6 +108,11 @@ def _to_response(reservation: Reservation) -> ReservationResponse:
         customer_id=reservation.customer_id,
         table_id=reservation.table_id,
         table_name=(reservation.table.name if reservation.table else None),
+        # Generic Resource Foundation Phase R2: table_id/table_nameと同じ
+        # additiveパターン。R2完了時点ではresource_idは常にNoneのため、
+        # ここも常にNoneを返す（Phase R3以降で実際に値が入る想定）。
+        resource_id=reservation.resource_id,
+        resource_name=(reservation.resource.name if reservation.resource else None),
         service_id=reservation.service_id,
         service_name=(reservation.service.name if reservation.service else None),
         staff_id=reservation.staff_id,
@@ -1586,7 +1591,7 @@ async def create_reservation(
             raise _http_error(500, f"予約作成に失敗しました: {ie}", reason_code="temporarily_unavailable")
 
         result = await db.execute(
-            select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon)).filter(Reservation.id == reservation_id)
+            select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon), selectinload(Reservation.resource)).filter(Reservation.id == reservation_id)
         )
         reservation = result.scalar_one()
 
@@ -1640,7 +1645,7 @@ async def get_reservation(
     # 再利用する（大規模API追加を避けるための最小限の変更）。呼び出し元が
     # 存在しなかったため、この変更による既存挙動への影響は無い。
     result = await db.execute(
-        select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon)).filter(Reservation.id == reservation_id)
+        select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon), selectinload(Reservation.resource)).filter(Reservation.id == reservation_id)
     )
     reservation = result.scalar_one_or_none()
     if not reservation:
@@ -1675,7 +1680,7 @@ async def get_shop_reservations(
     if shop.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="この店舗の予約を閲覧する権限がありません")
 
-    stmt = select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon)).filter(Reservation.shop_id == shop_id)
+    stmt = select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon), selectinload(Reservation.resource)).filter(Reservation.shop_id == shop_id)
     if status:
         stmt = stmt.filter(Reservation.status == status.lower())
 
@@ -2024,7 +2029,7 @@ async def update_reservation(
         # 二重解放を防ぐため、予約行をFOR UPDATEでロックする。
         result = await db.execute(
             select(Reservation)
-            .options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon))
+            .options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon), selectinload(Reservation.resource))
             .filter(Reservation.id == reservation_id)
             .with_for_update()
         )
@@ -2180,7 +2185,7 @@ async def update_reservation(
 
         reservation.updated_at = datetime.utcnow()
         await db.commit()
-        await db.refresh(reservation, attribute_names=["table", "staff", "service", "coupon"])
+        await db.refresh(reservation, attribute_names=["table", "staff", "service", "coupon", "resource"])
 
         return _to_response(reservation)
 

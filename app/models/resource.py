@@ -14,15 +14,24 @@ Resource (予約リソース) モデル — Generic Resource Foundation Phase R1
   （どちらを使うかは店舗のbusiness_type/categoryで一意に決まる想定）は
   API/フロントエンド側の責務であり、本モデル自体には持たせない。
 
-- Phase R1では「安全なデータ基盤」のみを作る。Reservationモデルへの
+- Phase R1では「安全なデータ基盤」のみを作った（Reservationモデルへの
   resource_id列の追加、availability engine（check_availability/
   create_reservation/get_availability）との統合、Realtime Tool・Booking
-  Board・Week Viewへの統合は、いずれも意図的にこのフェーズでは行わない
-  （将来のPhase R2以降で段階的に追加する）。そのため現時点でResourceに
-  紐づくReservationは存在せず、削除時の「今後の有効な予約」チェックは
-  まだ実装しない（将来Reservation Integration Phaseで、
-  shop_tables.py の _find_future_active_table_reservations() と同型の
-  ヘルパーを追加する想定）。
+  Board・Week Viewへの統合は、いずれも意図的にR1では行わなかった）。
+
+- ★★★ Phase R2（Reservation ↔ Resource Association Foundation）で
+  Reservation.resource_id（nullable FK、CHECK制約なし。Option B1採用。
+  詳細はapp/models/reservation.pyのresource_id列のコメント参照）を追加した。
+  ただしR2でも以下は意図的に一切行っていない: availability engineによる
+  自動割当・空き判定への統合、Owner/Customer/Realtime AIがresource_idを
+  指定できる書き込みAPI、update_reservation()でのresource_id再割当、
+  Booking Board（Resource Lane）・Week Viewへの表示。そのためR2完了時点
+  でも実際にresource_idが設定された予約は存在しない（テストではORM経由
+  でのみ紐付ける）。
+  Phase R2でResourceの削除に「今後の有効な予約」チェックが追加された
+  （app/routers/shop_resources.pyの_find_future_active_resource_reservations()。
+  shop_tables.py の _find_future_active_table_reservations() と全く同じ
+  status/日時の定義を再利用）。
 
 - resource_type はDB enumにしない（将来の種別追加でmigrationを要求
   しないため）。DB列としてはString(50)の自由文字列で持ち、許可される

@@ -45,6 +45,13 @@ class ReservationResponse(BaseModel):
     customer_id: Optional[str] = None
     table_id: Optional[str] = None
     table_name: Optional[str] = None
+    # ★★★ Generic Resource Foundation Phase R2: table_id/table_nameと同じ
+    # additiveパターンでresource_id/resource_nameを追加。R2完了時点では
+    # availability engineがresource_idを一切設定しないため、既存の全予約・
+    # 新規作成される全予約を含め、両フィールドは常にNoneのまま返る
+    # （既存consumerへの影響はゼロ。Phase R3以降で実際に値が入る想定）。
+    resource_id: Optional[str] = None
+    resource_name: Optional[str] = None
     service_id: Optional[str] = None
     service_name: Optional[str] = None
     staff_id: Optional[str] = None

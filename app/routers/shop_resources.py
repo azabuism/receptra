@@ -1,12 +1,9 @@
 """
-Resource (予約リソース) エンドポイント — Generic Resource Foundation Phase R1
+Resource (予約リソース) エンドポイント — Generic Resource Foundation
+Phase R1（CRUD基盤）+ Phase R2（削除安全性）
 
 app/routers/shop_tables.pyと同じCRUD構造・同じtenant isolationパターンに
-合わせている。Phase R1では予約（Reservation）との統合を一切行わないため、
-delete時の「今後の有効な予約」チェックはまだ存在しない
-（app/models/resource.pyのdocstring参照。将来のReservation Integration
-Phaseで、_find_future_active_table_reservations()と同型のヘルパーを
-追加する想定）。
+合わせている。
 
 ★★★ 重要な既存パターンとの差異（意図的な判断。Audit Report Section14参照）:
 ShopTable/Staffの一覧取得(GET)は無認証（予約フォーム・店舗ページからの
@@ -15,6 +12,12 @@ ShopTable/Staffの一覧取得(GET)は無認証（予約フォーム・店舗ペ
 GETも含めた全エンドポイントをowner認証必須とする。将来Reservation
 Integration Phase以降、顧客向けの参照が必要になった時点で、その時の
 要件に応じて個別に無認証化を検討する（先回りして今から無認証にしない）。
+
+★★★ Phase R2で追加: Reservation.resource_id（nullable FK）が新設された
+ため、削除時に「今後の有効な予約」チェックが必要になった
+（_find_future_active_resource_reservations()。shop_tables.pyの
+_find_future_active_table_reservations()と全く同じstatus/日時の定義を
+再利用。新しい定義を発明しない）。
 """
 
 import uuid
@@ -30,11 +33,40 @@ from app.deps import get_current_user
 from app.schemas.user import CurrentUser
 from app.models.shop import Shop
 from app.models.resource import Resource
+from app.models.reservation import Reservation
 from app.schemas.resource import (
     ResourceCreateRequest, ResourceUpdateRequest, ResourceResponse
 )
+# shop_tables.py/staff.pyのdelete safetyヘルパーと全く同じsingle source of
+# truth（JST-naive基準の「現在時刻」）を再利用する。新しいtimezone helperは
+# 発明しない。
+from app.routers.reservations import _reservation_basis_now
 
 router = APIRouter(prefix="/api/v1/shops", tags=["shop-resources"])
+
+# shop_tables.py の _ACTIVE_RESERVATION_STATUSES と全く同じ定義
+# （新しい定義を発明しない。Section16「独自定義禁止」）。
+_ACTIVE_RESERVATION_STATUSES = ("pending", "confirmed")
+
+
+async def _find_future_active_resource_reservations(db: AsyncSession, resource_id: str) -> List[Reservation]:
+    """
+    指定リソースに割り当てられた「今後の有効な予約」を返す。
+    app/routers/shop_tables.pyの_find_future_active_table_reservations()と
+    全く同じ条件（status in (pending, confirmed) かつ reservation_date >=
+    _reservation_basis_now()）。Phase R2完了時点ではresource_idを設定する
+    書き込みAPIが存在しないため、実運用では常に空リストを返すが、将来
+    Phase R3以降でresource_idが実際に割り当てられるようになった時点から、
+    このチェックが安全に機能する。
+    """
+    result = await db.execute(
+        select(Reservation).filter(
+            Reservation.resource_id == resource_id,
+            Reservation.status.in_(_ACTIVE_RESERVATION_STATUSES),
+            Reservation.reservation_date >= _reservation_basis_now()
+        )
+    )
+    return list(result.scalars().all())
 
 
 async def _get_owned_shop(shop_id: str, current_user: CurrentUser, db: AsyncSession) -> Shop:
@@ -145,8 +177,15 @@ async def delete_resource(
     if not resource or resource.shop_id != shop_id:
         raise HTTPException(status_code=404, detail="予約リソースが見つかりません")
 
-    # Phase R1ではReservationとの統合が無いため、今後の有効な予約チェックは
-    # まだ存在しない（app/models/resource.pyのdocstring参照）。
+    # Phase R2: 今後の有効な予約がまだ割り当てられている場合は削除をブロック
+    # （shop_tables.py/staff.pyと全く同じ削除安全パターン）。
+    upcoming = await _find_future_active_resource_reservations(db, resource_id)
+    if upcoming:
+        raise HTTPException(
+            status_code=400,
+            detail="このリソースに割り当てられた今後の予約があるため削除できません。先に予約を確認・キャンセルしてください"
+        )
+
     await db.delete(resource)
     await db.commit()
     return {"success": True}

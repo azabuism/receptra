@@ -191,6 +191,15 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ reservations.idempotency_key カラム/一意インデックスの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # Generic Resource Foundation Phase R2: ReservationとResourceの
+            # 関連付け用カラム。既存の全予約行はNULLのまま（既存動作への影響なし）。
+            # resource_idの実際の割当（availability integration）はPhase R3以降。
+            try:
+                await conn.execute(text("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS resource_id VARCHAR(36)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_reservations_resource ON reservations (resource_id)"))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ reservations.resource_id カラム/インデックスの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
             # 既存店舗（旧カテゴリー体系で登録されたもの）を新しいタクソノミーに移行する
             try:
                 from app.taxonomy import LEGACY_CATEGORY_MAP
