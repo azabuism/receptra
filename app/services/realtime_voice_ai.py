@@ -175,7 +175,28 @@ _REALTIME_TOOLS = [
             "満席とも空いているとも絶対に案内せず、少し時間を置いて再度お試し"
             "いただくようお伝えしてください（これは1回限りの技術的な問題である"
             "可能性が高いため、この理由だけでHuman Handoff（折り返し対応）へ"
-            "進む必要はありません）。"
+            "進む必要はありません）。\n"
+            "Generic Resource Foundation Phase R4: reason_codeがresource_type_"
+            "requiredの場合、その店舗には「部屋」「ベッド」等、複数の種類の"
+            "設備・空間が混在しており、どちらをご希望かが分からないと空き状況を"
+            "確定できません。この場合は絶対に自分で種類を推測（お店の業種や"
+            "カテゴリから連想する等）しないでください。かわりに、戻り値の"
+            "available_resource_typesに入っている種類（room=部屋、bed=ベッド、"
+            "chair=椅子、vehicle=車両、karaoke_room=カラオケルーム、"
+            "classroom=教室、equipment=設備、other=その他、のうち実際に返って"
+            "きたものだけ）を使い、「お部屋のご利用でしょうか、それとも"
+            "ベッドのご利用でしょうか？」のように、その店舗に実在する選択肢"
+            "だけを使った短い質問を一つだけお客様にしてください。存在しない"
+            "選択肢を作り出したり、available_resource_typesに含まれない種類を"
+            "案内したりすることは絶対にしないでください。お客様の回答が得られたら、"
+            "その回答に対応する種類をresource_type引数（room/bed/chair/vehicle/"
+            "karaoke_room/classroom/equipment/otherのいずれか）に指定して、"
+            "もう一度この関数を呼び出してください。なお、resource_type自体は"
+            "上記のような「種類」のカテゴリラベルであり、個々の部屋番号や具体的な"
+            "設備そのもの（データベース上のID）では一切ありません。どの具体的な"
+            "部屋・設備が割り当てられるかはRECEPTRA側が自動で決定するため、"
+            "特定の部屋番号や設備名をお客様に選ばせたり、あなた自身が指定したり"
+            "することは絶対にしないでください。"
         ),
         "parameters": {
             "type": "object",
@@ -190,6 +211,21 @@ _REALTIME_TOOLS = [
                 "staff_id": {
                     "type": "string",
                     "description": "スタッフID（スタッフ指名がある場合のみ）",
+                },
+                "resource_type": {
+                    "type": "string",
+                    "enum": [
+                        "room", "bed", "chair", "vehicle", "karaoke_room",
+                        "classroom", "equipment", "other",
+                    ],
+                    "description": (
+                        "リソースの種類のカテゴリラベル（部屋・ベッド等が複数混在する"
+                        "店舗で、直前の呼び出しがreason_code=resource_type_requiredを"
+                        "返し、お客様に種類を確認できた場合にのみ指定してください。"
+                        "通常は省略してよく、この関数を呼ぶ前から先回りして指定しては"
+                        "いけません。個々の部屋番号や具体的な設備のIDでは絶対に"
+                        "ありません。"
+                    ),
                 },
             },
             "required": ["date", "time", "party_size"],
@@ -282,7 +318,16 @@ _REALTIME_TOOLS = [
             "確認できない状態です。この場合は予約が取れた・取れなかったと絶対に案内せず、"
             "少し時間を置いて再度お試しいただくようお伝えしてください（これは1回限りの"
             "技術的な問題である可能性が高いため、この理由だけでHuman Handoff（折り返し"
-            "対応）へ進む必要はありません）。"
+            "対応）へ進む必要はありません）、"
+            "resource_type_required=その店舗には複数の種類の設備・空間が混在しており、"
+            "どちらをご希望かが確定していないため予約を確定できません（check_availability"
+            "と全く同じ考え方・同じreason_code）。この場合は絶対に自分で種類を推測しないで"
+            "ください。かわりに戻り値のavailable_resource_typesに入っている種類だけを"
+            "使って（room=部屋、bed=ベッド、chair=椅子、vehicle=車両、"
+            "karaoke_room=カラオケルーム、classroom=教室、equipment=設備、other=その他）、"
+            "その店舗に実在する選択肢だけを使った短い質問をお客様に一つだけしてください。"
+            "回答が得られたら、resource_type引数に指定してもう一度この関数を呼び出して"
+            "ください。"
         ),
         "parameters": {
             "type": "object",
@@ -302,6 +347,21 @@ _REALTIME_TOOLS = [
                 "staff_id": {
                     "type": "string",
                     "description": "スタッフID（スタッフ指名がある場合のみ）",
+                },
+                "resource_type": {
+                    "type": "string",
+                    "enum": [
+                        "room", "bed", "chair", "vehicle", "karaoke_room",
+                        "classroom", "equipment", "other",
+                    ],
+                    "description": (
+                        "リソースの種類のカテゴリラベル（部屋・ベッド等が複数混在する"
+                        "店舗で、直前のcheck_availabilityまたはこの関数自体の呼び出しが"
+                        "reason_code=resource_type_requiredを返し、お客様に種類を"
+                        "確認できた場合にのみ指定してください。通常は省略してよく、"
+                        "先回りして指定してはいけません。個々の部屋番号や具体的な設備の"
+                        "IDでは絶対にありません。"
+                    ),
                 },
                 "special_requests": {
                     "type": "string",

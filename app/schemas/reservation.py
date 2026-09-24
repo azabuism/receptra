@@ -5,7 +5,7 @@ Reservation (予約) スキーマ定義
 
 from datetime import datetime, date as date_type
 from typing import Optional, List
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, field_validator
 
 
 class ReservationCreateRequest(BaseModel):
@@ -27,6 +27,25 @@ class ReservationCreateRequest(BaseModel):
         None, max_length=200,
         description="Realtime Voice等、サーバー側で二重書き込み防止が必要な呼び出し元専用の冪等性キー。通常のWeb予約・チャット予約では使用しない"
     )
+    # Generic Resource Foundation Phase R4: resource_id（内部ID）は依然として
+    # 一切公開しない（R2/R3から変更なし）。resource_typeは「部屋」「ベッド」
+    # のようなカテゴリラベルのみで、Owner UI（shop-manage.html）が既に
+    # 使っているALLOWED_RESOURCE_TYPESと同じ許可値のみ受け付ける。同一店舗に
+    # 複数のresource_typeが混在し、これを省略した場合に安全に自動決定できない
+    # 場合のみ、create_reservation()がreason_code="resource_type_required"で
+    # 400を返す（このフィールドは省略可能。単一種別の店舗やTable/Staff経路の
+    # 予約では一切不要）。
+    resource_type: Optional[str] = Field(
+        None, description="リソースの種別（部屋・ベッド等が混在する店舗で、自動判定できない場合にのみ指定。通常は省略可）"
+    )
+
+    @field_validator("resource_type")
+    @classmethod
+    def _validate_resource_type(cls, v: Optional[str]) -> Optional[str]:
+        from app.schemas.resource import ALLOWED_RESOURCE_TYPES
+        if v is not None and v not in ALLOWED_RESOURCE_TYPES:
+            raise ValueError(f"resource_typeは次のいずれかである必要があります: {', '.join(ALLOWED_RESOURCE_TYPES)}")
+        return v
 
 
 class ReservationUpdateRequest(BaseModel):
@@ -267,6 +286,11 @@ class AvailabilityResponse(BaseModel):
     party_size: int
     service_id: Optional[str] = None
     staff_id: Optional[str] = None
+    # Generic Resource Foundation Phase R4: 既存のservice_id/staff_idと同じ
+    # 「クエリで指定された任意パラメータをレスポンスにそのままエコーする」
+    # 規約に合わせる。省略時はNoneのまま返るため、既存クライアントの挙動は
+    # 一切変化しない。
+    resource_type: Optional[str] = None
     is_open: bool
     message: Optional[str] = None
     slots: List[AvailabilitySlot] = []
@@ -290,6 +314,24 @@ class CheckAvailabilityRequest(BaseModel):
     party_size: int = Field(1, ge=1, le=999, description="人数")
     service_id: Optional[str] = Field(None, description="サービスID（美容院・クリニック等、サービス単位で予約する業種の場合のみ）")
     staff_id: Optional[str] = Field(None, description="スタッフ指名がある場合のみ")
+    # Generic Resource Foundation Phase R4: resource_id（DBの内部ID）は
+    # 一切公開しない。あくまで「部屋」「ベッド」のようなカテゴリラベル
+    # （app.schemas.resource.ALLOWED_RESOURCE_TYPESと同じ許可値）のみを
+    # 受け付ける。同一店舗に複数のresource_typeが混在し、これを省略した
+    # 場合に安全に自動決定できない場合のみ、reason_code=
+    # "resource_type_required"が返る（このフィールドは省略可能。
+    # 単一種別の店舗では一切指定不要）。
+    resource_type: Optional[str] = Field(
+        None, description="リソースの種別（部屋・ベッド等が混在する店舗で、自動判定できない場合にのみ指定。通常は省略可）"
+    )
+
+    @field_validator("resource_type")
+    @classmethod
+    def _validate_resource_type(cls, v: Optional[str]) -> Optional[str]:
+        from app.schemas.resource import ALLOWED_RESOURCE_TYPES
+        if v is not None and v not in ALLOWED_RESOURCE_TYPES:
+            raise ValueError(f"resource_typeは次のいずれかである必要があります: {', '.join(ALLOWED_RESOURCE_TYPES)}")
+        return v
 
 
 class CheckAvailabilityResponse(BaseModel):
@@ -327,7 +369,17 @@ class CheckAvailabilityResponse(BaseModel):
     # 過去である場合）を invalid_request から分離した。形式は正しいが値が
     # 既に過ぎているだけであり、「形式を確認して再度呼び出す」という
     # invalid_requestの対応とは案内内容が異なるため。
+    #
+    # Generic Resource Foundation Phase R4: resource_type_required
+    # （同一店舗に複数のresource_typeが混在し、resource_typeを省略した
+    # ままでは安全に自動決定できない場合）を追加。
     reason_code: Optional[str] = None
+    # Generic Resource Foundation Phase R4: reason_code=="resource_type_required"
+    # の場合のみ設定する。このshopに実在するresource_typeの列挙値のリスト
+    # （resource_idは一切含まない）。AIはこれとTool description内の自然文言
+    # マッピングを組み合わせて、実在する選択肢だけで1回だけ自然な確認質問が
+    # できる（存在しない選択肢を創作しないため）。それ以外の場合は常にNone。
+    available_resource_types: Optional[List[str]] = None
 
 
 # ===== Realtime Voice AI Phase3B: create_reservation Tool Calling用 =====
@@ -353,6 +405,19 @@ class CreateReservationToolRequest(BaseModel):
     service_id: Optional[str] = Field(None, description="サービスID（美容院・クリニック等、サービス単位で予約する業種の場合のみ）")
     staff_id: Optional[str] = Field(None, description="スタッフ指名がある場合のみ")
     special_requests: Optional[str] = Field(None, max_length=500, description="特別なご要望（あれば）")
+    # Generic Resource Foundation Phase R4: CheckAvailabilityRequest.resource_type
+    # と全く同じ意味・同じ許可値（resource_idは一切公開しない）。省略可能。
+    resource_type: Optional[str] = Field(
+        None, description="リソースの種別（部屋・ベッド等が混在する店舗で、自動判定できない場合にのみ指定。通常は省略可）"
+    )
+
+    @field_validator("resource_type")
+    @classmethod
+    def _validate_resource_type(cls, v: Optional[str]) -> Optional[str]:
+        from app.schemas.resource import ALLOWED_RESOURCE_TYPES
+        if v is not None and v not in ALLOWED_RESOURCE_TYPES:
+            raise ValueError(f"resource_typeは次のいずれかである必要があります: {', '.join(ALLOWED_RESOURCE_TYPES)}")
+        return v
     # AIの出力ではなく、ブラウザがOpenAI Realtimeのfunction_callイベントから
     # 直接読み取ったcall_idをそのまま転送する（AI自身にはこの値を生成させない）。
     call_id: str = Field(..., min_length=1, max_length=128, description="OpenAI Realtime APIのfunction_call call_id（ブラウザが転送。AIの引数ではない）")
@@ -390,7 +455,14 @@ class CreateReservationToolResponse(BaseModel):
     # キャッシュして使い回すことはない）。
     # Reservation Intelligence Phase A: time_in_past（指定日時が既に過去）を
     # invalid_requestから分離。check_availabilityと同じ理由・同じ語彙。
+    #
+    # Generic Resource Foundation Phase R4: resource_type_required
+    # （CheckAvailabilityResponseと同じ語彙）を追加。
     reason_code: Optional[str] = None
+    # Generic Resource Foundation Phase R4: CheckAvailabilityResponseの
+    # available_resource_typesと全く同じ意味（reason_code=="resource_type_required"
+    # の場合のみ設定。resource_idは一切含まない）。
+    available_resource_types: Optional[List[str]] = None
 
 
 # ===== Outbound AI Phase 4A: find_customer Tool Calling用 =====

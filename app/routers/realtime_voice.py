@@ -19,7 +19,7 @@ import secrets
 import time
 import unicodedata
 from datetime import datetime, date as date_type, timedelta
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
@@ -628,7 +628,7 @@ async def check_availability_tool(
         except ValueError:
             return _safe_fallback("invalid_request")
 
-        available, reason_code = await check_single_slot_availability(
+        available, reason_code, available_resource_types = await check_single_slot_availability(
             db,
             shop,
             target_date,
@@ -636,6 +636,7 @@ async def check_availability_tool(
             request.party_size,
             request.service_id,
             request.staff_id,
+            request.resource_type,
         )
         return CheckAvailabilityResponse(
             available=available,
@@ -643,6 +644,7 @@ async def check_availability_tool(
             time=request.time,
             party_size=request.party_size,
             reason_code=reason_code,
+            available_resource_types=available_resource_types,
         )
     except HTTPException:
         raise
@@ -693,8 +695,15 @@ async def create_reservation_tool(
     """
     _check_booking_tool_rate_limit(shop_id)
 
-    def _safe_failure(reason_code: str) -> CreateReservationToolResponse:
-        return CreateReservationToolResponse(success=False, reason_code=reason_code)
+    def _safe_failure(
+        reason_code: str, available_resource_types: Optional[List[str]] = None,
+    ) -> CreateReservationToolResponse:
+        # Generic Resource Foundation Phase R4: reason_code=="resource_type_required"
+        # の場合のみavailable_resource_typesが渡る。他のreason_codeでは常にNoneの
+        # ままであり、既存の呼び出し元（他のreason_code）の挙動は一切変化しない。
+        return CreateReservationToolResponse(
+            success=False, reason_code=reason_code, available_resource_types=available_resource_types,
+        )
 
     try:
         shop = await db.get(Shop, shop_id)
@@ -753,17 +762,25 @@ async def create_reservation_tool(
             guest_email=None,
             special_requests=request.special_requests,
             idempotency_key=idempotency_key,
+            # Generic Resource Foundation Phase R4: check_availability Toolと
+            # 完全に同じ意味・同じ許可値をそのまま転送する。
+            resource_type=request.resource_type,
         )
 
         try:
             booking_response = await create_reservation(create_request, db, None)
         except HTTPException as e:
             reason_code = getattr(e, "reason_code", None) or "temporarily_unavailable"
+            # Generic Resource Foundation Phase R4: reason_code=="resource_type_required"
+            # の場合のみcreate_reservation()の_http_error()が付与する
+            # .available_resource_types属性を読み取る（.reason_codeと同じ
+            # getattrパターン。付与されていない場合は安全にNoneのまま）。
+            available_resource_types = getattr(e, "available_resource_types", None)
             logger.info(
                 "create_reservation Tool: 予約不可 (shop_id=%s, reason_code=%s, detail=%s)",
                 shop_id, reason_code, e.detail,
             )
-            return _safe_failure(reason_code)
+            return _safe_failure(reason_code, available_resource_types)
 
         reservation = booking_response.reservation
 

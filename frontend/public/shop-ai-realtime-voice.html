@@ -3078,6 +3078,10 @@
             };
             if (args && args.service_id) body.service_id = args.service_id;
             if (args && args.staff_id) body.staff_id = args.staff_id;
+            // Generic Resource Foundation Phase R4: 省略可能。AIが明示的に
+            // 指定した場合のみ転送する（他のtoolと全く同じ「明示指定のみ
+            // 転送」パターン）。
+            if (args && args.resource_type) body.resource_type = args.resource_type;
 
             try {
                 const res = await fetchToolWithTimeout('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/check-availability', {
@@ -3148,6 +3152,9 @@
             if (args && args.service_id) body.service_id = args.service_id;
             if (args && args.staff_id) body.staff_id = args.staff_id;
             if (args && args.special_requests) body.special_requests = args.special_requests;
+            // Generic Resource Foundation Phase R4: check_availabilityと同じ
+            // 「明示指定のみ転送」パターン。
+            if (args && args.resource_type) body.resource_type = args.resource_type;
 
             try {
                 const res = await fetchToolWithTimeout('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/create-reservation', {

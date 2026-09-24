@@ -156,7 +156,10 @@ def _to_list_response(reservation: Reservation) -> ReservationResponse:
     return item
 
 
-def _http_error(status_code: int, detail: str, reason_code: Optional[str] = None) -> HTTPException:
+def _http_error(
+    status_code: int, detail: str, reason_code: Optional[str] = None,
+    available_resource_types: Optional[List[str]] = None,
+) -> HTTPException:
     """
     Phase3B: HTTPExceptionに、Realtime Voice Tool層が文字列の部分一致に頼らず
     機械可読なreason_codeで失敗理由を判別できるよう、任意の.reason_code属性を
@@ -164,9 +167,17 @@ def _http_error(status_code: int, detail: str, reason_code: Optional[str] = None
     Web予約・チャット予約側（shop_booking_ai.pyのe.detail参照等）の挙動には
     一切影響しない。reason_codeを見ない既存呼び出し元からは通常のHTTPExceptionと
     区別がつかない。
+
+    Generic Resource Foundation Phase R4: available_resource_typesは
+    reason_code="resource_type_required"の場合のみ設定する追加のOptional属性
+    （resource_idは一切含まない、resource_typeの列挙値のリストのみ）。
+    既存の呼び出し元（この引数を渡さない全箇所）には一切影響しない
+    （デフォルトNone。getattr()で読む既存パターンと同じく、見ない側からは
+    通常のHTTPExceptionと区別がつかない）。
     """
     exc = HTTPException(status_code=status_code, detail=detail)
     exc.reason_code = reason_code
+    exc.available_resource_types = available_resource_types
     return exc
 
 
@@ -1077,11 +1088,13 @@ async def _resolve_reservation_allocation_mode(db: AsyncSession, shop_id: str) -
        にそのまま委ねられるため、Resourceを一切登録していない店舗の
        挙動は本フェーズで1ビットも変化しない。
 
-    resource_typeは一切参照しない（Section14/15: 現時点で
-    ReservationCreateRequest/Serviceのいずれにも「必要resource_type」
-    という契約が存在せず、また各店舗のResourceは単一用途で登録される
-    という既存のR1 Architecture Auditの前提に基づく。既知の制限として
-    Phase R3完了報告に明記する）。
+    resource_typeは一切参照しない。この関数の責務は「table経路かresource経路か」
+    という二択のみであり、resource経路に決まった後で「どのresource_typeを
+    要求するか」を決めるのは別の責務（Generic Resource Foundation Phase R4で
+    追加した_resolve_required_resource_type()。このすぐ下に定義）。この分離に
+    より、本関数自体はPhase R3から1行も変更していない（Phase R4のCritical
+    Architecture Question監査で、Service/Resourceの間に関係が無いことを確認
+    済み。詳細はPhase R4 Audit Report Section7参照）。
     """
     table_exists = await db.execute(
         select(ShopTable.id).filter(ShopTable.shop_id == shop_id).limit(1)
@@ -1098,9 +1111,103 @@ async def _resolve_reservation_allocation_mode(db: AsyncSession, shop_id: str) -
     return "table"
 
 
+# Generic Resource Foundation Phase R4: resource_typeの自然文言マッピング。
+# frontend/public/shop-manage.html の RESOURCE_TYPE_LABELS と同じ内容を、
+# Python/フロントエンドという別々のランタイム間で共有する手段が無いため、
+# 明示的なコメント付きで最小限に複製する（Architecture Audit Section21
+# 「共有できないなら明示コメント付きで最小限の重複を許容する」方針）。
+# どちらか一方だけを更新して食い違うことを防ぐため、新しいresource_typeを
+# 追加する場合は必ず両方を同時に更新すること。
+_RESOURCE_TYPE_NATURAL_LABELS = {
+    "room": "部屋",
+    "bed": "ベッド",
+    "chair": "椅子",
+    "vehicle": "車両",
+    "karaoke_room": "カラオケルーム",
+    "classroom": "教室",
+    "equipment": "設備",
+    "other": "その他",
+}
+
+
+async def _resolve_required_resource_type(
+    db: AsyncSession, shop_id: str, requested_resource_type: Optional[str] = None,
+) -> tuple[str, Optional[str], Optional[List[str]]]:
+    """
+    Generic Resource Foundation Phase R4: allocation_mode=="resource"に
+    決まった後、実際にどのresource_typeを対象に空き検索を行うべきかを
+    判定する、唯一のsource of truth。check_single_slot_availability/
+    get_availability/create_reservationの3箇所すべてがこの関数だけを呼ぶ
+    （_resolve_reservation_allocation_mode()と同じ「Single Source of
+    Routing Truth」の考え方を、typeの階層でも踏襲する）。
+
+    戻り値: (status, resource_type, available_types)
+
+    status:
+    - "UNMANAGED": このshopにactiveなResourceが1件も無い。呼び出し側は
+      allocation_mode=="resource"（＝is_active Resourceが1件以上ある
+      ことがルール#2で確定済み）の場合にのみこの関数を呼ぶため、実際には
+      到達しない防御的な分岐（_find_available_table()等の既存の
+      「0件なら常に空き扱い」という設計と対称にしておくためだけに存在する）。
+    - "UNAMBIGUOUS_TYPE": requested_resource_typeが指定されておらず、
+      このshopのactive Resourceのresource_typeが1種類だけ。お客様に
+      一切確認せず、その1種類へ自動的に絞り込む（Product Principle
+      Section3「決められるなら聞かない」）。
+    - "EXPLICIT_TYPE": requested_resource_typeが指定されており、それが
+      このshopのactiveなresource_typeのいずれかと一致する。
+    - "AMBIGUOUS": requested_resource_typeが指定されておらず、かつ
+      active Resourceのresource_typeが2種類以上存在する。この場合のみ
+      「安全に自動決定できない」状態であり、呼び出し側は候補探索
+      （_find_available_resource等）に一切進まず、即座に安全な失敗
+      （reason_code="resource_type_required"）を返すこと。
+    - "NO_MATCH": requested_resource_typeが指定されているが、このshopの
+      activeなresource_typeのいずれとも一致しない（他業種のresource_type
+      を指定した、または該当種別が現在すべて非アクティブ等）。この場合は
+      新しい失敗経路を作らず、指定された（一致しない）typeをそのまま
+      _find_available_resource()系のフィルタへ渡す設計にする
+      （呼び出し側の実装参照）。これにより候補が自然に0件となり、既存の
+      「候補0件→fully_booked」という既存の安全な経路へそのまま帰着する
+      （Architecture Audit Section16「新しいreason_codeを増やさない」）。
+
+    available_types: status=="AMBIGUOUS"の場合のみ、実在するresource_type
+    の列挙値のリスト（ソート済み、resource_idは一切含まない）を設定する。
+    AIはこれと_RESOURCE_TYPE_NATURAL_LABELSを組み合わせて、実在する選択肢
+    だけで1回だけ自然な確認質問ができる（存在しない選択肢を創作しない
+    ため。Product Principle Section24「fabricationしない」）。
+    """
+    active_types_result = await db.execute(
+        select(Resource.resource_type)
+        .filter(Resource.shop_id == shop_id, Resource.is_active == True)  # noqa: E712
+        .distinct()
+    )
+    active_types = {row[0] for row in active_types_result.all()}
+
+    if not active_types:
+        return "UNMANAGED", None, None
+
+    if requested_resource_type is not None:
+        if requested_resource_type in active_types:
+            return "EXPLICIT_TYPE", requested_resource_type, None
+        # NO_MATCH: 第2戻り値はrequested_resource_type自身をそのまま返す
+        # （Noneにはしない）。呼び出し側はstatusに関わらず常に第2戻り値を
+        # そのままrequired_resource_typeとして_find_available_resource()系へ
+        # 渡す設計にしているため、ここでNoneを返すと「型フィルタ無し」に
+        # 化けてしまい、このshopに存在しないtypeを指定したのに全typeが
+        # プールされて候補になってしまう（意図と正反対の結果）。指定された
+        # （一致しない）typeそのものを返すことで、渡した先で自然に候補0件
+        # となり、既存の「候補0件→fully_booked」へ安全に帰着する。
+        return "NO_MATCH", requested_resource_type, sorted(active_types)
+
+    if len(active_types) == 1:
+        return "UNAMBIGUOUS_TYPE", next(iter(active_types)), None
+
+    return "AMBIGUOUS", None, sorted(active_types)
+
+
 async def _find_available_resource(
     db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int,
     default_duration_minutes: int, excluded_resource_ids: Optional[set] = None,
+    required_resource_type: Optional[str] = None,
 ) -> tuple[Optional[str], bool]:
     """
     _find_available_table()と全く同じ構造（候補取得→capacity/overlap絞込→
@@ -1116,6 +1223,17 @@ async def _find_available_resource(
     ロック後の再チェックで競合と判明した候補を除外して次点を探すために
     使う。通常の呼び出し（check_single_slot_availability/
     get_availability）では指定しない＝Table/Staffと同じ設計。
+
+    required_resource_type: Generic Resource Foundation Phase R4追加。
+    指定された場合、そのresource_typeと一致しないResourceは候補に一切
+    含めない（capacity/excluded_resource_idsと同じ、Pythonのリスト内包
+    での絞込に統合する。既存のcapacity絞込と同じ場所に置くことで、新しい
+    候補選定パスを作らない）。呼び出し側の_resolve_required_resource_type()
+    がstatus=="NO_MATCH"（このshopに存在しないtype）を指定した場合も、
+    ここで自然に候補0件となり、既存の「候補0件→fully_booked」という
+    安全な経路へそのまま帰着する（新しいreason_codeを増やさない設計。
+    Phase R4 Audit Report Section16参照）。Noneの場合は本フェーズ以前と
+    完全に同じ挙動（型による絞込を一切行わない）。
     """
     resources_result = await db.execute(
         select(Resource).filter(Resource.shop_id == shop_id, Resource.is_active == True)  # noqa: E712
@@ -1126,7 +1244,12 @@ async def _find_available_resource(
 
     excluded = excluded_resource_ids or set()
     candidates = sorted(
-        [r for r in resources if _validate_resource_capacity(r, party_size) is None and r.id not in excluded],
+        [
+            r for r in resources
+            if _validate_resource_capacity(r, party_size) is None
+            and r.id not in excluded
+            and (required_resource_type is None or r.resource_type == required_resource_type)
+        ],
         key=lambda r: (r.capacity is None, r.capacity if r.capacity is not None else 0, r.display_order, r.id),
     )
     if not candidates:
@@ -1158,15 +1281,44 @@ async def _find_available_resource(
 
 async def _lock_and_verify_resource_slot(
     db: AsyncSession, resource_id: str, start: datetime, duration_minutes: int, default_duration_minutes: int,
-    exclude_reservation_id: Optional[str] = None,
+    exclude_reservation_id: Optional[str] = None, required_resource_type: Optional[str] = None,
 ) -> bool:
     """
-    _lock_and_verify_table_slot()と全く同じ構造。同時多重予約防止のため、
-    対象ResourceをSELECT ... FOR UPDATEでロックしたうえで、ロック取得後に
-    改めて予約重複を再チェックする。create_reservation()/update_reservation()
-    のトランザクション内でのみ呼び出すこと。
+    _lock_and_verify_table_slot()と同じ「FOR UPDATE + 再検証」構造を踏襲する
+    （新しいtransaction境界・新しいretry systemは作らない。Phase R3の既存
+    設計そのまま）。ただし1点だけ、_lock_and_verify_table_slot()には無い
+    再検証を追加する:
+
+    Generic Resource Foundation Phase R4: ロック取得後に、対象Resourceの
+    行そのものを取得し直し、(1)行がまだ存在する、(2)is_active=Trueのまま、
+    (3)required_resource_typeが指定されている場合はresource_typeが一致
+    している、の3点を確認する。いずれか1つでも崩れていればFalseを返す
+    （既存の_find_and_lock_available_resource()のリトライ・除外ループへ
+    そのまま乗る。新しいretry機構は作らない）。
+
+    理由（Architecture Audit Phase R4 Section39-40）: 候補選定
+    （_find_available_resource()のSELECT、ロック無し）とロック取得の間には
+    必ず間隙があり、その間にOwnerがResourceのresource_typeを変更したり
+    is_active=Falseへ更新したりする可能性がある。Table engineにはこの
+    再検証が無い（既知の先行技術的負債。Phase R3完了報告Section39参照）が、
+    Resourceのresource_typeという「候補選定後に変わりうる新しい次元」を
+    R4で導入した以上、この再検証だけは新規に追加する必要があると判断した
+    （capacityの再検証は本フェーズのスコープ外のまま。既存のTable/Staffと
+    同じ既知の限界として残す）。
+
+    update_reservation()からの呼び出しでは、既に割り当て済みのResourceの
+    日時変更を再検証するだけであり「型を選び直す」わけではないため、
+    required_resource_type=None（型不一致は見ず、is_active＋overlapのみ
+    再検証する）で呼ばれる。これにより、日時変更の直前にOwnerが該当
+    Resourceをdeactivateしていた場合、従来は検知できなかった不整合を
+    新たに正しく検知できるようになる（副次的な安全性の改善）。
     """
-    await db.execute(select(Resource.id).filter(Resource.id == resource_id).with_for_update())
+    lock_result = await db.execute(select(Resource).filter(Resource.id == resource_id).with_for_update())
+    resource = lock_result.scalars().first()
+    if resource is None or not resource.is_active:
+        return False
+    if required_resource_type is not None and resource.resource_type != required_resource_type:
+        return False
     end = start + timedelta(minutes=duration_minutes)
     overlap_filters = [
         Reservation.resource_id == resource_id,
@@ -1187,23 +1339,31 @@ async def _lock_and_verify_resource_slot(
 
 async def _find_and_lock_available_resource(
     db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int,
-    default_duration_minutes: int,
+    default_duration_minutes: int, required_resource_type: Optional[str] = None,
 ) -> tuple[Optional[str], bool]:
     """
     _find_and_lock_available_table()と全く同じ構造・同じ_MAX_LOCK_RETRY。
     create_reservation()専用。
+
+    required_resource_type: Generic Resource Foundation Phase R4追加。
+    _find_available_resource()/_lock_and_verify_resource_slot()の両方へ
+    そのまま伝える（候補選定・ロック後再検証のどちらも、常に同じtype制約
+    で判定する。Single Source of Routing Truthをtypeの階層でも維持する）。
     """
     excluded: set = set()
     for _ in range(_MAX_LOCK_RETRY):
         resource_id, unmanaged = await _find_available_resource(
             db, shop_id, party_size, start, duration_minutes, default_duration_minutes,
-            excluded_resource_ids=excluded,
+            excluded_resource_ids=excluded, required_resource_type=required_resource_type,
         )
         if unmanaged:
             return resource_id, True
         if resource_id is None:
             return None, False
-        if await _lock_and_verify_resource_slot(db, resource_id, start, duration_minutes, default_duration_minutes):
+        if await _lock_and_verify_resource_slot(
+            db, resource_id, start, duration_minutes, default_duration_minutes,
+            required_resource_type=required_resource_type,
+        ):
             return resource_id, False
         excluded.add(resource_id)
     return None, False
@@ -1217,7 +1377,8 @@ async def check_single_slot_availability(
     party_size: int,
     service_id: Optional[str] = None,
     staff_id: Optional[str] = None,
-) -> tuple[bool, Optional[str]]:
+    resource_type: Optional[str] = None,
+) -> tuple[bool, Optional[str], Optional[List[str]]]:
     """
     Realtime Voice AI Phase3A: check_availability Tool Calling用。
 
@@ -1228,9 +1389,16 @@ async def check_single_slot_availability(
     _get_closure_for_date / _find_available_table / _find_available_staff_for_service
     を直接再利用する。
 
-    戻り値: (available, reason_code)。reason_code は available=False の
-    ときのみ設定する（候補は app.schemas.reservation.CheckAvailabilityResponse
-    のコメントを参照）。
+    戻り値: (available, reason_code, available_resource_types)。
+    reason_codeはavailable=Falseのときのみ設定する（候補は
+    app.schemas.reservation.CheckAvailabilityResponseのコメントを参照）。
+    available_resource_typesは、Generic Resource Foundation Phase R4で
+    追加した第3の戻り値。reason_code=="resource_type_required"の場合のみ
+    設定する（resource_idは一切含まない、resource_typeの列挙値のリスト
+    のみ）。それ以外のすべての場合はNone（既存の呼び出し元の意味は
+    一切変わらない）。3-tupleへの変更はこの関数の唯一の呼び出し元
+    （app/routers/realtime_voice.pyのcheck_availability_tool、1箇所のみ。
+    grepで確認済み）だけを更新すれば済む。
 
     重要: この関数はあくまで「現時点の空き状況の判定」のみを行い、DBへの
     書き込みは一切行わない（Phase3Aではcreate_reservationは実装しない）。
@@ -1251,20 +1419,20 @@ async def check_single_slot_availability(
     # 変化しない。
     owning_hours, session_date, resolve_reason = await _resolve_business_session(db, shop.id, start_dt)
     if owning_hours is None:
-        return False, resolve_reason
+        return False, resolve_reason, None
 
     # Phase D-1: ShopClosureは「営業セッションの開始日」を基準に判定する
     # （ユーザー承認済み仕様。前日から続く日跨ぎセッションの場合、翌日側の
     # calendar dateのShopClosureはこのセッションに影響させない）。
     closure = await _get_closure_for_date(db, shop.id, session_date)
     if closure:
-        return False, "temporary_closure"
+        return False, "temporary_closure", None
 
     service: Optional[Service] = None
     if service_id:
         service = await db.get(Service, service_id)
         if not service or service.shop_id != shop.id or service.is_active != "active":
-            return False, "service_unavailable"
+            return False, "service_unavailable", None
 
     duration = _resolve_reservation_duration(service, shop)
     # Reservation Intelligence Phase C/D-1: 営業時間境界（開始・終了の両方、
@@ -1272,7 +1440,7 @@ async def check_single_slot_availability(
     # _validate_reservation_time_window()のdocstring参照）。
     boundary_reason = _validate_reservation_time_window(owning_hours, session_date, start_dt, duration)
     if boundary_reason is not None:
-        return False, boundary_reason
+        return False, boundary_reason, None
 
     # Reservation Intelligence Phase D-2: 休憩・予約停止時間（ShopBreakTime）との
     # 重なりを確認する。ShopClosure（終日休業）より後、営業時間境界チェックより後、
@@ -1287,7 +1455,7 @@ async def check_single_slot_availability(
     # 既存の挙動に一切影響しない。Section18のMVPベースライン方針）。
     breaks = await _get_shop_break_times(db, shop.id, session_date.weekday())
     if breaks and _overlaps_break_time(breaks, session_date, start_dt, start_dt + timedelta(minutes=duration)):
-        return False, "break_time"
+        return False, "break_time", None
 
     # create_reservation / get_availability と同じ比較方法。Phase3E-3で
     # datetime.utcnow()からreservation_dateと同じ基準(JST-naive)の
@@ -1303,7 +1471,7 @@ async def check_single_slot_availability(
     # AI側の反応方針は _REALTIME_TOOLS の check_availability description
     # 参照。
     if start_dt <= _reservation_basis_now():
-        return False, "time_in_past"
+        return False, "time_in_past", None
 
     # Reservation Intelligence Phase B: 既存予約自身のduration_minutesがNULL
     # （Phase B以前に作成された予約）の場合にのみ使うフォールバック値。
@@ -1318,8 +1486,8 @@ async def check_single_slot_availability(
             enforce_schedule=bool(shop.staff_schedule_enabled),
         )
         if unmanaged or found_staff_id is not None:
-            return True, None
-        return False, ("staff_unavailable" if staff_id else "fully_booked")
+            return True, None, None
+        return False, ("staff_unavailable" if staff_id else "fully_booked"), None
     else:
         # Generic Resource Foundation Phase R3: このshopがTable経路か
         # Resource経路かを、唯一のsource of truthである
@@ -1328,18 +1496,32 @@ async def check_single_slot_availability(
         # 共有する。Section36「Single Source of Routing Truth」）。
         allocation_mode = await _resolve_reservation_allocation_mode(db, shop.id)
         if allocation_mode == "resource":
+            # Generic Resource Foundation Phase R4: allocation_mode=="resource"
+            # に決まった後、実際に対象とするresource_typeを
+            # _resolve_required_resource_type()で判定する（唯一のsource of
+            # truth。create_reservation()/get_availability()と完全に同じ
+            # 判定を共有する）。
+            type_status, effective_resource_type, available_types = await _resolve_required_resource_type(
+                db, shop.id, resource_type,
+            )
+            if type_status == "AMBIGUOUS":
+                # 複数のresource_typeが混在し、安全に自動決定できない。
+                # 候補探索には一切進まず、即座に安全な失敗を返す
+                # （Architecture Audit Phase R4 Section13「Safe Failure」）。
+                return False, "resource_type_required", available_types
             resource_id, unmanaged = await _find_available_resource(
-                db, shop.id, party_size, start_dt, duration, default_duration
+                db, shop.id, party_size, start_dt, duration, default_duration,
+                required_resource_type=effective_resource_type,
             )
             if unmanaged or resource_id is not None:
-                return True, None
-            return False, "fully_booked"
+                return True, None, None
+            return False, "fully_booked", None
         table_id, unmanaged = await _find_available_table(
             db, shop.id, party_size, start_dt, duration, default_duration
         )
         if unmanaged or table_id is not None:
-            return True, None
-        return False, "fully_booked"
+            return True, None, None
+        return False, "fully_booked", None
 
 
 async def _resolve_coupon_for_booking(
@@ -1447,6 +1629,9 @@ async def get_availability(
     party_size: int = Query(1, ge=1, le=999, description="人数"),
     service_id: Optional[str] = Query(None, description="サービスID（美容院・クリニック・スクール・フィットネスなど、サービス単位で予約する業種の場合に指定）"),
     staff_id: Optional[str] = Query(None, description="スタッフ指名がある場合に指定（省略時は指名なし）"),
+    # Generic Resource Foundation Phase R4: CheckAvailabilityRequest.resource_type
+    # と全く同じ意味・同じ許可値（省略可能。既存の呼び出し元は一切変更不要）。
+    resource_type: Optional[str] = Query(None, description="リソースの種別（部屋・ベッド等が混在する店舗で、自動判定できない場合にのみ指定。通常は省略可）"),
     db: AsyncSession = Depends(get_db)
 ) -> AvailabilityResponse:
     shop = await db.get(Shop, shop_id)
@@ -1464,7 +1649,23 @@ async def get_availability(
     except ValueError:
         raise HTTPException(status_code=400, detail="日付の形式が正しくありません（YYYY-MM-DD）")
 
-    common = dict(shop_id=shop_id, date=date, party_size=party_size, service_id=service_id, staff_id=staff_id)
+    # Generic Resource Foundation Phase R4: CheckAvailabilityRequest/
+    # CreateReservationToolRequestのfield_validatorと同じ許可値・同じ検証
+    # （Query paramにはPydanticのfield_validatorが直接使えないため、既存の
+    # dateパラメータのバリデーションと同じパターンでHTTPException(400)に
+    # する）。
+    if resource_type is not None:
+        from app.schemas.resource import ALLOWED_RESOURCE_TYPES
+        if resource_type not in ALLOWED_RESOURCE_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"resource_typeは次のいずれかである必要があります: {', '.join(ALLOWED_RESOURCE_TYPES)}",
+            )
+
+    common = dict(
+        shop_id=shop_id, date=date, party_size=party_size, service_id=service_id, staff_id=staff_id,
+        resource_type=resource_type,
+    )
 
     closure = await _get_closure_for_date(db, shop_id, target_date)
     if closure:
@@ -1539,6 +1740,32 @@ async def get_availability(
     # 判定を共有する（Section36）。serviceが指定されている場合はStaff pathの
     # ままであり判定自体が不要なため、無駄なクエリを発生させない。
     allocation_mode = await _resolve_reservation_allocation_mode(db, shop_id) if not service else None
+
+    # Generic Resource Foundation Phase R4: allocation_mode=="resource"の
+    # 場合のみ、対象resource_typeを_resolve_required_resource_type()で
+    # 判定する（唯一のsource of truth。check_single_slot_availability()/
+    # create_reservation()と完全に同じ判定を共有する）。allocation_modeと
+    # 同じ理由でループの外で一度だけ判定する（shop_idと入力のresource_type
+    # のみに依存し、スロットの時刻には依存しないため）。
+    effective_resource_type: Optional[str] = None
+    if allocation_mode == "resource":
+        type_status, effective_resource_type, available_types = await _resolve_required_resource_type(
+            db, shop_id, resource_type,
+        )
+        if type_status == "AMBIGUOUS":
+            # Section30「混在型店舗は安全に失敗する（ランダムに統合しない）」:
+            # 既存のAvailabilityResponseの形（is_open=True, message, slots=[]）を
+            # そのまま流用する（「本日は予約可能な時間枠がありません」と同じ
+            # 既存パターン。新しいレスポンス構造は発明しない）。公開Web予約枠には
+            # resource_typeを選択させるUIが無いため、この一覧では常にこの安全な
+            # 空スロットで応答する（Owner UI・Realtime経由でresource_typeを明示
+            # した場合はEXPLICIT_TYPE/NO_MATCHとなり、ここには到達しない）。
+            return AvailabilityResponse(
+                **common, is_open=True,
+                message="ご利用になりたいお部屋・設備の種類によって空き状況が異なるため、恐れ入りますが店舗へお問い合わせください",
+                slots=[],
+            )
+
     slots: List[AvailabilitySlot] = []
     cursor = opening_dt
     while cursor <= latest_start_dt:
@@ -1569,7 +1796,8 @@ async def get_availability(
                 available = unmanaged or (found_staff_id is not None)
             elif allocation_mode == "resource":
                 resource_id, unmanaged = await _find_available_resource(
-                    db, shop_id, party_size, cursor, duration, default_duration
+                    db, shop_id, party_size, cursor, duration, default_duration,
+                    required_resource_type=effective_resource_type,
                 )
                 available = unmanaged or (resource_id is not None)
             else:
@@ -1731,12 +1959,36 @@ async def create_reservation(
             # 完全に同じ判定を共有する。Section36）。
             allocation_mode = await _resolve_reservation_allocation_mode(db, request.shop_id)
             if allocation_mode == "resource":
+                # Generic Resource Foundation Phase R4: check_single_slot_availability()/
+                # get_availability()と完全に同じsource of truthである
+                # _resolve_required_resource_type()で対象resource_typeを判定する。
+                # AMBIGUOUS（複数type混在・未指定）の場合はロック取得を試みる前に
+                # 400で安全に失敗させる（存在しないtypeへの絞り込みでロックの
+                # 無駄な取得・解放を発生させない。かつ「AIはresource_typeが
+                # わからない場合は絶対に推測しない」という製品原則を、ロックより
+                # 前の最速の地点で強制する）。
+                type_status, effective_resource_type, available_types = await _resolve_required_resource_type(
+                    db, request.shop_id, request.resource_type,
+                )
+                if type_status == "AMBIGUOUS":
+                    raise _http_error(
+                        400,
+                        "ご利用になりたいお部屋・設備の種類をご指定ください",
+                        reason_code="resource_type_required",
+                        available_resource_types=available_types,
+                    )
                 # Phase R3: リソース予約も同様にFOR UPDATEロック＋再チェックで
                 # 同時多重予約を防ぐ（_find_and_lock_available_resourceの
                 # docstring参照。Table予約と完全に同じtransaction構造）。
+                # Phase R4: effective_resource_typeがNone以外の場合（EXPLICIT_TYPE/
+                # UNAMBIGUOUS_TYPE/NO_MATCH）、この時点で確定した種別で候補を
+                # 絞り込む。NO_MATCHの場合はrequested_resource_typeそのものが
+                # そのまま渡るため、既存typeと一致する候補が0件となり、自然に
+                # 従来のfully_bookedへ流れる（新しいreason_codeを増やさない。
+                # _resolve_required_resource_type()のdocstring参照）。
                 resource_id, unmanaged = await _find_and_lock_available_resource(
                     db, request.shop_id, request.number_of_people, request.reservation_date, duration,
-                    default_duration,
+                    default_duration, required_resource_type=effective_resource_type,
                 )
                 if not unmanaged and resource_id is None:
                     raise _http_error(400, "ご希望の時間は満席です。他の時間をお試しください", reason_code="fully_booked")
