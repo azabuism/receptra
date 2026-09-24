@@ -117,6 +117,42 @@ async def main():
 
             shop_a = await _new_shop("GenericResourceR2テストA店")
 
+            # ★★★ Phase R3対応: このshop_aは元々「既存の飲食店（ShopTable運用）」を
+            # 想定したテストシナリオであり、B/C節は「Resource未割当の予約は
+            # resource_id=Noneのまま」という後方互換性を検証する。
+            # Phase R3で_resolve_reservation_allocation_mode()が導入され、
+            # 「ShopTableが0件かつactive Resourceが1件以上」という条件が
+            # 新たにResource pathへ自動的にルーティングされるようになったため、
+            # 何もしなければ以下で作るResourceがこの店舗のplain reservationに
+            # 自動割当されてしまい、このB/C節の前提が崩れる（R3新規動作としては
+            # 正しいが、この節の検証意図とは無関係な副作用）。
+            # ShopTableを1件登録しておくことで、ルーティングルール#1
+            # （ShopTable存在時は常にtable path。行のis_activeは問わない）
+            # によりshop_aをTable pathへ明示的に固定する。
+            # ただし、このテストのB～E節はもともと「テーブル管理なし
+            # （unmanaged、常に空席扱い）」の店舗を前提に、同一時間帯へ
+            # 複数の予約を作成して検証している（Phase R2時点ではshop_aに
+            # ShopTableが0件で、_find_available_table()のunmanagedバイパス
+            # により常に成功していた）。もしここでactiveなShopTableを
+            # 残すと、_find_available_table()が「管理下のテーブルが1件ある」
+            # と判定して本来のテーブル重複チェックが働いてしまい、B～E節が
+            # 想定していない"満席"エラーで壊れてしまう。
+            # そこで作成直後にis_active=Falseへ更新し、「ルーティング判定
+            # （ルール#1: 行の存在有無のみを見る）はTable pathに固定されるが、
+            # 実際の空席判定（_find_available_table()内のis_active==True件数）
+            # は0件のまま＝unmanagedバイパス」という、Phase R2時点の
+            # shop_aの実質的な挙動（常に空席扱い）を完全に保ったまま、
+            # R3の新しいルーティングだけを意図通りに固定する。
+            r = await client.post(f"/api/v1/shops/{shop_a}/tables", json={
+                "name": "既存テーブル(非アクティブ・ルーティング固定用)", "capacity": 4,
+            }, headers=owner_a)
+            assert r.status_code == 200, f"ShopTable作成失敗（R3ルーティング固定用）: {r.status_code} {r.text}"
+            _routing_pin_table_id = r.json()["id"]
+            r = await client.put(f"/api/v1/shops/{shop_a}/tables/{_routing_pin_table_id}", json={
+                "is_active": False,
+            }, headers=owner_a)
+            assert r.status_code == 200, f"ShopTable非アクティブ化失敗（R3ルーティング固定用）: {r.status_code} {r.text}"
+
             # Resourceを1つ用意（Phase R1のCRUD APIをそのまま使用）
             r = await client.post(f"/api/v1/shops/{shop_a}/resources", json={
                 "name": "個室A", "resource_type": "room", "capacity": 4,

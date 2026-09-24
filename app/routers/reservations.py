@@ -21,6 +21,7 @@ from app.models.reservation import Reservation, ReservationStatus
 from app.models.shop import Shop, ShopHours, ShopTable, ShopClosure, ShopBreakTime, ShopHoursOverride
 from app.models.service import Service
 from app.models.staff import Staff, StaffService
+from app.models.resource import Resource
 from app.models.staff_shift import StaffWeeklyShift, StaffShiftOverride
 from app.models.promotion import Coupon
 from app.services.outbound_dispatch import enqueue_reservation_confirmed_call
@@ -1015,6 +1016,199 @@ async def _find_and_lock_available_staff_for_service(
     return None, False
 
 
+# ============================================================
+# Generic Resource Foundation Phase R3: Resource Availability Engine
+# ============================================================
+#
+# 以下は既存の_find_available_table/_lock_and_verify_table_slot/
+# _find_and_lock_available_tableと構造的に完全に対応する（Architecture
+# Audit Phase R3 Section6-9で確認済み: Resourceにはサービス紐付け・
+# 指名・シフトという概念が無く、Staffではなくtable patternをそのまま
+# 横展開するのが正しいと判断した）。相違点は2つのみ:
+# 1. capacity semantics: Resource.capacityはnullable
+#    （_validate_resource_capacity()のdocstring参照）。
+# 2. 並び順: capacity=Noneの候補を最後に回す（Section13）。
+#
+# 新しいtransaction境界・新しいretry system・新しいoverlap semantics・
+# 新しいtime basisは一切作らない。
+
+
+def _validate_resource_capacity(resource: Resource, party_size: int) -> Optional[str]:
+    """
+    _validate_table_capacity()と同じ設計（唯一のsource of truthとして
+    複数箇所から呼ばれる、Optional[str]でreason_codeを返す）。
+
+    Resource.capacityはnullable（app/models/resource.pyのコメント参照:
+    車両・設備等、収容人数という概念自体が意味を持たない種別が対象の
+    ため）。capacity is Noneの場合は「人数制約が適用されない」ことを
+    意味し、0や無制限ではない。したがってNoneの場合は常にNoneを返す
+    （＝人数に関わらず常にOK）。
+    """
+    if resource.capacity is not None and party_size > resource.capacity:
+        return "insufficient_capacity"
+    return None
+
+
+async def _resolve_reservation_allocation_mode(db: AsyncSession, shop_id: str) -> str:
+    """
+    Generic Resource Foundation Phase R3: サービス指名なし予約
+    （create_reservation等の「if service: staff-path」以外の枝）が
+    ShopTable経路とResource経路のどちらを使うかを判定する、唯一の
+    source of truth。check_single_slot_availability/get_availability/
+    create_reservationの3箇所すべてがこの関数だけを呼ぶ（Section36
+    「Single Source of Routing Truth」）。
+
+    判定ルール（Architecture Audit Phase R3 Section24-26で確定。
+    STOP条件に該当しないと判断した根拠はPhase R3完了報告参照）:
+
+    1. このshopにShopTableが1件でも登録されていれば（is_activeの
+       状態を問わない）、無条件で"table"を返す。既存Restaurant
+       （ShopTableを使う全ての店舗）の予約経路を、Resourceを後から
+       追加登録しただけで一切変化させないための最優先ルール
+       （Section26「既存Restaurant Safety」）。business_type/category
+       は一切参照しない（Section16「No Business Type Guessing」）。
+
+    2. ShopTableが1件も登録されていない場合のみ、is_active=Trueの
+       Resourceが1件以上あれば"resource"を返す。
+
+    3. どちらも存在しない場合は"table"を返す。この場合
+       _find_available_table()が「管理対象データが0件なら常に空き
+       扱い」という既存のunmanaged判定（Phase3D以前からの既存設計）
+       にそのまま委ねられるため、Resourceを一切登録していない店舗の
+       挙動は本フェーズで1ビットも変化しない。
+
+    resource_typeは一切参照しない（Section14/15: 現時点で
+    ReservationCreateRequest/Serviceのいずれにも「必要resource_type」
+    という契約が存在せず、また各店舗のResourceは単一用途で登録される
+    という既存のR1 Architecture Auditの前提に基づく。既知の制限として
+    Phase R3完了報告に明記する）。
+    """
+    table_exists = await db.execute(
+        select(ShopTable.id).filter(ShopTable.shop_id == shop_id).limit(1)
+    )
+    if table_exists.scalars().first() is not None:
+        return "table"
+
+    active_resource_exists = await db.execute(
+        select(Resource.id).filter(Resource.shop_id == shop_id, Resource.is_active == True).limit(1)  # noqa: E712
+    )
+    if active_resource_exists.scalars().first() is not None:
+        return "resource"
+
+    return "table"
+
+
+async def _find_available_resource(
+    db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int,
+    default_duration_minutes: int, excluded_resource_ids: Optional[set] = None,
+) -> tuple[Optional[str], bool]:
+    """
+    _find_available_table()と全く同じ構造（候補取得→capacity/overlap絞込→
+    決定的な順序で最初の空き候補を返す）。
+    戻り値: (resource_id または None, is_active Resourceが1件も存在しないか)
+
+    並び順（Section13）: capacityが具体的な値を持つResourceを
+    capacity昇順で優先し、capacity=None（人数制約なし）のResourceは
+    最後に回す。同順位内はdisplay_order→idで安定させる
+    （_find_available_table()の「決定的な順序」方針をそのまま踏襲）。
+
+    excluded_resource_ids: _find_and_lock_available_resource()が
+    ロック後の再チェックで競合と判明した候補を除外して次点を探すために
+    使う。通常の呼び出し（check_single_slot_availability/
+    get_availability）では指定しない＝Table/Staffと同じ設計。
+    """
+    resources_result = await db.execute(
+        select(Resource).filter(Resource.shop_id == shop_id, Resource.is_active == True)  # noqa: E712
+    )
+    resources = resources_result.scalars().all()
+    if not resources:
+        return None, True
+
+    excluded = excluded_resource_ids or set()
+    candidates = sorted(
+        [r for r in resources if _validate_resource_capacity(r, party_size) is None and r.id not in excluded],
+        key=lambda r: (r.capacity is None, r.capacity if r.capacity is not None else 0, r.display_order, r.id),
+    )
+    if not candidates:
+        return None, False
+
+    end = start + timedelta(minutes=duration_minutes)
+
+    for resource in candidates:
+        overlap_result = await db.execute(
+            select(Reservation).filter(
+                Reservation.resource_id == resource.id,
+                Reservation.status.in_(["pending", "confirmed"]),
+            )
+        )
+        conflicting = False
+        for existing in overlap_result.scalars().all():
+            existing_start = existing.reservation_date
+            existing_end = existing_start + timedelta(
+                minutes=_existing_duration_minutes(existing, default_duration_minutes)
+            )
+            if existing_start < end and existing_end > start:
+                conflicting = True
+                break
+        if not conflicting:
+            return resource.id, False
+
+    return None, False
+
+
+async def _lock_and_verify_resource_slot(
+    db: AsyncSession, resource_id: str, start: datetime, duration_minutes: int, default_duration_minutes: int,
+    exclude_reservation_id: Optional[str] = None,
+) -> bool:
+    """
+    _lock_and_verify_table_slot()と全く同じ構造。同時多重予約防止のため、
+    対象ResourceをSELECT ... FOR UPDATEでロックしたうえで、ロック取得後に
+    改めて予約重複を再チェックする。create_reservation()/update_reservation()
+    のトランザクション内でのみ呼び出すこと。
+    """
+    await db.execute(select(Resource.id).filter(Resource.id == resource_id).with_for_update())
+    end = start + timedelta(minutes=duration_minutes)
+    overlap_filters = [
+        Reservation.resource_id == resource_id,
+        Reservation.status.in_(["pending", "confirmed"]),
+    ]
+    if exclude_reservation_id is not None:
+        overlap_filters.append(Reservation.id != exclude_reservation_id)
+    overlap_result = await db.execute(select(Reservation).filter(*overlap_filters))
+    for existing in overlap_result.scalars().all():
+        existing_start = existing.reservation_date
+        existing_end = existing_start + timedelta(
+            minutes=_existing_duration_minutes(existing, default_duration_minutes)
+        )
+        if existing_start < end and existing_end > start:
+            return False
+    return True
+
+
+async def _find_and_lock_available_resource(
+    db: AsyncSession, shop_id: str, party_size: int, start: datetime, duration_minutes: int,
+    default_duration_minutes: int,
+) -> tuple[Optional[str], bool]:
+    """
+    _find_and_lock_available_table()と全く同じ構造・同じ_MAX_LOCK_RETRY。
+    create_reservation()専用。
+    """
+    excluded: set = set()
+    for _ in range(_MAX_LOCK_RETRY):
+        resource_id, unmanaged = await _find_available_resource(
+            db, shop_id, party_size, start, duration_minutes, default_duration_minutes,
+            excluded_resource_ids=excluded,
+        )
+        if unmanaged:
+            return resource_id, True
+        if resource_id is None:
+            return None, False
+        if await _lock_and_verify_resource_slot(db, resource_id, start, duration_minutes, default_duration_minutes):
+            return resource_id, False
+        excluded.add(resource_id)
+    return None, False
+
+
 async def check_single_slot_availability(
     db: AsyncSession,
     shop: Shop,
@@ -1127,6 +1321,19 @@ async def check_single_slot_availability(
             return True, None
         return False, ("staff_unavailable" if staff_id else "fully_booked")
     else:
+        # Generic Resource Foundation Phase R3: このshopがTable経路か
+        # Resource経路かを、唯一のsource of truthである
+        # _resolve_reservation_allocation_mode()で判定する
+        # （create_reservation()/get_availability()と完全に同じ判定を
+        # 共有する。Section36「Single Source of Routing Truth」）。
+        allocation_mode = await _resolve_reservation_allocation_mode(db, shop.id)
+        if allocation_mode == "resource":
+            resource_id, unmanaged = await _find_available_resource(
+                db, shop.id, party_size, start_dt, duration, default_duration
+            )
+            if unmanaged or resource_id is not None:
+                return True, None
+            return False, "fully_booked"
         table_id, unmanaged = await _find_available_table(
             db, shop.id, party_size, start_dt, duration, default_duration
         )
@@ -1325,6 +1532,13 @@ async def get_availability(
     # Phase D-3: hoursがShopHoursOverrideの場合もあるため、day_of_week相当は
     # target_date.weekday()から求める（他の3箇所と同じ修正方針）。
     breaks = await _get_shop_break_times(db, shop_id, target_date.weekday())
+    # Generic Resource Foundation Phase R3: allocation_modeはshop_idのみに
+    # 依存し、スロットの時刻には依存しないため、ループの外で一度だけ判定する
+    # （breaksと同じ「スロット数分だけ同じクエリを繰り返さない」という既存方針）。
+    # check_single_slot_availability()/create_reservation()と完全に同じ
+    # 判定を共有する（Section36）。serviceが指定されている場合はStaff pathの
+    # ままであり判定自体が不要なため、無駄なクエリを発生させない。
+    allocation_mode = await _resolve_reservation_allocation_mode(db, shop_id) if not service else None
     slots: List[AvailabilitySlot] = []
     cursor = opening_dt
     while cursor <= latest_start_dt:
@@ -1353,6 +1567,11 @@ async def get_availability(
                     enforce_schedule=bool(shop.staff_schedule_enabled),
                 )
                 available = unmanaged or (found_staff_id is not None)
+            elif allocation_mode == "resource":
+                resource_id, unmanaged = await _find_available_resource(
+                    db, shop_id, party_size, cursor, duration, default_duration
+                )
+                available = unmanaged or (resource_id is not None)
             else:
                 table_id, unmanaged = await _find_available_table(
                     db, shop_id, party_size, cursor, duration, default_duration
@@ -1472,6 +1691,7 @@ async def create_reservation(
         default_duration = shop.reservation_duration_minutes or 90
 
         table_id = None
+        resource_id = None
         final_staff_id = None
         if service:
             if request.staff_id:
@@ -1504,14 +1724,31 @@ async def create_reservation(
                 raise _http_error(400, detail, reason_code="staff_unavailable")
             final_staff_id = found_staff_id if not unmanaged else request.staff_id
         else:
-            # Phase3E-3: テーブル予約も同様にFOR UPDATEロック＋再チェックで
-            # 同時多重予約を防ぐ（_find_and_lock_available_tableのdocstring参照）。
-            table_id, unmanaged = await _find_and_lock_available_table(
-                db, request.shop_id, request.number_of_people, request.reservation_date, duration,
-                default_duration,
-            )
-            if not unmanaged and table_id is None:
-                raise _http_error(400, "ご希望の時間は満席です。他の時間をお試しください", reason_code="fully_booked")
+            # Generic Resource Foundation Phase R3: このshopがTable経路か
+            # Resource経路かを、唯一のsource of truthである
+            # _resolve_reservation_allocation_mode()で判定する
+            # （check_single_slot_availability()/get_availability()と
+            # 完全に同じ判定を共有する。Section36）。
+            allocation_mode = await _resolve_reservation_allocation_mode(db, request.shop_id)
+            if allocation_mode == "resource":
+                # Phase R3: リソース予約も同様にFOR UPDATEロック＋再チェックで
+                # 同時多重予約を防ぐ（_find_and_lock_available_resourceの
+                # docstring参照。Table予約と完全に同じtransaction構造）。
+                resource_id, unmanaged = await _find_and_lock_available_resource(
+                    db, request.shop_id, request.number_of_people, request.reservation_date, duration,
+                    default_duration,
+                )
+                if not unmanaged and resource_id is None:
+                    raise _http_error(400, "ご希望の時間は満席です。他の時間をお試しください", reason_code="fully_booked")
+            else:
+                # Phase3E-3: テーブル予約も同様にFOR UPDATEロック＋再チェックで
+                # 同時多重予約を防ぐ（_find_and_lock_available_tableのdocstring参照）。
+                table_id, unmanaged = await _find_and_lock_available_table(
+                    db, request.shop_id, request.number_of_people, request.reservation_date, duration,
+                    default_duration,
+                )
+                if not unmanaged and table_id is None:
+                    raise _http_error(400, "ご希望の時間は満席です。他の時間をお試しください", reason_code="fully_booked")
 
         coupon: Optional[Coupon] = None
         discount_amount = 0
@@ -1531,6 +1768,7 @@ async def create_reservation(
             user_id=current_user.id if current_user else None,
             staff_id=final_staff_id,
             table_id=table_id,
+            resource_id=resource_id,
             service_id=service.id if service else None,
             coupon_id=coupon.id if coupon else None,
             guest_name=request.guest_name,
@@ -2083,6 +2321,15 @@ async def update_reservation(
                     capacity_reason = _validate_table_capacity(assigned_table, request.number_of_people)
                     if capacity_reason is not None:
                         raise HTTPException(status_code=400, detail="この席の定員を超えています")
+            # Generic Resource Foundation Phase R3: table_idと全く同じ考え方で、
+            # resource_idが設定されている予約についてもcapacityを再検証する
+            # （table_id分岐と非対称なギャップを残さないため）。
+            if reservation.resource_id:
+                assigned_resource = await db.get(Resource, reservation.resource_id)
+                if assigned_resource is not None:
+                    capacity_reason = _validate_resource_capacity(assigned_resource, request.number_of_people)
+                    if capacity_reason is not None:
+                        raise HTTPException(status_code=400, detail="このリソースの定員を超えています")
             reservation.number_of_people = request.number_of_people
         if request.special_requests is not None:
             reservation.special_requests = request.special_requests
@@ -2176,6 +2423,17 @@ async def update_reservation(
             elif reservation.table_id:
                 slot_ok = await _lock_and_verify_table_slot(
                     db, reservation.table_id, request.reservation_date, effective_duration, default_duration,
+                    exclude_reservation_id=reservation.id,
+                )
+                if not slot_ok:
+                    raise HTTPException(status_code=400, detail="ご指定の時間は既に他の予約が入っているため変更できません")
+            elif reservation.resource_id:
+                # Generic Resource Foundation Phase R3: table_id分岐と全く同じ
+                # 考え方。ここを追加しないと、Resource割当済み予約の日時変更時に
+                # overlap再検証が一切行われず、ダブルブッキング防止という本フェーズの
+                # 核心原則（Correctness before convenience）に反するため必須。
+                slot_ok = await _lock_and_verify_resource_slot(
+                    db, reservation.resource_id, request.reservation_date, effective_duration, default_duration,
                     exclude_reservation_id=reservation.id,
                 )
                 if not slot_ok:
