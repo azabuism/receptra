@@ -27,8 +27,13 @@ from app.services.outbound_dispatch import enqueue_reservation_confirmed_call
 from app.schemas.reservation import (
     ReservationCreateRequest, ReservationResponse, ReservationCreateResponse,
     ReservationUpdateRequest, ReservationListResponse,
-    AvailabilityResponse, AvailabilitySlot
+    AvailabilityResponse, AvailabilitySlot,
+    BoardResponse, BoardBreakTimeItem, BoardReservationItem,
 )
+# Owner Booking Board: CallbackRequestの一覧マスク表示規約（"****"＋末尾4桁）を
+# そのまま再利用する（新しいマスク方式を作らない。Reservationのguest_phoneに
+# ついても同じ規約で統一する）。
+from app.schemas.callback_request import mask_phone_for_list
 
 logger = logging.getLogger("receptra.reservations")
 
@@ -1598,18 +1603,33 @@ async def create_reservation(
 @router.get(
     "/{reservation_id}",
     response_model=ReservationResponse,
-    summary="予約詳細を取得"
+    summary="予約詳細を取得（オーナー用）",
+    description="予約1件の詳細（フル電話番号含む）を取得。オーナー本人のみ閲覧可能"
 )
 async def get_reservation(
     reservation_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> ReservationResponse:
+    # Owner Booking Board Phase監査結果: 本エンドポイントは従来
+    # current_user依存を一切持たず未認証で公開されていたが、grep調査により
+    # フロントエンド・バックエンドいずれからも呼び出し元が存在しない（実質未使用）
+    # ことを確認済み。Booking Boardの「一覧ではマスク済み電話番号のみ表示し、
+    # 詳細表示でオーナー認証を経てフル電話番号を確認する」という要件（既存の
+    # CallbackRequestマスク一覧／認証済み詳細取得と同じパターン）を満たすため、
+    # 新しい「reveal」専用APIを別途新設するのではなく、この既存かつ未使用の
+    # エンドポイントへオーナー認証・tenant分離チェックを追加して安全化した上で
+    # 再利用する（大規模API追加を避けるための最小限の変更）。呼び出し元が
+    # 存在しなかったため、この変更による既存挙動への影響は無い。
     result = await db.execute(
         select(Reservation).options(selectinload(Reservation.table), selectinload(Reservation.staff), selectinload(Reservation.service), selectinload(Reservation.coupon)).filter(Reservation.id == reservation_id)
     )
     reservation = result.scalar_one_or_none()
     if not reservation:
         raise HTTPException(status_code=404, detail="予約が見つかりません")
+    shop = await db.get(Shop, reservation.shop_id)
+    if not shop or shop.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="この予約を閲覧する権限がありません")
     return _to_response(reservation)
 
 
@@ -1648,6 +1668,156 @@ async def get_shop_reservations(
     return ReservationListResponse(
         total=total, limit=limit, offset=offset,
         items=[_to_response(r) for r in reservations]
+    )
+
+
+@router.get(
+    "/shop/{shop_id}/board",
+    response_model=BoardResponse,
+    summary="予約表（Booking Board）用の1日分データを取得（オーナー用）",
+    description=(
+        "指定日を開始日とする営業セッション（日跨ぎ営業の場合は翌日早朝の継続分も含む）"
+        "に属する予約・休憩時間・営業時間を1回のリクエストでまとめて返す。"
+        "オーナー本人のみ閲覧可能。guest_phoneは一覧のためマスク済み"
+    ),
+)
+async def get_shop_reservations_board(
+    shop_id: str,
+    date: str = Query(..., description="日付（YYYY-MM-DD）。この日を開始日とする営業セッションを対象にする"),
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BoardResponse:
+    """
+    Owner Booking Board V1（Reservation Intelligence可視化）Phase:
+
+    既存の GET /shop/{shop_id} 一覧エンドポイントは日付フィルタを持たず
+    （全件取得してoffset/limitでページングするのみ・古い順ソート・最大200件）、
+    日付単位で1日分の予約表を効率よく描画するオーナー向けUIの用途には
+    不十分と判断し、監査の上で本エンドポイントを新設した（大規模なAPI再設計
+    ではなく、既存の_get_shop_break_times/_resolve_day_hours/_get_closure_for_date
+    という確立済みのReservation Intelligenceヘルパーをそのまま再利用する
+    追加エンドポイント1本のみ）。
+
+    「日付」の意味は_resolve_business_session()と同じ「営業セッションは開始日に
+    帰属する」という考え方に厳密に合わせる。日跨ぎ営業（closes_next_day=True）
+    の場合、翌日の早朝側の継続時間帯（例: 月曜18:00〜翌03:00営業の火曜01:00の
+    予約）もこの「月曜」のセッションに含めて返す。ただし翌日自身が独立した
+    営業時間を持ち、その開店時刻の方が早い場合は、_resolve_business_session()の
+    「today優先」判定と一致するよう、その開店時刻でセッション範囲を打ち切る
+    （でなければ、Board側だけが実際の予約可否判定ロジックと矛盾した予約の
+    帰属を表示してしまう）。
+
+    優先順位（ShopClosure > ShopHoursOverride > ShopHours）は
+    app/models/shop.pyのShopHoursOverrideのdocstring、および
+    get_availability()と完全に同じ順序で判定する。
+    """
+    shop = await db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="指定された店舗が見つかりません")
+    if shop.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="この店舗の予約を閲覧する権限がありません")
+
+    try:
+        target_date = date_type.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日付の形式が正しくありません（YYYY-MM-DD）")
+
+    common = dict(shop_id=shop_id, date=date)
+
+    # 臨時休業（ShopClosure）が最優先。Phase D-1の他の呼び出し元
+    # （create_reservation等）と同じく、判定はセッションの開始日（=target_date）
+    # を基準にする。
+    closure = await _get_closure_for_date(db, shop_id, target_date)
+    if closure:
+        return BoardResponse(
+            **common, day_status="closed_temporary",
+            closure_reason=((closure.reason or "").strip() or None),
+            break_times=[], reservations=[],
+        )
+
+    hours, hours_source, is_open = await _resolve_day_hours(db, shop_id, target_date)
+    if hours is None:
+        return BoardResponse(**common, day_status="hours_not_configured", break_times=[], reservations=[])
+    if not is_open:
+        return BoardResponse(**common, day_status="closed_regular", break_times=[], reservations=[])
+
+    session_start = datetime.combine(target_date, hours.opening_time)
+    session_end = datetime.combine(target_date, hours.closing_time)
+    closes_next_day = bool(hours.closes_next_day)
+    if closes_next_day:
+        session_end += timedelta(days=1)
+        # _resolve_business_session()の「today優先（start_dt.time() >= その日の
+        # opening_time なら常にその日自身のセッション）」という決定的な判定と
+        # 一致させるため、翌日自身が営業日であればその開店時刻でこのセッションの
+        # 表示範囲を打ち切る。翌日が休業／未設定であれば、_resolve_business_session()
+        # 側もyesterday（＝このtarget_date）継続とみなすため、打ち切りは不要
+        # （nominal session_endのまま）。
+        tomorrow_date = target_date + timedelta(days=1)
+        tomorrow_hours, _tomorrow_source, tomorrow_is_open = await _resolve_day_hours(db, shop_id, tomorrow_date)
+        if tomorrow_hours is not None and tomorrow_is_open:
+            tomorrow_opening_dt = datetime.combine(tomorrow_date, tomorrow_hours.opening_time)
+            if tomorrow_opening_dt < session_end:
+                session_end = tomorrow_opening_dt
+
+    # Reservation Intelligence Phase D-2: 休憩時間はtarget_date（=このセッションの
+    # 帰属曜日）を基準に取得する（_get_shop_break_times()のdocstring通り）。
+    breaks = await _get_shop_break_times(db, shop_id, target_date.weekday())
+    break_items = [
+        BoardBreakTimeItem(
+            start_time=b.start_time.strftime("%H:%M"),
+            end_time=b.end_time.strftime("%H:%M"),
+            start_next_day=bool(b.start_next_day),
+            end_next_day=bool(b.end_next_day),
+        )
+        for b in breaks
+    ]
+
+    result = await db.execute(
+        select(Reservation)
+        .options(
+            selectinload(Reservation.service), selectinload(Reservation.staff), selectinload(Reservation.table),
+        )
+        .filter(
+            Reservation.shop_id == shop_id,
+            Reservation.reservation_date >= session_start,
+            Reservation.reservation_date < session_end,
+        )
+        .order_by(Reservation.reservation_date.asc())
+    )
+    reservations = result.scalars().all()
+
+    default_duration = shop.reservation_duration_minutes or 90
+    items = [
+        BoardReservationItem(
+            id=r.id,
+            reservation_date=r.reservation_date,
+            # Reservation Intelligence Phase B: NULL(Phase B以前の既存予約)は
+            # 0分や無制限として扱わず、必ず具体的な分数へフォールバックする
+            # （既存の空き状況判定と同一のソース・オブ・トゥルース）。
+            effective_duration_minutes=_existing_duration_minutes(r, default_duration),
+            guest_name=r.guest_name,
+            guest_phone_masked=mask_phone_for_list(r.guest_phone),
+            number_of_people=r.number_of_people,
+            status=r.status,
+            service_name=(r.service.name if r.service else None),
+            staff_name=(r.staff.name if r.staff else None),
+            table_name=(r.table.name if r.table else None),
+            special_requests=r.special_requests,
+        )
+        for r in reservations
+    ]
+
+    return BoardResponse(
+        **common,
+        day_status="open",
+        hours_source=hours_source,
+        opening_time=hours.opening_time.strftime("%H:%M"),
+        closing_time=hours.closing_time.strftime("%H:%M"),
+        closes_next_day=closes_next_day,
+        session_start=session_start,
+        session_end=session_end,
+        break_times=break_items,
+        reservations=items,
     )
 
 

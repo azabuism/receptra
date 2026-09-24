@@ -93,6 +93,68 @@ class ReservationListResponse(BaseModel):
     items: List[ReservationResponse]
 
 
+# ===== Owner Booking Board (Reservation Intelligence可視化) Phase =====
+#
+# 設計方針（重要・必ず守ること）:
+# - Booking Boardは「新しい予約エンジン」ではなく、既存Reservation Intelligence
+#   （Phase D-1/D-2/D-3の営業セッション・休憩時間・特定日営業時間ロジック）を
+#   オーナー向けに可視化するための読み取り専用レスポンスである。
+# - guest_phoneは一覧のため必ずマスク済み（app.schemas.callback_request.
+#   mask_phone_for_listと同じ表示規約「****」＋末尾4桁）で返す。フルの電話番号が
+#   必要な場合は、既存の GET /api/v1/reservations/{reservation_id}
+#   （本フェーズでオーナー認証・tenant分離を追加済み）を別途呼び出す。
+# - effective_duration_minutesは、reservation.duration_minutesがNULLの既存予約
+#   （Phase B以前に作成）についても必ず具体的な分数を返す
+#   （app.routers.reservations._existing_duration_minutes経由。0分やnullを
+#   返すことはない）。
+# - day_statusは「営業日で予約0件」「定休日」「臨時休業」「営業時間未設定」を
+#   明確に区別する（Board側で空配列だけを見て誤解しないようにするため）。
+
+
+class BoardBreakTimeItem(BaseModel):
+    """予約表の1休憩時間帯（表示用に時刻文字列へ変換済み）"""
+    start_time: str = Field(..., description="開始時刻（HH:MM）")
+    end_time: str = Field(..., description="終了時刻（HH:MM）")
+    start_next_day: bool = Field(False, description="開始時刻がセッション開始日の翌日側であるか")
+    end_next_day: bool = Field(False, description="終了時刻がセッション開始日の翌日側であるか")
+
+
+class BoardReservationItem(BaseModel):
+    """予約表の1予約分。guest_phoneは一覧のためマスク済み"""
+    id: str
+    reservation_date: datetime
+    # Reservation Intelligence Phase B: NULLの場合も必ず具体的な分数
+    # （_existing_duration_minutes経由）。0分やnullにはならない。
+    effective_duration_minutes: int
+    guest_name: Optional[str] = None
+    guest_phone_masked: Optional[str] = None
+    number_of_people: int
+    status: str
+    service_name: Optional[str] = None
+    staff_name: Optional[str] = None
+    table_name: Optional[str] = None
+    special_requests: Optional[str] = None
+
+
+class BoardResponse(BaseModel):
+    """予約表（Booking Board）1日分のレスポンス"""
+    shop_id: str
+    date: str
+    # open: 営業セッションあり（予約0件の可能性もある） /
+    # closed_regular: 定休日 / closed_temporary: 臨時休業（ShopClosure） /
+    # hours_not_configured: 営業時間が一度も設定されていない
+    day_status: str
+    hours_source: Optional[str] = Field(None, description="override（特定日営業時間） または weekly（通常営業時間）")
+    opening_time: Optional[str] = None
+    closing_time: Optional[str] = None
+    closes_next_day: bool = False
+    session_start: Optional[datetime] = None
+    session_end: Optional[datetime] = None
+    closure_reason: Optional[str] = None
+    break_times: List[BoardBreakTimeItem] = []
+    reservations: List[BoardReservationItem] = []
+
+
 class AvailabilitySlot(BaseModel):
     """空き状況の1枠"""
     time: str = Field(..., description="開始時刻（HH:MM）")
