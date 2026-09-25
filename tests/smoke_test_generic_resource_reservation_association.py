@@ -279,17 +279,32 @@ async def main():
             assert r.status_code == 403, f"他テナントが削除できてしまった: {r.status_code} {r.text}"
             print("I. Resource CRUDのテナント分離（継続的な健全性の再確認）: OK")
 
-            # ===== J. Board API回帰: resource関連フィールド不在の確認 =====
+            # ===== J. Board API回帰 =====
+            # Phase R2〜R4当時はBoard（Booking Board）にresource関連フィールドを
+            # 一切含めない方針だった（当時のSection21）。Phase R5 Part Aで
+            # Resource Lane（設備・部屋別レーン）をBoardへ正式に統合したため、
+            # この方針は意図的に変更された——BoardReservationItemには
+            # resource_id/resource_nameが常にキーとして存在するようになった
+            # （staff_id/table_idと全く同じ「割当が無ければNone」という既存
+            # 規約に合わせた追加専用フィールド。値そのものの正しさはこのファイル
+            # の他セクション、および tests/smoke_test_booking_board_resource_lane.py
+            # で別途検証済みのため、ここでは「キーが存在すること」のみを
+            # regressionとして確認する）。
             r = await client.get(f"/api/v1/reservations/shop/{shop_a}/board", params={
                 "date": future_date.date().isoformat(),
             }, headers=owner_a)
             assert r.status_code == 200, f"Board取得失敗: {r.status_code} {r.text}"
             board_body = r.json()
+            assert "resource_roster" in board_body, (
+                "Phase R5 Part AでBoardResponseにresource_rosterが追加されているはずが見つからない"
+            )
             for item in board_body["reservations"]:
-                assert "resource_id" not in item and "resource_name" not in item, (
-                    "BoardReservationItemにresource関連フィールドが混入している（Section21違反）"
+                assert "resource_id" in item and "resource_name" in item, (
+                    "Phase R5 Part AでBoardReservationItemにresource_id/resource_nameが"
+                    "追加されているはずが見つからない"
                 )
-            print("J. Board API回帰: BoardReservationItemにresource関連フィールドが一切含まれない: OK")
+            print("J. Board API: Phase R5 Part Aで追加されたresource_id/resource_name/resource_rosterが"
+                  "正しく存在する（後方互換の追加専用フィールド）: OK")
 
             # ===== K. Week API回帰: staff_id/table_id/resource系フィールド不在の確認 =====
             monday = future_date.date() - timedelta(days=future_date.date().weekday())

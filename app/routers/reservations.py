@@ -30,7 +30,7 @@ from app.schemas.reservation import (
     ReservationUpdateRequest, ReservationListResponse,
     AvailabilityResponse, AvailabilitySlot,
     BoardResponse, BoardBreakTimeItem, BoardReservationItem,
-    BoardStaffRosterItem, BoardTableRosterItem,
+    BoardStaffRosterItem, BoardTableRosterItem, BoardResourceRosterItem,
     WeekResponse, WeekDaySummary, WeekReservationBlock,
 )
 # Owner Booking Board: CallbackRequestの一覧マスク表示規約（"****"＋末尾4桁）を
@@ -2264,8 +2264,26 @@ async def get_shop_reservations_board(
     table_roster = [
         BoardTableRosterItem(id=t.id, name=t.name, capacity=t.capacity) for t in table_roster_result.scalars().all()
     ]
+    # ★★★ Resource Lane V2 (Phase R5): staff_roster/table_rosterと全く同じ
+    # クエリパターン（Resource.shop_id + is_active=True、display_order→
+    # created_at順）。Table経路/Resource経路のどちらが実際に使われているか
+    # （_resolve_reservation_allocation_mode）は一切参照しない——Boardは
+    # 実際の予約割当をそのまま表示するだけであり、割当ロジックを推測・
+    # 混同しない（Section16）。
+    resource_roster_result = await db.execute(
+        select(Resource)
+        .filter(Resource.shop_id == shop_id, Resource.is_active == True)  # noqa: E712
+        .order_by(Resource.display_order, Resource.created_at)
+    )
+    resource_roster = [
+        BoardResourceRosterItem(id=res.id, name=res.name, resource_type=res.resource_type)
+        for res in resource_roster_result.scalars().all()
+    ]
 
-    common = dict(shop_id=shop_id, date=date, staff_roster=staff_roster, table_roster=table_roster)
+    common = dict(
+        shop_id=shop_id, date=date, staff_roster=staff_roster, table_roster=table_roster,
+        resource_roster=resource_roster,
+    )
 
     # 臨時休業（ShopClosure）が最優先。Phase D-1の他の呼び出し元
     # （create_reservation等）と同じく、判定はセッションの開始日（=target_date）
@@ -2319,6 +2337,11 @@ async def get_shop_reservations_board(
         select(Reservation)
         .options(
             selectinload(Reservation.service), selectinload(Reservation.staff), selectinload(Reservation.table),
+            # ★★★ Resource Lane V2 (Phase R5): service/staff/tableと全く同じ
+            # selectinloadパターンを追加するだけ（追加のラウンドトリップクエリは
+            # 発生するが、既存のservice/staff/tableと同じ1回のeager loadで済む。
+            # N+1クエリにはしない）。
+            selectinload(Reservation.resource),
         )
         .filter(
             Reservation.shop_id == shop_id,
@@ -2350,6 +2373,11 @@ async def get_shop_reservations_board(
             # （Reservation行自体が持つ列をそのまま返すだけ）。
             staff_id=r.staff_id,
             table_id=r.table_id,
+            # ★★★ Resource Lane V2 (Phase R5): staff_id/table_idと全く同じ、
+            # Reservation行自体が持つ列をそのまま返すだけ（resourceは既に
+            # selectinload済みのため追加クエリは発生しない）。
+            resource_id=r.resource_id,
+            resource_name=(r.resource.name if r.resource else None),
             special_requests=r.special_requests,
         )
         for r in reservations

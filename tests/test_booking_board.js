@@ -50,6 +50,10 @@ const fnNames = [
     '_boardComputeNextDayBoundaryOffset', '_boardFormatHoursRangeLabel', '_boardStripLeadingZeroHour',
     '_boardComputeLayout', '_boardFindNextReservation', '_boardComputeTimelineTimeState',
     '_boardIsViewingToday',
+    // Resource Lane V2 (Phase R5 Part A): 'resource'モード分岐の追加を検証する。
+    // _boardBuildResourceLanes()自体はDOMを一切触らない純粋関数（コード上の
+    // コメントSection37/38の通り）のため、既存のvm-based抽出方式がそのまま使える。
+    '_boardBuildResourceLanes',
 ];
 const BOARD_PX_PER_MINUTE_EXPR = extractConst(SRC, 'BOARD_PX_PER_MINUTE');
 const WEEKDAY_NAMES_EXPR = extractConst(SRC, 'BOARD_WEEKDAY_NAMES_JA');
@@ -246,6 +250,52 @@ assertEq('46F. 過去日付: autoScrollTargetはnull', stateF.autoScrollTarget, 
 // G. viewing future date（同様にすべてnull）
 const stateG = context._boardComputeTimelineTimeState(Object.assign({}, baseOpts, { viewedDate: '2026-09-29', nowCoord: 1100 }));
 assertEq('46G. 未来日付: isTodayはfalse、すべてnull', [stateG.isToday, stateG.nowOffset, stateG.nextReservation, stateG.autoScrollTarget], [false, null, null, null]);
+
+// ===== Resource Lane V2 (Phase R5 Part A): _boardBuildResourceLanes() 'resource'モード =====
+
+const resourceRoster = [
+    { id: 'res-1', name: '個室A' },
+    { id: 'res-2', name: '個室B' },
+];
+const resourceReservations = [
+    { id: 'r1', resource_id: 'res-1', resource_name: '個室A' },
+    { id: 'r2', resource_id: 'res-2', resource_name: '個室B' },
+    // ロスターに存在しないID（非アクティブ化・削除等）でも、予約自身が持つ
+    // resource_nameでレーンを追加する（Section40と同じ防御ロジック。staff/table
+    // と全く同じ挙動をresourceモードでも確認する）。
+    { id: 'r3', resource_id: 'res-orphaned', resource_name: '個室C(非アクティブ)' },
+    // 未割当（resource_id無し）は最後のレーンにまとめる。
+    { id: 'r4', resource_id: null, resource_name: null },
+];
+const resourceLanes = context._boardBuildResourceLanes('resource', resourceReservations, [], [], resourceRoster);
+assertEq('ResourceLane: レーン数 = ロスター2件 + orphan1件 + 未割当1件 = 4',
+    resourceLanes.length, 4);
+assertEq('ResourceLane: 先頭2レーンはロスター順(個室A, 個室B)',
+    resourceLanes.slice(0, 2).map((l) => l.label), ['個室A', '個室B']);
+assertEq('ResourceLane: res-1レーンにr1が入る', resourceLanes[0].reservations.map((r) => r.id), ['r1']);
+assertEq('ResourceLane: res-2レーンにr2が入る', resourceLanes[1].reservations.map((r) => r.id), ['r2']);
+assertEq('ResourceLane: ロスター外のresource_idも予約自身の名前でレーン化される(orphan safety)',
+    resourceLanes[2], { id: 'res-orphaned', label: '個室C(非アクティブ)', reservations: [resourceReservations[2]] });
+assertEq('ResourceLane: 最後は常に未割当レーン(id:null)。0件でも消えない',
+    resourceLanes[3].id, null);
+assertEq('ResourceLane: 未割当レーンのlabelは既存staff/tableと同じ「未割当」',
+    resourceLanes[3].label, '未割当');
+assertEq('ResourceLane: 未割当レーンにr4が入る', resourceLanes[3].reservations.map((r) => r.id), ['r4']);
+
+// 予約0件・ロスター2件でも、ロスター分のレーン+未割当レーンは必ず存在する
+// （0件の担当者/テーブルも見えるようにする既存方針。Section18「非常に重要。消さない」）。
+const emptyResourceLanes = context._boardBuildResourceLanes('resource', [], [], [], resourceRoster);
+assertEq('ResourceLane: 予約0件でもロスター分のレーンは消えない', emptyResourceLanes.length, 3);
+assertEq('ResourceLane: 予約0件でも未割当レーンは残る(空配列)', emptyResourceLanes[2], { id: null, label: '未割当', reservations: [] });
+
+// 既存の'staff'/'table'モードが、resourceRoster引数を追加しても
+// 従来と全く同じ挙動のままであることの回帰確認（第5引数を渡さない既存の
+// 呼び出し元との後方互換性）。
+const staffLanesRegression = context._boardBuildResourceLanes('staff', [
+    { id: 'x1', staff_id: 's1', staff_name: '佐藤' },
+], [{ id: 's1', name: '佐藤' }], [{ id: 't1', name: 'テーブル1' }]);
+assertEq('ResourceLane regression: staffモードは従来通りstaff_id/staff_nameで動く',
+    staffLanesRegression.map((l) => l.label), ['佐藤', '未割当']);
 
 console.log('\n' + (failures === 0 ? 'ALL BOOKING BOARD JS CHECKS PASSED' : failures + ' FAILURES'));
 process.exit(failures === 0 ? 0 : 1);

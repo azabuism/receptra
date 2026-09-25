@@ -174,6 +174,14 @@ class BoardReservationItem(BaseModel):
     # 弱いため）。既存フィールドは一切変更しない、後方互換の追加のみ。
     staff_id: Optional[str] = None
     table_id: Optional[str] = None
+    # ★★★ Resource Lane V2 (Phase R5): staff_id/table_idと全く同じ考え方・
+    # 全く同じ後方互換の追加パターン。resource_id（内部ID）はグループ化キー、
+    # resource_name（表示名文字列）はカード・詳細シート表示用。Booking Board
+    # はGeneric Resource自動割当の判定を一切行わず、Reservation.resource_id
+    # に実際に記録されている割当をそのまま表示するだけ（Section16「Board must
+    # reflect actual Reservation assignment, not infer allocation」）。
+    resource_id: Optional[str] = None
+    resource_name: Optional[str] = None
     special_requests: Optional[str] = None
 
 
@@ -190,6 +198,18 @@ class BoardTableRosterItem(BaseModel):
     id: str
     name: str
     capacity: int
+
+
+class BoardResourceRosterItem(BaseModel):
+    """Resource Lane V2 (Phase R5): 設備・部屋別レーンのヘッダー用。BoardStaffRosterItem/
+    BoardTableRosterItemと全く同じ考え方（is_active=Trueのみ、display_order順で
+    その日の予約の有無に関わらず常に返す）。resource_typeはUI側で補助的な文脈情報
+    として使う可能性があるためだけに含める（Section7「lane headerは主にResource.name
+    を表示。resource_typeは補助情報としてのみ」）。resource_id（内部ID）・
+    allocation_mode等の内部概念はOwner向けレスポンスにも一切含めない。"""
+    id: str
+    name: str
+    resource_type: str
 
 
 class BoardResponse(BaseModel):
@@ -214,6 +234,12 @@ class BoardResponse(BaseModel):
     # 切り替えるたびにモード選択肢が消えたり増えたりしないようにするため）。
     staff_roster: List[BoardStaffRosterItem] = []
     table_roster: List[BoardTableRosterItem] = []
+    # ★★★ Resource Lane V2 (Phase R5): staff_roster/table_rosterと全く同じ
+    # 「day_statusに関わらず常に返す」規約。フロントエンドの表示モード切替
+    # ボタンの表示可否（ロスター件数のみで判定。業種は一切参照しない）を
+    # Board取得だけで決定できるようにする（既存の担当者別/テーブル別と同じ
+    # 方針をそのまま踏襲。Section17）。
+    resource_roster: List[BoardResourceRosterItem] = []
 
 
 class WeekReservationBlock(BaseModel):

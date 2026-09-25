@@ -1521,6 +1521,12 @@
                         <button type="button" class="board-mode-btn active" id="board-mode-all-btn" data-mode="all" aria-pressed="true">すべて</button>
                         <button type="button" class="board-mode-btn hidden" id="board-mode-staff-btn" data-mode="staff" aria-pressed="false">担当者別</button>
                         <button type="button" class="board-mode-btn hidden" id="board-mode-table-btn" data-mode="table" aria-pressed="false">テーブル別</button>
+                        <!-- Resource Lane V2 (Phase R5): 既存の担当者別/テーブル別ボタンと全く同じ
+                             構造・全く同じdata-mode属性ベースのクリックハンドラ（_boardSetMode）を
+                             そのまま使う。JS側追加は一切不要。ラベルはSection8の推奨案
+                             「設備・部屋別」を採用（resource/resource_type/allocation_mode等の
+                             内部語をOwner向けUIに一切出さない）。 -->
+                        <button type="button" class="board-mode-btn hidden" id="board-mode-resource-btn" data-mode="resource" aria-pressed="false">設備・部屋別</button>
                     </div>
                     <div id="board-body"></div>
                 </div>
@@ -4654,7 +4660,7 @@
             // フォールバックは、day_status（休業日等）に関わらず常に同じ
             // ロスターに基づいて決める（Board APIは常にstaff_roster/
             // table_rosterを返す）。
-            _boardUpdateModeToggle(data.staff_roster, data.table_roster);
+            _boardUpdateModeToggle(data.staff_roster, data.table_roster, data.resource_roster);
             if (data.day_status === 'closed_temporary') {
                 const reason = data.closure_reason ? '（' + escapeHtml(data.closure_reason) + '）' : '';
                 _boardRenderState('empty', '臨時休業' + reason, false);
@@ -4729,15 +4735,20 @@
                 '</div>';
         }
 
-        // Resource Lane V1: 予約配列 + ロスターから、レーンの配列を組み立てる
+        // Resource Lane V1/V2: 予約配列 + ロスターから、レーンの配列を組み立てる
         // 純粋関数（Section37/38）。DOMは一切触らない。
-        // mode: 'staff' | 'table'。戻り値: [{id, label, reservations: [...]}]
+        // mode: 'staff' | 'table' | 'resource'。戻り値: [{id, label, reservations: [...]}]
         // 最後の要素は必ず{id: null, label: '未割当', reservations: [...]}
         // （0件でも常に含める。Section18「非常に重要。消さない」）。
-        function _boardBuildResourceLanes(mode, visibleReservations, staffRoster, tableRoster) {
-            const roster = mode === 'staff' ? (staffRoster || []) : (tableRoster || []);
-            const idKey = mode === 'staff' ? 'staff_id' : 'table_id';
-            const nameFallbackKey = mode === 'staff' ? 'staff_name' : 'table_name';
+        // Resource Lane V2 (Phase R5): 'resource'モードもstaff/tableと全く同じ
+        // 構造で追加。Section16「Board must reflect actual Reservation assignment,
+        // not infer allocation」——ここでもGeneric Resourceの自動割当判定
+        // （_resolve_reservation_allocation_mode等）は一切呼ばない。単に
+        // Reservation.resource_idの実際の値でグループ化するだけ。
+        function _boardBuildResourceLanes(mode, visibleReservations, staffRoster, tableRoster, resourceRoster) {
+            const roster = mode === 'staff' ? (staffRoster || []) : mode === 'table' ? (tableRoster || []) : (resourceRoster || []);
+            const idKey = mode === 'staff' ? 'staff_id' : mode === 'table' ? 'table_id' : 'resource_id';
+            const nameFallbackKey = mode === 'staff' ? 'staff_name' : mode === 'table' ? 'table_name' : 'resource_name';
 
             const lanesById = {};
             const laneOrder = [];
@@ -4926,7 +4937,7 @@
         // 一切変更せず、レーンごとに個別に呼び出すだけ（Section34-37）。
         function _boardRenderResourceLaneTimeline(data, ctx) {
             const grid = document.getElementById('board-resource-grid');
-            const lanes = _boardBuildResourceLanes(boardMode, ctx.visibleReservations, data.staff_roster, data.table_roster);
+            const lanes = _boardBuildResourceLanes(boardMode, ctx.visibleReservations, data.staff_roster, data.table_roster, data.resource_roster);
             lanes.forEach(function (lane) { _boardComputeLayout(lane.reservations); });
 
             const laneCount = lanes.length;
@@ -5025,25 +5036,32 @@
         // 存在しないモード（ロスター0件）は非表示にする（Section15）。現在選択中の
         // モードのロスターが0件になった場合は「すべて」へフォールバックする
         // （Section48「モード自体を非表示にできるならそちらを優先」）。
-        function _boardUpdateModeToggle(staffRoster, tableRoster) {
+        function _boardUpdateModeToggle(staffRoster, tableRoster, resourceRoster) {
             const staffBtn = document.getElementById('board-mode-staff-btn');
             const tableBtn = document.getElementById('board-mode-table-btn');
+            const resourceBtn = document.getElementById('board-mode-resource-btn');
             const allBtn = document.getElementById('board-mode-all-btn');
             const hasStaff = !!(staffRoster && staffRoster.length);
             const hasTable = !!(tableRoster && tableRoster.length);
+            // Resource Lane V2 (Phase R5): hasStaff/hasTableと全く同じ判定
+            // （ロスター件数のみ。業種は一切参照しない。Section17）。
+            const hasResource = !!(resourceRoster && resourceRoster.length);
             staffBtn.classList.toggle('hidden', !hasStaff);
             tableBtn.classList.toggle('hidden', !hasTable);
-            if ((boardMode === 'staff' && !hasStaff) || (boardMode === 'table' && !hasTable)) {
+            resourceBtn.classList.toggle('hidden', !hasResource);
+            if ((boardMode === 'staff' && !hasStaff) || (boardMode === 'table' && !hasTable) || (boardMode === 'resource' && !hasResource)) {
                 boardMode = 'all';
             }
             allBtn.classList.toggle('active', boardMode === 'all');
             staffBtn.classList.toggle('active', boardMode === 'staff');
             tableBtn.classList.toggle('active', boardMode === 'table');
+            resourceBtn.classList.toggle('active', boardMode === 'resource');
             // UX FINAL POLISH P5: 既存のseg-control(radiogroup)パターンと同じ
             // aria-pressed管理をここでも行う。
             allBtn.setAttribute('aria-pressed', String(boardMode === 'all'));
             staffBtn.setAttribute('aria-pressed', String(boardMode === 'staff'));
             tableBtn.setAttribute('aria-pressed', String(boardMode === 'table'));
+            resourceBtn.setAttribute('aria-pressed', String(boardMode === 'resource'));
         }
 
         // モードボタン押下: 新しい通信は発生させず、直近のBoardデータをそのまま
@@ -5086,6 +5104,10 @@
             if (item.service_name) rows.push([currentServiceLabelMeta.itemLabel, item.service_name]);
             if (item.staff_name) rows.push(['担当', item.staff_name]);
             if (item.table_name) rows.push(['テーブル・席', item.table_name]);
+            // Resource Lane V2 (Phase R5): staff_name/table_nameと全く同じ
+            // パターン。resource_type等の内部カテゴリラベルは表示せず、
+            // Resource.nameのみを表示する（Section6/7）。
+            if (item.resource_name) rows.push(['設備・部屋', item.resource_name]);
 
             const rowsHtml = rows.map(function (pair) {
                 return '<div class="board-sheet-row"><span class="label">' + escapeHtml(pair[0]) + '</span><span class="value">' + escapeHtml(String(pair[1])) + '</span></div>';
