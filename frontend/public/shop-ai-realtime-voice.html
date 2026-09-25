@@ -3077,7 +3077,11 @@
                 party_size: args && args.party_size,
             };
             if (args && args.service_id) body.service_id = args.service_id;
-            if (args && args.staff_id) body.staff_id = args.staff_id;
+            // Phase R5 Part B: staff_id（内部ID）はTool定義から意図的に除外済み
+            // （AIはstaff_idを一切知らない）。名指しはstaff_name（自然文の氏名）
+            // 経由でのみ転送する。万一argsに古いstaff_idが含まれていても、
+            // ここで一切転送しない（AIによるID発明を転送層でも二重に防ぐ）。
+            if (args && args.staff_name) body.staff_name = args.staff_name;
             // Generic Resource Foundation Phase R4: 省略可能。AIが明示的に
             // 指定した場合のみ転送する（他のtoolと全く同じ「明示指定のみ
             // 転送」パターン）。
@@ -3150,7 +3154,8 @@
                 session_id: voiceSessionId,
             };
             if (args && args.service_id) body.service_id = args.service_id;
-            if (args && args.staff_id) body.staff_id = args.staff_id;
+            // Phase R5 Part B: check_availabilityと同じ理由でstaff_idは転送しない。
+            if (args && args.staff_name) body.staff_name = args.staff_name;
             if (args && args.special_requests) body.special_requests = args.special_requests;
             // Generic Resource Foundation Phase R4: check_availabilityと同じ
             // 「明示指定のみ転送」パターン。

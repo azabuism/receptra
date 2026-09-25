@@ -339,7 +339,26 @@ class CheckAvailabilityRequest(BaseModel):
     time: str = Field(..., description="時刻（HH:MM、24時間表記）")
     party_size: int = Field(1, ge=1, le=999, description="人数")
     service_id: Optional[str] = Field(None, description="サービスID（美容院・クリニック等、サービス単位で予約する業種の場合のみ）")
-    staff_id: Optional[str] = Field(None, description="スタッフ指名がある場合のみ")
+    staff_id: Optional[str] = Field(
+        None,
+        description=(
+            "スタッフID（内部ID）。Realtime AIのTool定義からは意図的に除外されており"
+            "（Phase R5 Part B。AIはstaff_idを一切知らないため）、Realtime Voice経由では"
+            "実際には渡らない。他の将来の安全な呼び出し元のためにスキーマ上残すのみ。"
+        ),
+    )
+    # Phase R5 Part B: Named Staff Safe Resolution。お客様が実際に発話した
+    # スタッフの氏名（自然文。例:「田中」「田中美咲」）をそのまま渡す。
+    # staff_id（内部ID）をAIに推測・発行させることは絶対にしない
+    # （Section44「Critical Staff-ID Rule」）。staff_idが指定されている場合は
+    # そちらを優先し、staff_nameによる解決は行わない（後方互換）。
+    staff_name: Optional[str] = Field(
+        None,
+        description=(
+            "スタッフ指名がある場合の、お客様が実際に発話した氏名（内部IDではない）。"
+            "解決結果はreason_code=staff_not_identified/staff_name_ambiguousで返る。"
+        ),
+    )
     # Generic Resource Foundation Phase R4: resource_id（DBの内部ID）は
     # 一切公開しない。あくまで「部屋」「ベッド」のようなカテゴリラベル
     # （app.schemas.resource.ALLOWED_RESOURCE_TYPESと同じ許可値）のみを
@@ -406,6 +425,12 @@ class CheckAvailabilityResponse(BaseModel):
     # マッピングを組み合わせて、実在する選択肢だけで1回だけ自然な確認質問が
     # できる（存在しない選択肢を創作しないため）。それ以外の場合は常にNone。
     available_resource_types: Optional[List[str]] = None
+    # Phase R5 Part B: reason_code=="staff_name_ambiguous"の場合のみ設定する。
+    # このshopの実在するStaffの表示名（DB由来のみ）のリスト。AIはこれと
+    # Tool description内の自然文言だけを使って1回だけ確認質問ができる
+    # （resource_typeのavailable_resource_typesと全く同じ設計。存在しない
+    # 候補名をAI自身が創作することは絶対に許可しない）。それ以外は常にNone。
+    staff_name_candidates: Optional[List[str]] = None
 
 
 # ===== Realtime Voice AI Phase3B: create_reservation Tool Calling用 =====
@@ -429,7 +454,21 @@ class CreateReservationToolRequest(BaseModel):
     guest_name: str = Field(..., min_length=1, max_length=255, description="予約者名")
     guest_phone: str = Field(..., min_length=1, max_length=20, description="連絡先電話番号")
     service_id: Optional[str] = Field(None, description="サービスID（美容院・クリニック等、サービス単位で予約する業種の場合のみ）")
-    staff_id: Optional[str] = Field(None, description="スタッフ指名がある場合のみ")
+    staff_id: Optional[str] = Field(
+        None,
+        description=(
+            "スタッフID（内部ID）。Realtime AIのTool定義からは意図的に除外されている"
+            "（Phase R5 Part B）。他の将来の安全な呼び出し元のためにスキーマ上残すのみ。"
+        ),
+    )
+    # Phase R5 Part B: CheckAvailabilityRequest.staff_nameと全く同じ意味。
+    staff_name: Optional[str] = Field(
+        None,
+        description=(
+            "スタッフ指名がある場合の、お客様が実際に発話した氏名（内部IDではない）。"
+            "解決結果はreason_code=staff_not_identified/staff_name_ambiguousで返る。"
+        ),
+    )
     special_requests: Optional[str] = Field(None, max_length=500, description="特別なご要望（あれば）")
     # Generic Resource Foundation Phase R4: CheckAvailabilityRequest.resource_type
     # と全く同じ意味・同じ許可値（resource_idは一切公開しない）。省略可能。
@@ -489,6 +528,9 @@ class CreateReservationToolResponse(BaseModel):
     # available_resource_typesと全く同じ意味（reason_code=="resource_type_required"
     # の場合のみ設定。resource_idは一切含まない）。
     available_resource_types: Optional[List[str]] = None
+    # Phase R5 Part B: CheckAvailabilityResponse.staff_name_candidatesと
+    # 全く同じ意味（reason_code=="staff_name_ambiguous"の場合のみ設定）。
+    staff_name_candidates: Optional[List[str]] = None
 
 
 # ===== Outbound AI Phase 4A: find_customer Tool Calling用 =====

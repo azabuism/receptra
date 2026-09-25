@@ -30,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from app.deps import get_db
 from app.models.ai_staff_settings import AIStaffSettings
 from app.models.shop import Shop
+from app.models.staff import Staff
 from app.models.reservation import Reservation, ReservationStatus
 from app.models.callback_request import CallbackRequest, CallbackRequestStatus, CallbackRequestReasonCode
 from app.services import realtime_voice_ai
@@ -577,6 +578,119 @@ async def create_realtime_voice_session(shop_id: str, db: AsyncSession = Depends
     }
 
 
+_STAFF_NAME_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_staff_name_token(s: str) -> str:
+    """
+    Phase R5 Part B: Named Staff Safe Resolution専用の氏名比較用正規化。
+
+    重要（fuzzy matchingではない・必ず守ること）: ここで行うのはUnicode NFKC
+    正規化（全角/半角の統一。例:全角英数字・半角カタカナ→標準形）と
+    空白の完全除去・大文字小文字の統一のみであり、類似度に基づく曖昧一致
+    （編集距離・音の近さ等）は一切行わない。「山田」と「山本」のような
+    見た目が近いだけの異なる文字列は、この正規化を経てもなお一致しない。
+    Section49「fuzzy matchingは最終確定に使わない」を、そもそも比較ロジック
+    自体にfuzzy要素を含めないことで満たす、決定的（deterministic）な変換。
+    """
+    s = unicodedata.normalize("NFKC", s)
+    s = _STAFF_NAME_WHITESPACE_RE.sub("", s)
+    return s.casefold()
+
+
+async def _resolve_staff_by_name(
+    db: AsyncSession, shop_id: str, staff_name: Optional[str],
+) -> tuple[str, Optional[str], Optional[List[str]]]:
+    """
+    Phase R5 Part B: Named Staff Safe Resolution。
+
+    お客様が実際に発話したスタッフの氏名（自然文。内部IDではない）を、
+    この店舗に安全に一意特定できるStaff.idへ解決する、唯一のsource of
+    truth。Realtime AIはこの関数の結果を経由してのみstaff_idを得る
+    （AI自身がstaff_idを推測・生成することは一切ない。Section44
+    「Critical Staff-ID Rule」）。
+
+    対象はこの店舗の is_active=="active" かつ nomination_allowed=True の
+    Staffのみ（Staff.nomination_allowedはPhase3E-1で追加された既存の
+    フィールドで、その説明コメント通り「このスタッフを名指しでの指名予約
+    対象にしない」という店舗側の設定意図をそのまま尊重する。従来この
+    フィールドはAvailability判定・Realtime AIロジックのどこからも
+    参照されていなかったが、Named Staff Safe Resolutionはまさにこの
+    フィールドの意図と一致するため、ここで初めて安全に活用する）。
+    inactiveなStaff・nomination_allowed=FalseのStaffは候補に一切現れず、
+    結果的に常にNOT_FOUND側の扱いになる。これは「在籍していない」と
+    断定するわけではなく、単に「安全に識別できない」という意味であり、
+    呼び出し側（Tool descriptionの指示）は必ずHuman Handoffへ進む
+    （Section42「DBに見つからない≠現実にいない」を守るため、この関数
+    自体は絶対値の判定を一切行わない）。
+
+    戻り値: (status, staff_id, candidate_names)
+    - "NOT_PROVIDED": staff_nameが指定されていない（空文字含む）。
+      呼び出し側は名前による制約が一切無いものとして通常どおり続行する。
+    - "RESOLVED": 安全に一意特定できた。第2戻り値がstaff_id。
+    - "NOT_FOUND": 安全に識別できるStaffが1人もいない（未登録・inactive・
+      nomination_allowed=False・読み違い等、理由は問わず区別しない）。
+    - "AMBIGUOUS": 姓の一致等により複数候補が残り、安全に一意へ絞り込めない。
+      第3戻り値が候補の表示名リスト（DB由来のみ、ソート済み）。AIは
+      これだけを使って1回だけ確認質問をしてよい（存在しない候補名を
+      AI自身が創作することは絶対に許可しない。Section48）。
+
+    一致判定は2段階（いずれも上記の決定的な正規化のみを使う）:
+    1. フルネーム一致: 正規化した引数が、Staff.name または
+       Staff.display_name の正規化形と完全に一致する。
+    2. 姓のみ一致: フルネーム一致が0件の場合のみ、Staff.nameの先頭の
+       空白区切りトークン（姓と想定）の正規化形と完全に一致する
+       （「田中さんで」のように姓のみが発話された場合の安全な絞り込み。
+       同姓が複数いればAMBIGUOUSになる、という仕様上の意図された挙動）。
+    """
+    if not staff_name or not staff_name.strip():
+        return "NOT_PROVIDED", None, None
+
+    query_norm = _normalize_staff_name_token(staff_name)
+    if not query_norm:
+        return "NOT_PROVIDED", None, None
+
+    staff_result = await db.execute(
+        select(Staff).filter(
+            Staff.shop_id == shop_id,
+            Staff.is_active == "active",
+            Staff.nomination_allowed == True,  # noqa: E712
+        )
+    )
+    all_staff = list(staff_result.scalars().all())
+    if not all_staff:
+        return "NOT_FOUND", None, None
+
+    full_matches: dict = {}
+    surname_matches: dict = {}
+
+    for s in all_staff:
+        display = s.display_name or s.name
+        name_variants = {_normalize_staff_name_token(s.name)}
+        if s.display_name:
+            name_variants.add(_normalize_staff_name_token(s.display_name))
+        if query_norm in name_variants:
+            full_matches[s.id] = display
+            continue
+        raw_parts = unicodedata.normalize("NFKC", s.name).strip().split()
+        if raw_parts:
+            surname_norm = _normalize_staff_name_token(raw_parts[0])
+            if surname_norm and surname_norm == query_norm:
+                surname_matches[s.id] = display
+
+    if len(full_matches) == 1:
+        return "RESOLVED", next(iter(full_matches)), None
+    if len(full_matches) > 1:
+        return "AMBIGUOUS", None, sorted(set(full_matches.values()))
+
+    if len(surname_matches) == 1:
+        return "RESOLVED", next(iter(surname_matches)), None
+    if len(surname_matches) > 1:
+        return "AMBIGUOUS", None, sorted(set(surname_matches.values()))
+
+    return "NOT_FOUND", None, None
+
+
 @router.post("/tools/check-availability", response_model=CheckAvailabilityResponse)
 async def check_availability_tool(
     shop_id: str,
@@ -628,6 +742,41 @@ async def check_availability_tool(
         except ValueError:
             return _safe_fallback("invalid_request")
 
+        # Phase R5 Part B: Named Staff Safe Resolution。
+        # request.staff_idはRealtime AIのTool定義から既に除外されているため
+        # 通常は常にNoneだが、防御的にstaff_idが無い場合にのみstaff_name
+        # 解決を行う（staff_idが指定されていればそちらを優先し、従来通り
+        # 一切変更しない＝後方互換）。
+        # 重要: staff_id/staff_nameは、この後のcheck_single_slot_availability()
+        # 内部でもservice_idが解決できた場合（if service:分岐）のみ参照される
+        # （Table/Resource経路ではstaff_idは一切見られない、既存の仕様）。
+        # そのため、service_idが指定されていない（＝Table/Resource等、そもそも
+        # スタッフ指名という概念が存在しない店舗・予約種別）の場合は、
+        # staff_name解決自体を一切行わない。ここで無条件に解決してしまうと、
+        # 「スタッフ概念が無い店舗で誤ってstaff_nameが渡った」場合に、
+        # Resourceの空き状況とは無関係に予約全体を失敗させてしまう
+        # （Section16「Table+Resource混在でも実際の割当のみを反映」と同じ
+        # 考え方で、無関係な経路に新しい失敗要因を持ち込まない）。
+        effective_staff_id = request.staff_id
+        if request.service_id and not effective_staff_id and request.staff_name:
+            staff_status, resolved_staff_id, staff_candidates = await _resolve_staff_by_name(
+                db, shop_id, request.staff_name,
+            )
+            if staff_status == "RESOLVED":
+                effective_staff_id = resolved_staff_id
+            elif staff_status == "NOT_FOUND":
+                return CheckAvailabilityResponse(
+                    available=False, date=request.date, time=request.time,
+                    party_size=request.party_size, reason_code="staff_not_identified",
+                )
+            elif staff_status == "AMBIGUOUS":
+                return CheckAvailabilityResponse(
+                    available=False, date=request.date, time=request.time,
+                    party_size=request.party_size, reason_code="staff_name_ambiguous",
+                    staff_name_candidates=staff_candidates,
+                )
+            # NOT_PROVIDED: 指名なしとして、従来通りそのまま続行する。
+
         available, reason_code, available_resource_types = await check_single_slot_availability(
             db,
             shop,
@@ -635,7 +784,7 @@ async def check_availability_tool(
             target_time,
             request.party_size,
             request.service_id,
-            request.staff_id,
+            effective_staff_id,
             request.resource_type,
         )
         return CheckAvailabilityResponse(
@@ -697,12 +846,16 @@ async def create_reservation_tool(
 
     def _safe_failure(
         reason_code: str, available_resource_types: Optional[List[str]] = None,
+        staff_name_candidates: Optional[List[str]] = None,
     ) -> CreateReservationToolResponse:
         # Generic Resource Foundation Phase R4: reason_code=="resource_type_required"
-        # の場合のみavailable_resource_typesが渡る。他のreason_codeでは常にNoneの
-        # ままであり、既存の呼び出し元（他のreason_code）の挙動は一切変化しない。
+        # の場合のみavailable_resource_typesが渡る。Phase R5 Part B:
+        # reason_code=="staff_name_ambiguous"の場合のみstaff_name_candidatesが
+        # 渡る。他のreason_codeではいずれも常にNoneのままであり、既存の呼び出し元
+        # （他のreason_code）の挙動は一切変化しない。
         return CreateReservationToolResponse(
             success=False, reason_code=reason_code, available_resource_types=available_resource_types,
+            staff_name_candidates=staff_name_candidates,
         )
 
     try:
@@ -717,6 +870,26 @@ async def create_reservation_tool(
             target_time = datetime.strptime(request.time, "%H:%M").time()
         except ValueError:
             return _safe_failure("invalid_request")
+
+        # Phase R5 Part B: Named Staff Safe Resolution。check_availability_tool
+        # と全く同じ考え方。request.staff_idが指定されていればそちらを優先する
+        # （後方互換）。ここで解決できない場合は、create_reservation()本体を
+        # 一切呼び出さずに（＝R3/R4のアロケーションエンジンに一切触れずに）
+        # 安全に失敗を返す。check_availability_toolと同じ理由で、
+        # service_idが指定されていない場合（Table/Resource等）は解決自体を
+        # 行わない。
+        effective_staff_id = request.staff_id
+        if request.service_id and not effective_staff_id and request.staff_name:
+            staff_status, resolved_staff_id, staff_candidates = await _resolve_staff_by_name(
+                db, shop_id, request.staff_name,
+            )
+            if staff_status == "RESOLVED":
+                effective_staff_id = resolved_staff_id
+            elif staff_status == "NOT_FOUND":
+                return _safe_failure("staff_not_identified")
+            elif staff_status == "AMBIGUOUS":
+                return _safe_failure("staff_name_ambiguous", staff_name_candidates=staff_candidates)
+            # NOT_PROVIDED: 指名なしとして、従来通りそのまま続行する。
 
         reservation_dt = datetime.combine(target_date, target_time)
         idempotency_key = f"realtime_voice:{shop_id}:{request.call_id}"
@@ -734,7 +907,7 @@ async def create_reservation_tool(
             request.guest_phone,
             request.guest_name,
             request.service_id,
-            request.staff_id,
+            effective_staff_id,
         )
         if duplicate is not None:
             logger.info(
@@ -756,7 +929,7 @@ async def create_reservation_tool(
             reservation_date=reservation_dt,
             number_of_people=request.party_size,
             service_id=request.service_id,
-            staff_id=request.staff_id,
+            staff_id=effective_staff_id,
             guest_name=request.guest_name,
             guest_phone=request.guest_phone,
             guest_email=None,
