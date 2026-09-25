@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI受付 - レセプトラ</title>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        /*
+            Phase P1（Public AI Call）: このページは既存の
+            frontend/public/shop-ai-realtime-voice.html と全く同じ
+            frontend/public/js/realtime-voice-engine.js をそのまま再利用する、
+            お客様向けの新しい入り口です。WebRTC/VAD/Tool Calling等のロジックは
+            一切コピー・書き換えしておらず、見た目（ブランディング・文言）のみが
+            異なります。要素id・構造は、共有スクリプトが参照するものと完全に
+            一致させる必要があるため、既存ページの<body>と同じidを維持しています。
+        */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #FF6B35;
+            --primary-light: #ff9500;
+            --primary-dark: #e66d00;
+            --dark: #333333;
+            --light: #f5f5f5;
+            --white: #ffffff;
+            --error: #ef4444;
+            --success: #10b981;
+            --border: 1px solid #ddd;
+        }
+        html, body { height: 100%; overflow-x: hidden; max-width: 100%; }
+        body {
+            font-family: 'M PLUS Rounded 1c', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: var(--white);
+            border-bottom: var(--border);
+            padding: 14px 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        header .logo-img { height: 28px; width: auto; display: block; flex-shrink: 0; }
+        header a.back { color: #aaa; text-decoration: none; font-size: 12px; }
+        header .titles h1 { font-size: 16px; color: var(--primary); }
+        header .titles .sub { font-size: 12px; color: #888; }
+        /* Phase P1 セクション18・24: デバッグ/開発者向け要素は、共有エンジンが
+           万一 ?debug=1 を解釈しても、このページでは常に非表示のままにする
+           （!important によりJS側の style.display 上書きより優先させる）。
+           セクション23の方針通りエンジン自体は無改変のため、この抑制は
+           CSS側だけで完結させている。 */
+        .mode-badge,
+        #debugPanels,
+        #debugBadge {
+            display: none !important;
+        }
+        .container {
+            max-width: 640px;
+            margin: 0 auto;
+            width: 100%;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            flex: 1;
+        }
+        #loading, #not-found { text-align: center; padding: 60px 20px; color: #888; }
+        .brand-hero {
+            text-align: center;
+            padding: 18px 10px 4px;
+        }
+        .brand-hero .logo-img {
+            height: 36px;
+            width: auto;
+            margin: 0 auto 10px;
+            display: block;
+        }
+        .brand-hero .shop-name {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--dark);
+        }
+        .brand-hero .ai-label {
+            display: inline-block;
+            margin-top: 6px;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--primary-dark);
+            background: #fff1e6;
+            border-radius: 999px;
+            padding: 3px 12px;
+        }
+        .brand-hero .desc {
+            margin-top: 10px;
+            font-size: 13px;
+            color: #777;
+            line-height: 1.7;
+        }
+        .voice-hero { text-align: center; padding: 22px 10px 6px; }
+        .big-mic {
+            width: 116px;
+            height: 116px;
+            border-radius: 50%;
+            border: 3px solid var(--primary);
+            background: var(--white);
+            color: var(--primary);
+            font-size: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 14px;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+        }
+        .big-mic.connecting { animation: pulse 1s infinite; border-color: var(--primary-light); color: var(--primary-light); }
+        .big-mic.connected { background: var(--success); border-color: var(--success); color: #fff; }
+        .big-mic.ai-speaking { background: var(--primary-light); border-color: var(--primary-light); color: #fff; animation: pulse 0.6s infinite; }
+        .big-mic.error { background: var(--error); border-color: var(--error); color: #fff; }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.35); }
+            50% { box-shadow: 0 0 0 10px rgba(239,68,68,0); }
+        }
+        #statusText { font-size: 15px; font-weight: 700; color: var(--dark); min-height: 20px; }
+        #subStatusText { font-size: 12px; color: #888; margin-top: 4px; min-height: 16px; }
+        .btn-row { display: flex; justify-content: center; gap: 10px; margin-top: 8px; }
+        button {
+            font-family: inherit;
+            font-size: 15px;
+            cursor: pointer;
+            border: none;
+            border-radius: 10px;
+            padding: 12px 24px;
+            font-weight: 700;
+            min-height: 44px;
+        }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .btn-secondary { background: #eee; color: var(--dark); }
+        .btn-secondary:hover { background: #ddd; }
+        button:disabled { opacity: 0.5; cursor: default; }
+        .cost-disclaimer {
+            text-align: center;
+            font-size: 11px;
+            color: #999;
+            line-height: 1.6;
+            margin-top: 10px;
+        }
+        .notice {
+            background: #fff8e1;
+            border: 1px solid #ffe0a3;
+            color: #8a5a00;
+            padding: 10px 14px;
+            border-radius: 10px;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .level-meter-wrap {
+            max-width: 220px;
+            margin: 0 auto 4px;
+        }
+        .level-meter-label { font-size: 11px; color: #888; text-align: center; margin-bottom: 3px; }
+        .level-meter {
+            height: 10px;
+            border-radius: 6px;
+            background: #eee;
+            overflow: hidden;
+        }
+        .level-meter .fill {
+            height: 100%;
+            width: 0%;
+            background: var(--success);
+            transition: width 60ms linear;
+        }
+        .error-banner {
+            background: #fee2e2;
+            border: 1px solid #fecaca;
+            color: #991b1b;
+            padding: 10px 14px;
+            border-radius: 10px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        footer { text-align: center; font-size: 11px; color: #aaa; padding: 16px 12px; }
+        footer a { color: #bbb; }
+        /* 以下は共有エンジンが参照する診断UI用のスタイル（#debugPanelsごと
+           常時非表示のため画面には出ないが、共有CSSとして残しておく）。 */
+        .latency-panel {
+            background: var(--white);
+            border: var(--border);
+            border-radius: 12px;
+            padding: 12px 14px;
+        }
+        .latency-panel h2 { font-size: 13px; color: var(--dark); margin-bottom: 8px; }
+        .latency-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            padding: 4px 0;
+            border-bottom: 1px dashed #eee;
+        }
+        .latency-row:last-child { border-bottom: none; }
+        .latency-row .val { font-weight: 700; color: var(--primary-dark); }
+        #eventLog {
+            background: #111;
+            color: #9be89b;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 11px;
+            line-height: 1.6;
+            border-radius: 10px;
+            padding: 10px;
+            height: 160px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .status-grid {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            row-gap: 6px;
+            column-gap: 10px;
+            font-size: 13px;
+        }
+        .status-grid .label { color: #888; }
+        .status-grid .val { font-weight: 700; text-align: right; }
+        .status-grid .val.ok { color: var(--success); }
+        .status-grid .val.warn { color: var(--primary-dark); }
+        .status-grid .val.bad { color: var(--error); }
+    </style>
+</head>
+<body>
+    <header>
+        <img class="logo-img" src="/images/receptra-logo.png" alt="RECEPTRA" onerror="this.style.display='none';">
+        <div class="titles">
+            <h1 id="pageShopName">AI受付</h1>
+            <div class="sub">レセプトラ AI音声受付</div>
+        </div>
+        <a class="back" href="#" id="backLink">店舗情報を見る</a>
+        <span class="mode-badge" id="debugBadge" style="display:none;">開発者モード</span>
+    </header>
+
+    <div id="loading" class="container">読み込み中…</div>
+    <div id="not-found" class="container" style="display:none;">
+        <p>情報が見つかりませんでした。</p>
+        <p style="margin-top:12px;"><a href="/">ホームに戻る</a></p>
+    </div>
+
+    <div class="container" id="content" style="display:none;">
+        <div class="brand-hero">
+            <div class="ai-label">AI受付</div>
+            <div class="desc">
+                ご予約・お問い合わせをAIスタッフが承ります。<br>
+                マイクにお話しいただくだけで、空き状況の確認からご予約の確定まで行います。
+            </div>
+        </div>
+
+        <div id="errorBanner" class="error-banner" style="display:none;"></div>
+
+        <div class="voice-hero">
+            <div class="big-mic" id="bigMic">🎙</div>
+            <div id="statusText">タップして通話を開始</div>
+            <div id="subStatusText"></div>
+            <div id="onScreenFailureInfo" style="display:none; margin-top:6px; font-size:12px; color:#b33; font-weight:600; word-break:break-all;"></div>
+            <button class="btn-primary" id="playbackRecoverBtn" type="button" style="display:none; margin-top:8px;">🔊 音声を再生するにはタップしてください</button>
+        </div>
+
+        <div class="level-meter-wrap">
+            <div class="level-meter-label">マイク入力レベル（あなたの声）</div>
+            <div class="level-meter"><div class="fill" id="micLevelFill"></div></div>
+        </div>
+
+        <div class="btn-row">
+            <button class="btn-primary" id="startBtn" type="button">🎙 AI受付と話す</button>
+            <button class="btn-secondary" id="endBtn" type="button" style="display:none;">通話を終了</button>
+        </div>
+
+        <div class="cost-disclaimer">
+            電話通話料はかかりません<br>
+            ※インターネット通信を使用します
+        </div>
+
+        <div class="notice">
+            AIスタッフがお電話のように音声でご要望をお伺いします。うまく聞き取れない
+            場合は、もう一度ゆっくりお話しください。担当スタッフの確認が必要な
+            ご相談は、AIから折り返しのご案内をいたします。
+        </div>
+
+        <!-- Phase P1 セクション18: 以下は共有エンジン(js/realtime-voice-engine.js)が
+             ?debug=1 を解釈した場合にのみ内容を書き換える診断表示だが、このページでは
+             上記CSS(#debugPanels { display:none !important; })により、いかなる場合も
+             お客様には表示されない。要素自体は共有エンジンのgetElementById呼び出しが
+             失敗しない（=既存の安定コードを一切変更しない）ように、idのみ維持している。 -->
+        <div id="debugPanels" style="display:none;">
+            <div id="debugModeIndicator" style="display:inline-block;">DEBUG MODE</div>
+            <button type="button" id="copyDebugLogBtn" style="display:inline-block;">デバッグログをコピー</button>
+            <span id="copyDebugLogStatus"></span>
+            <div id="nameCommitPocIndicator" style="display:inline-block;">NAME Commit PoC: DISABLED</div>
+            <div id="takeoverPocIndicator" style="display:inline-block;">Takeover PoC: DISABLED</div>
+            <details class="latency-panel" id="audioDiagPanel">
+                <summary>音声診断</summary>
+                <div class="status-grid" style="margin-top:8px;">
+                    <span class="label">マイク</span><span class="val" id="diagMic">未確認</span>
+                    <span class="label">マイク入力レベル</span><span class="val" id="diagMicLevel">—</span>
+                    <span class="label">WebRTC</span><span class="val" id="diagWebrtc">未接続</span>
+                    <span class="label">ICE</span><span class="val" id="diagIce">未接続</span>
+                    <span class="label">DataChannel</span><span class="val" id="diagDataChannel">未接続</span>
+                    <span class="label">送信</span><span class="val" id="diagSend">未確認</span>
+                    <span class="label">送信音声レベル</span><span class="val" id="diagAudioEnergy">未確認</span>
+                    <span class="label">INBOUND PACKETS</span><span class="val" id="diagInboundPackets">未確認</span>
+                    <span class="label">PACKETS LOST</span><span class="val" id="diagPacketsLost">—</span>
+                    <span class="label">JITTER</span><span class="val" id="diagJitter">—</span>
+                    <span class="label">CONCEALED SAMPLES</span><span class="val" id="diagConcealed">—</span>
+                    <span class="label">JITTER BUFFER DELAY</span><span class="val" id="diagJitterBufferDelay">—</span>
+                    <span class="label">VAD</span><span class="val" id="diagVad">idle</span>
+                    <span class="label">AI応答状態</span><span class="val" id="diagResponse">idle</span>
+                    <span class="label">AI音声出力</span><span class="val" id="diagAiOutput">idle</span>
+                    <span class="label">AI音声トラック受信</span><span class="val" id="diagAiAudio">未受信</span>
+                    <span class="label">AI音声再生</span><span class="val" id="diagPlayback">未確認</span>
+                    <span class="label">ZERO-WAIT PLAYBACK</span><span class="val" id="diagZeroWaitPlayback">unknown</span>
+                    <span class="label">AudioContext(マイク)</span><span class="val" id="diagAudioContextMic">未作成</span>
+                    <span class="label">AudioContext(AI音声)</span><span class="val" id="diagAudioContextRemote">未作成</span>
+                    <span class="label">直近Tool</span><span class="val" id="diagTool">—</span>
+                    <span class="label">Greeting Source</span><span class="val" id="diagGreetingSource">none</span>
+                    <span class="label">Audio Source</span><span class="val" id="diagAudioSource">none</span>
+                    <span class="label">直近の割り込み</span><span class="val" id="diagLastInterruption">—</span>
+                    <span class="label">直近の失敗要因</span><span class="val" id="diagFailureSource">—</span>
+                </div>
+                <div id="diagTimeline"></div>
+                <div id="failureSnapshotBlock" style="display:none;">
+                    <div>FAILURE SNAPSHOT</div>
+                    <pre id="failureSnapshotContent"></pre>
+                </div>
+            </details>
+            <div class="latency-panel">
+                <div class="status-grid">
+                    <span class="label">マイク許可</span><span class="val" id="stMicPerm">未確認</span>
+                    <span class="label">マイクTrack</span><span class="val" id="stMicTrack">なし</span>
+                    <span class="label">WebRTC接続</span><span class="val" id="stWebrtc">new</span>
+                    <span class="label">OpenAI Session</span><span class="val" id="stSession">未接続</span>
+                    <span class="label">ユーザー発話</span><span class="val" id="stUserSpeak">待機</span>
+                    <span class="label">AI発話</span><span class="val" id="stAiSpeak">待機</span>
+                </div>
+            </div>
+            <div class="latency-panel">
+                <div class="latency-row"><span>直近のターン</span><span class="val" id="latestLatency">—</span></div>
+                <div class="latency-row"><span>平均</span><span class="val" id="avgLatency">—</span></div>
+                <div class="latency-row"><span>計測回数</span><span class="val" id="latencyCount">0</span></div>
+            </div>
+            <div class="latency-panel"><div id="eventLog"></div></div>
+            <div class="latency-panel">
+                <div class="status-grid">
+                    <span class="label">経過時間</span><span class="val" id="usageElapsed">—</span>
+                    <span class="label">応答回数</span><span class="val" id="usageResponseCount">0</span>
+                    <span class="label">input audio tokens</span><span class="val" id="usageInputAudio">0</span>
+                    <span class="label">input text tokens</span><span class="val" id="usageInputText">0</span>
+                    <span class="label">cached tokens</span><span class="val" id="usageCached">0</span>
+                    <span class="label">output audio tokens</span><span class="val" id="usageOutputAudio">0</span>
+                    <span class="label">output text tokens</span><span class="val" id="usageOutputText">0</span>
+                    <span class="label">total tokens</span><span class="val" id="usageTotalTokens">0</span>
+                </div>
+                <div id="usageLog"></div>
+            </div>
+        </div>
+    </div>
+
+    <footer>RECEPTRA AI音声受付 ・ <a href="/">receptra.bariyon.com</a></footer>
+
+    <script src="js/realtime-voice-engine.js"></script>
+    <script>
+        // Phase P1: 共有エンジン(realtime-voice-engine.js)には一切手を加えず、
+        // このページ専用の追加ブートストラップのみを別scriptとして後置する。
+        // 目的は「通話開始前から店舗名を表示する」というUX向上のみ（任意の
+        // 前景表示であり、失敗しても既存の安全な通話フローには一切影響しない）。
+        // 既存の公開エンドポイント GET /api/v1/shops/{shop_id}（認証不要・
+        // allow-list方式のShopResponseのみを返す）をそのまま利用する。
+        (function () {
+            try {
+                var params = new URLSearchParams(window.location.search);
+                var shopId = params.get('id');
+                if (!shopId) return;
+                fetch('/api/v1/shops/' + encodeURIComponent(shopId))
+                    .then(function (res) { return res.ok ? res.json() : null; })
+                    .then(function (shop) {
+                        if (!shop || !shop.name) return;
+                        var nameEl = document.getElementById('pageShopName');
+                        if (nameEl) nameEl.textContent = shop.name;
+                        document.title = shop.name + ' AI受付 - レセプトラ';
+                    })
+                    .catch(function () { /* 失敗しても既定の表示のまま。通話開始時の
+                                             既存フローが店舗未検出/非公開を安全に処理する。 */ });
+            } catch (e) { /* no-op */ }
+        })();
+    </script>
+</body>
+</html>

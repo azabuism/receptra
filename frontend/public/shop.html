@@ -492,7 +492,11 @@
             // 2026年9月〜: 「通話で予約」はRealtime Voice(WebRTC/OpenAI Realtime API)版へ切り替え。
             // 従来のWeb Speech API版(shop-ai-booking.html?mode=voice)は
             // ファイル自体は残しており、URLを直接指定すれば引き続き動作する。
-            document.getElementById('ai-voice-btn').href = '/shop-ai-realtime-voice.html?id=' + encodeURIComponent(shop.id);
+            // Phase P1（Public AI Call）: 開発者検証用ページ(shop-ai-realtime-voice.html)
+            // ではなく、お客様向けにブランド化されたcall.htmlへ遷移させる。
+            // 両ページはjs/realtime-voice-engine.jsを共有しており、通話ロジック自体は
+            // 完全に同一（call.htmlは見た目のみが異なる）。
+            document.getElementById('ai-voice-btn').href = '/call.html?id=' + encodeURIComponent(shop.id);
             currentBusinessType = shop.business_type || null;
             setServiceBookingMode(SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1);
             if (SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1) {

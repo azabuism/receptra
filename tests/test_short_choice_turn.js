@@ -21,12 +21,12 @@ const path = require('path');
 const vm = require('vm');
 const assert = require('assert');
 
-const HTML_PATH = path.join(__dirname, '..', 'frontend', 'public', 'shop-ai-realtime-voice.html');
-const html = fs.readFileSync(HTML_PATH, 'utf8');
-
-const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
-if (!scriptMatch) throw new Error('inline <script> block not found in shop-ai-realtime-voice.html');
-const SRC = scriptMatch[1];
+// Phase P1（Public AI Call）: shop-ai-realtime-voice.htmlのインライン<script>は
+// frontend/public/js/realtime-voice-engine.jsへ無改変で外部化された（call.html
+// と共有するため）。実装コードの実体はそちらに移ったため、抽出元もそちらへ
+// 追従させる（テストの検証対象・手法自体は一切変更していない）。
+const ENGINE_JS_PATH = path.join(__dirname, '..', 'frontend', 'public', 'js', 'realtime-voice-engine.js');
+const SRC = fs.readFileSync(ENGINE_JS_PATH, 'utf8');
 
 function extractFunctionSource(src, fnName, fromIndex) {
     const startToken = 'function ' + fnName + '(';
@@ -170,7 +170,7 @@ function test(name, fn) {
 }
 
 console.log('Short Choice 3-Second Turn regression tests');
-console.log('source: ' + HTML_PATH);
+console.log('source: ' + ENGINE_JS_PATH);
 console.log('');
 
 // 分類テスト: ユーザー提示の4つの代表例が正しくSHORT_CHOICEに分類されること
