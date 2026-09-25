@@ -90,8 +90,16 @@ class Settings(BaseSettings):
     # 組み合わせで明示的に推奨している音声（未指定時のデフォルトに頼らない）。
     OPENAI_REALTIME_VOICE: str = "marin"
     # turn_detection.eagerness: semantic_vadの踏み込みの早さ。
-    # auto(=medium)を初期値とし、実機テストでlow/highと比較する。
-    OPENAI_REALTIME_VAD_EAGERNESS: str = "auto"
+    # FAST TURN 2（2026年9月）: 実機テストで「発話終了後の無駄な待ち時間
+    # （環境ノイズ等をsemantic_vadが発話継続と誤判定している可能性）」が
+    # 報告されたことを受け、auto(=medium)からhighへ変更。OpenAI公式ドキュメント
+    # （developers.openai.com/api/docs/guides/realtime-vad）に基づく唯一の
+    # 公式チューニングパラメータであり、server_vadへの移行や独自の秒数打ち切り
+    # ロジックは一切導入していない。semantic_vad自体の「言葉に基づく」判定方式は
+    # 変わらないため、highにしても「まだ話している途中」と判定できる発話を
+    # 強制的に打ち切ることはない（判定の踏み込みの速さが変わるのみ）。
+    # 環境変数OPENAI_REALTIME_VAD_EAGERNESSで従来のauto/lowにいつでも戻せる。
+    OPENAI_REALTIME_VAD_EAGERNESS: str = "high"
     # reasoning.effort: 上げるほどレイテンシ・トークン使用量が増えると
     # 公式ドキュメントに明記されているため、単純な受付対話向けに低めに設定。
     OPENAI_REALTIME_REASONING_EFFORT: str = "low"

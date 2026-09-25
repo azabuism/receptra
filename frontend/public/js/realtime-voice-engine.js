@@ -183,6 +183,23 @@
         let lastSpeechStartedAt = null;
         let speechStartedDuringAiOutput = false;
 
+        // FAST TURN 2（Section3/20）: ターンレイテンシーの内訳計測用。
+        // 既存のlastSpeechStoppedAtベースの計測（発話終了→AI発話検知、上記）は
+        // 既に(E)の値そのものを取得できているため、新しいログ機構は追加せず、
+        // 既存の3イベントハンドラ（committed / response.created / AI音声検知）に
+        // 数値の差分計算を数行追加するだけで内訳(B)(C)(D)を得る。
+        // 値はミリ秒の数値のみ・音声内容やPIIは一切含まない。debugMode=falseの
+        // 画面には影響しない（logEvent自体は#debugPanels配下にのみ表示される
+        // 既存の仕組みにそのまま乗せる）。callGeneration単位の厳密なスコープ管理は
+        // 行わない（既存のlastSpeechStoppedAt等も同様の単純なnull管理のため、
+        // 既存パターンとの一貫性を優先）。
+        let lastCommittedAtForLatency = null;
+        let lastResponseCreatedAtForLatency = null;
+        let turnLatencySpeechDurationMs = null;
+        let turnLatencyVadTailMs = null;
+        let turnLatencyCommitToResponseMs = null;
+        let turnLatencyFastTurnLabel = null;
+
         function recordLatencySample(ms) {
             latencySamples.push(ms);
             latestLatencyEl.textContent = Math.round(ms) + ' ms';
@@ -1968,8 +1985,27 @@
                         logGreetingLatenciesIfReady();
                     }
                     if (lastSpeechStoppedAt !== null) {
-                        recordLatencySample(performance.now() - lastSpeechStoppedAt);
+                        const totalAfterSpeechMs = performance.now() - lastSpeechStoppedAt;
+                        recordLatencySample(totalAfterSpeechMs);
+                        // FAST TURN 2（Section3/20）: 内訳(B)(C)(D)と合計(E)を
+                        // 1行にまとめてデバッグログへ出す（既存のCopy Debug Logに
+                        // そのまま含まれる。通常のお客様向け画面には影響しない）。
+                        // 値が取れなかった内訳は'?'で表示し、推測の数値は入れない。
+                        if (debugMode) {
+                            const responseToAudioMs = lastResponseCreatedAtForLatency !== null
+                                ? Math.round(performance.now() - lastResponseCreatedAtForLatency)
+                                : null;
+                            const fmt = (v) => (v === null || v === undefined ? '?' : v + 'ms');
+                            logEvent('TURN LATENCY speech=' + fmt(turnLatencySpeechDurationMs)
+                                + ' vad_tail=' + fmt(turnLatencyVadTailMs)
+                                + ' commit_to_response=' + fmt(turnLatencyCommitToResponseMs)
+                                + ' response_to_audio=' + fmt(responseToAudioMs)
+                                + ' total_after_speech=' + Math.round(totalAfterSpeechMs) + 'ms'
+                                + ' fast_turn=' + (turnLatencyFastTurnLabel || 'NONE'));
+                        }
                         lastSpeechStoppedAt = null;
+                        lastCommittedAtForLatency = null;
+                        lastResponseCreatedAtForLatency = null;
                     }
                 } else if (!nowSpeaking && aiSpeakingNow) {
                     aiSpeakingNow = false;
@@ -3294,6 +3330,15 @@
                 // いない可能性があるため、両者を区別して記録する（PIIなし・
                 // イベント発生の事実のみ）。
                 pushTimelineEvent('USER_AUDIO_BUFFER_COMMITTED');
+                // FAST TURN 2（Section3/20）: (B) speech_stopped→committedの
+                // 差分（VADテール、意味的判定が「発話継続中」と見なしていた
+                // 追加の待ち時間）を記録する。lastSpeechStoppedAtは、AIが実際に
+                // 話し始めた時点（tick()内）でのみnullにリセットされるため、
+                // このタイミングではまだ有効な値が入っている。
+                if (lastSpeechStoppedAt !== null) {
+                    turnLatencyVadTailMs = Math.round(performance.now() - lastSpeechStoppedAt);
+                }
+                lastCommittedAtForLatency = performance.now();
                 // NAME Forced Commit Observation PoC（PHASE7/9）: 正常完了扱いに
                 // し、まだ送信していない手動commitがあればここで見送らせる。
                 // 送信済みの手動commitへの反応であればelapsed_msを記録する。
@@ -3426,6 +3471,17 @@
                         + '（speech_started時点でAI音声出力中だった=' + speechStartedDuringAiOutput + '）');
                 }
                 pushTimelineEvent('USER_SPEECH_STOPPED (継続=' + (speechDurationMsForTimeline === null ? '?' : speechDurationMsForTimeline + 'ms') + ')');
+                // FAST TURN 2（Section3/20）: 今回のターンの(A)発話継続時間と、
+                // その時点のexpectedAnswerType（＝どのFast Turnカテゴリの
+                // 対象だったか。第一声直後で対象外だった場合は'NONE'のまま）を
+                // 一時保存する。次のAI発話検知時にまとめて1行のTURN LATENCYログを
+                // 出す（新しい表示UIは追加しない）。
+                turnLatencySpeechDurationMs = speechDurationMsForTimeline;
+                turnLatencyFastTurnLabel = expectedAnswerType;
+                turnLatencyVadTailMs = null;
+                turnLatencyCommitToResponseMs = null;
+                lastCommittedAtForLatency = null;
+                lastResponseCreatedAtForLatency = null;
                 subStatusText.textContent = 'AIが応答を準備しています…';
                 setStatus(stUserSpeakEl, '待機', null);
                 updateAudioDiagnosticsPanel();
@@ -3433,6 +3489,14 @@
                 if (greetingTiming.firstResponseCreated === null) {
                     greetingTiming.firstResponseCreated = performance.now();
                 }
+                // FAST TURN 2（Section3/20）: (C) committed→response.createdの
+                // 差分を記録する。lastCommittedAtForLatencyが無い場合（PHONE/NAME等の
+                // 強制commit直前にOpenAI側が自発的に応答を作った等）はnullのままにし、
+                // 無理に数値を作らない。
+                if (lastCommittedAtForLatency !== null) {
+                    turnLatencyCommitToResponseMs = Math.round(performance.now() - lastCommittedAtForLatency);
+                }
+                lastResponseCreatedAtForLatency = performance.now();
                 subStatusText.textContent = 'AIが応答を生成中…';
                 responseState = 'active';
                 updateAudioDiagnosticsPanel();
