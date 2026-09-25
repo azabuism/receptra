@@ -37,8 +37,10 @@ API接続）自体はブラウザ/実機が必要なため自動テストの対�
 A. valid shop: GET /api/v1/shops/{id} が既存のallow-listのみを返す
    （reservation_notification_phone/email・transfer_to_staff_enabled等の
    オーナー専用フィールドが一切含まれない）
-A2. 既知の制約: tenant_idはShopResponseに含まれる（Phase P1固有の新規露出
-    ではなく、shop.htmlが以前から同じ挙動であることを明示的に確認）
+A2. Phase W1で修正済み: GET /api/v1/shops/{id}のレスポンスにtenant_id
+    （テナント内部FK）が含まれない（Phase P1時点では実は既存の意図しない
+    漏洩だったが、Phase W1監査で発見・ShopPublicResponseへの分離で修正
+    済み。以後はここで回帰確認する）
 B. invalid shop_id（存在しない）: /session が404を返し、OPENAI_API_KEY等の
    秘密情報を一切含まない
 C. malformed shop_id: 500ではなく安全に404/422等で処理される
@@ -220,10 +222,17 @@ async def main():
             assert body["name"] == "PublicAICallテスト美容室"
             print("A. GET /api/v1/shops/{id}: オーナー専用フィールドは一切含まれない: OK")
 
-            assert body.get("tenant_id") is not None, (
-                "想定と異なりtenant_idが含まれていません（既知の制約の前提が変わっています）"
+            # Phase W1で修正: この公開（未認証）エンドポイントが従来
+            # ShopResponse（tenant_idを含む）をそのまま返していたのは
+            # 意図しない内部ID漏洩であり（W1監査Section40で指摘・修正）、
+            # 「既知の制約」として容認し続けるべき挙動ではなかった。
+            # 現在はShopPublicResponse（tenant_idを含まない）で組み立て
+            # 直されている。この行の役割は反転し、tenant_idが再び漏れて
+            # いないことを確認する回帰チェックになる。
+            assert "tenant_id" not in body, (
+                "公開エンドポイントにtenant_idが再び含まれています（Phase W1で修正済みのはずの内部ID漏洩の再発）"
             )
-            print("A2. 既知の制約: tenant_idはShopResponseに含まれる（shop.html等と同じ既存の挙動、Phase P1固有の新規露出ではない）: OK")
+            print("A2. Phase W1で修正済み: 公開エンドポイントのレスポンスにtenant_idは含まれない（回帰なし）: OK")
 
             # ===== B: 存在しないshop_id =====
             r = await client.post("/api/v1/shops/00000000-0000-0000-0000-000000000000/realtime-voice/session")
