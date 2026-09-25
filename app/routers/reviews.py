@@ -29,9 +29,16 @@ router = APIRouter(prefix="/api/v1/reviews", tags=["reviews"])
 
 
 def _build_review_response(review: Review, current_user_id: Optional[str] = None) -> ReviewResponse:
+    # Phase W2監査で発見: display_nameが未設定のプラットフォームユーザーの場合、
+    # 完全に未認証・公開のレビュー一覧（GET /api/v1/reviews/shop/{shop_id}）に
+    # そのユーザーの実メールアドレスがreviewer_nameとしてそのまま露出していた。
+    # review.customer側（display_nameが無ければNoneのまま）と同じ方針に揃え、
+    # emailへはフォールバックしない。フロントエンド(shop.html)側は元々
+    # `r.reviewer_name || 'ゲスト'` で表示しており、Noneでも問題なく
+    # 「ゲスト」として表示される（表示ロジック自体は無変更）。
     reviewer_name = None
     if review.user is not None:
-        reviewer_name = review.user.display_name or review.user.email
+        reviewer_name = review.user.display_name
     elif review.customer is not None:
         reviewer_name = getattr(review.customer, "display_name", None)
 
