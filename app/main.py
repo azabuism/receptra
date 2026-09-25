@@ -48,6 +48,7 @@ from app.routers.staff_shift import router as staff_shift_router
 from app.routers.billing import router as billing_router, webhook_router as payjp_webhook_router
 from app.routers.outbound_calls import router as outbound_calls_router
 from app.routers.callback_requests import router as callback_requests_router
+from app.routers.owner_notifications import router as owner_notifications_router
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -480,6 +481,7 @@ def create_app() -> FastAPI:
     app.include_router(payjp_webhook_router)
     app.include_router(outbound_calls_router)
     app.include_router(callback_requests_router)
+    app.include_router(owner_notifications_router)
 
     @app.get("/api/v1/debug/db-status", tags=["debug"])
     async def debug_db_status():

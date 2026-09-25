@@ -64,6 +64,17 @@ from app.models.callback_request import CallbackRequest, CallbackRequestStatus, 
 # 既存のShopTable/Staffには一切変更を加えていない（別モデルとして共存）。
 from app.models.resource import Resource
 
+# Phase N1: 統一Owner Notification基盤（新規テーブル。他のPhase3系モデルと
+# 同様、alembicは使わずBase.metadata.create_all()で自動作成される。配信は
+# 行わず、イベントの記録のみ。既存のCallbackRequest/OutboundCallJobには
+# 一切変更を加えていない）。
+from app.models.owner_notification import (
+    OwnerNotificationEvent,
+    OwnerNotificationEventType,
+    OwnerNotificationPriority,
+    OwnerNotificationRelatedEntityType,
+)
+
 __all__ = [
     # User/Tenant
     "Tenant",
@@ -133,4 +144,10 @@ __all__ = [
 
     # Generic Resource Foundation Phase R1
     "Resource",
+
+    # Phase N1: 統一Owner Notification基盤
+    "OwnerNotificationEvent",
+    "OwnerNotificationEventType",
+    "OwnerNotificationPriority",
+    "OwnerNotificationRelatedEntityType",
 ]

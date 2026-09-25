@@ -53,6 +53,7 @@ from app.services.customer_memory import (
 from app.services import customer_context
 from app.services import conversation_language as conversation_language_state
 from app.services.outbound_dispatch import enqueue_callback_requested_call
+from app.services.owner_notifications import notify_callback_requested
 
 logger = logging.getLogger("receptra.realtime_voice")
 
@@ -1412,6 +1413,17 @@ async def request_callback_tool(
                 "shop_id=%s callback_request_id=%s",
                 shop_id, callback_request.id,
             )
+
+        # Phase N1: 統一Owner Notification基盤。上のOutbound通知(電話)enqueueと
+        # 同じく、CallbackRequest保存が確定した後にのみ・専用DBセッションで・
+        # 失敗分離で呼び出す。inquiry_textの生テキストは一切渡さない
+        # （notify_callback_requested内部でreason_codeベースの一般的な文言に変換する）。
+        await notify_callback_requested(
+            shop_id=shop_id,
+            callback_request_id=callback_request.id,
+            reason_code=reason_code,
+            customer_name=request.customer_name,
+        )
 
         return RequestCallbackToolResponse(success=True, reason_code=reason_code)
     except HTTPException:

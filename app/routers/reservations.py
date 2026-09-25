@@ -26,6 +26,7 @@ from app.models.resource import Resource
 from app.models.staff_shift import StaffWeeklyShift, StaffShiftOverride
 from app.models.promotion import Coupon
 from app.services.outbound_dispatch import enqueue_reservation_confirmed_call
+from app.services.owner_notifications import notify_reservation_created
 from app.schemas.reservation import (
     ReservationCreateRequest, ReservationResponse, ReservationCreateResponse,
     ReservationUpdateRequest, ReservationListResponse,
@@ -2140,6 +2141,18 @@ async def create_reservation(
             reservation_id=reservation.id,
             notification_enabled=bool(shop.reservation_phone_notification_enabled),
             notification_phone=shop.reservation_notification_phone,
+        )
+
+        # Phase N1: 統一Owner Notification基盤。上のOutbound通知(電話)と同じく
+        # 新規成立時にのみ・専用DBセッションで・失敗分離で呼び出す。設定の
+        # ON/OFFやphone/emailの有無に関わらず常に生成する（配信ではなく
+        # イベントの記録のため、追加コストは発生しない）。
+        await notify_reservation_created(
+            shop_id=shop.id,
+            reservation_id=reservation.id,
+            guest_name=reservation.guest_name,
+            reservation_date=reservation.reservation_date,
+            number_of_people=reservation.number_of_people,
         )
 
         return ReservationCreateResponse(

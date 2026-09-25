@@ -561,6 +561,17 @@
         .callback-status-btn:hover { border-color: var(--primary); }
         .callback-status-btn.active { background: var(--primary); border-color: var(--primary); color: var(--white); }
         .callback-item .actions { margin-top: 10px; }
+        .notice-unread-badge { display: inline-block; margin-left: 8px; padding: 2px 9px; border-radius: 10px; font-size: 12px; font-weight: 700; background: var(--error); color: #fff; vertical-align: middle; }
+        .notice-item { padding: 14px; border: var(--border); border-radius: 10px; margin-bottom: 10px; }
+        .notice-item.unread { border-color: var(--primary); background: #f0f6ff; }
+        .notice-item-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+        .notice-item-title { font-weight: 700; font-size: 14px; }
+        .notice-priority-badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 700; white-space: nowrap; margin-left: 6px; }
+        .notice-priority-badge.ACTION_REQUIRED { background: #fee2e2; color: var(--error); }
+        .notice-priority-badge.NORMAL { background: #e5e7eb; color: #444; }
+        .notice-item-message { font-size: 13px; margin-top: 6px; }
+        .notice-item-meta { font-size: 12px; color: #888; margin-top: 4px; }
+        .notice-item .actions { margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -1798,6 +1809,17 @@
             <div id="callback-requests-list"><p class="empty-hint">読み込み中...</p></div>
         </div>
 
+        <!-- Phase N1: 統一Owner Notification基盤。CallbackRequestカードと同じ
+             「一覧管理・個別操作が即座に完結する」機能のため、「全体を保存」の
+             対象には含めない。既読化は各項目ごとに即時保存される。 -->
+        <div class="card" id="owner-notices-card">
+            <h2>お知らせ<span id="owner-notices-unread-badge" class="notice-unread-badge" style="display:none;"></span></h2>
+            <p class="hint">
+                新しい予約や、対応が必要なお問い合わせのお知らせです。
+            </p>
+            <div id="owner-notices-list"><p class="empty-hint">読み込み中...</p></div>
+        </div>
+
         <!-- PHASE5-B: 「全体を保存」。基本情報・店舗情報・AIスタッフ設定・通知設定・
              AI電話受付設定の5フォームをまとめて保存する（Human Handoff基盤で
              AI電話受付設定フォームを追加）。FAQ・クーポン・テーブル・スタッフ・予約・
@@ -2206,6 +2228,7 @@
             loadNotificationHistory();
             loadPhoneReceptionSettings();
             loadCallbackRequests();
+            loadOwnerNotices();
         }
 
         // ---------- 画像設定（ロゴ・サムネイル・カバー） ----------
@@ -6544,6 +6567,74 @@
                 await loadCallbackRequests();
             } catch (e) {
                 alert(typeof e.message === 'string' ? e.message : '削除に失敗しました');
+            }
+        }
+
+        // ---------- Phase N1: 統一Owner Notification基盤（お知らせ） ----------
+        let ownerNoticesCache = [];
+
+        async function loadOwnerNotices() {
+            const container = document.getElementById('owner-notices-list');
+            try {
+                const res = await authFetch(
+                    '/api/v1/shops/' + encodeURIComponent(shopId) + '/notifications?limit=50'
+                );
+                if (!res.ok) throw new Error('取得に失敗しました');
+                const data = await res.json();
+                ownerNoticesCache = data.items || [];
+                const badge = document.getElementById('owner-notices-unread-badge');
+                if (data.unread_count > 0) {
+                    badge.textContent = String(data.unread_count);
+                    badge.style.display = 'inline-block';
+                } else {
+                    badge.style.display = 'none';
+                }
+                renderOwnerNoticesList();
+            } catch (e) {
+                container.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        function renderOwnerNoticesList() {
+            const container = document.getElementById('owner-notices-list');
+            if (!ownerNoticesCache.length) {
+                container.innerHTML = '<p class="empty-hint">お知らせはまだありません</p>';
+                return;
+            }
+            const priorityLabel = { ACTION_REQUIRED: '対応が必要', NORMAL: '通常' };
+            container.innerHTML = ownerNoticesCache.map(function (item) {
+                const unreadClass = item.is_read ? '' : ' unread';
+                const badge = '<span class="notice-priority-badge ' + item.priority + '">' +
+                    (priorityLabel[item.priority] || item.priority) + '</span>';
+                const receivedAt = formatReservationDate(item.created_at);
+                const readBtn = item.is_read
+                    ? ''
+                    : '<button type="button" class="btn-outline notice-read-btn" data-id="' + item.id + '">既読にする</button>';
+                return '<div class="notice-item' + unreadClass + '" data-id="' + item.id + '">' +
+                    '<div class="notice-item-top">' +
+                        '<span class="notice-item-title">' + escapeHtml(item.title) + badge + '</span>' +
+                    '</div>' +
+                    '<div class="notice-item-message">' + escapeHtml(item.message) + '</div>' +
+                    '<div class="notice-item-meta">受信日時: ' + receivedAt + '</div>' +
+                    (readBtn ? '<div class="actions">' + readBtn + '</div>' : '') +
+                '</div>';
+            }).join('');
+
+            container.querySelectorAll('.notice-read-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () { markOwnerNoticeRead(btn.dataset.id); });
+            });
+        }
+
+        async function markOwnerNoticeRead(notificationId) {
+            try {
+                const res = await authFetch(
+                    '/api/v1/shops/' + encodeURIComponent(shopId) + '/notifications/' + encodeURIComponent(notificationId) + '/read',
+                    { method: 'PATCH' }
+                );
+                if (!res.ok) throw new Error('既読化に失敗しました');
+                await loadOwnerNotices();
+            } catch (e) {
+                alert(typeof e.message === 'string' ? e.message : '既読化に失敗しました');
             }
         }
 
