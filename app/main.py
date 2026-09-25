@@ -49,6 +49,11 @@ from app.routers.billing import router as billing_router, webhook_router as payj
 from app.routers.outbound_calls import router as outbound_calls_router
 from app.routers.callback_requests import router as callback_requests_router
 from app.routers.owner_notifications import router as owner_notifications_router
+from app.routers.line_integration import (
+    line_connection_router,
+    line_shop_settings_router,
+    line_webhook_router,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -415,6 +420,17 @@ async def lifespan(app: FastAPI):
         from app.services.outbound_call_worker import run_outbound_worker_loop
         outbound_worker_task = asyncio.create_task(run_outbound_worker_loop())
 
+    # Phase N2: LINE Owner通知配信ワーカー。上のOutboundワーカーと全く同じ理由・
+    # 同じパターンで、DB初期化が成功した場合にのみ起動する独立したasyncioタスク。
+    # Phase N1のOwnerNotificationEvent生成ロジック・既存の受付フローには
+    # 一切影響しない（read-onlyでOwnerNotificationEventを参照するのみ）。
+    # app.config.Settings.LINE_NOTIFICATION_WORKER_ENABLED=Falseで無効化できる
+    # 安全弁もある。
+    line_notification_worker_task = None
+    if app.state.db_ready:
+        from app.services.line_notification_worker import run_line_notification_worker_loop
+        line_notification_worker_task = asyncio.create_task(run_line_notification_worker_loop())
+
     yield
 
     logger.info("🛑 BARIYON Receptra API shutting down...")
@@ -423,6 +439,13 @@ async def lifespan(app: FastAPI):
         outbound_worker_task.cancel()
         try:
             await outbound_worker_task
+        except asyncio.CancelledError:
+            pass
+
+    if line_notification_worker_task is not None:
+        line_notification_worker_task.cancel()
+        try:
+            await line_notification_worker_task
         except asyncio.CancelledError:
             pass
 
@@ -482,6 +505,9 @@ def create_app() -> FastAPI:
     app.include_router(outbound_calls_router)
     app.include_router(callback_requests_router)
     app.include_router(owner_notifications_router)
+    app.include_router(line_connection_router)
+    app.include_router(line_shop_settings_router)
+    app.include_router(line_webhook_router)
 
     @app.get("/api/v1/debug/db-status", tags=["debug"])
     async def debug_db_status():

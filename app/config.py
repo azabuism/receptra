@@ -129,6 +129,25 @@ class Settings(BaseSettings):
     # リトライ時のバックオフ秒数（attempt_count回目の失敗後、この値 × attempt_count 秒待つ）。
     OUTBOUND_CALL_RETRY_BACKOFF_SECONDS: int = 30
 
+    # ===== Phase N2: LINE Messaging API設定（Owner通知のLINE配信）=====
+    # 値が空文字列（デフォルト）の場合、LINE連携機能全体が安全に無効化される
+    # （Webhookは署名検証をスキップして200のみ返し何も処理しない、配信は
+    # FakeLineMessageProviderに自動フォールバックする）。他のAPIキー系設定
+    # (OPENAI_API_KEY / PAYJP_API_KEY / VONAGE_API_KEY)と全く同じ方針。
+    # 値は必ずRailwayの環境変数として設定し、DBやフロントエンド・ログ・
+    # 公開APIレスポンスには絶対に含めないこと。
+    LINE_CHANNEL_ACCESS_TOKEN: str = ""
+    LINE_CHANNEL_SECRET: str = ""
+    # Basic ID (LINE ID, 例: "@abcdefg") は友だち追加用に公開する情報であり、
+    # Channel ID/Secret/Access Token/userIdとは性質が異なるため、
+    # オーナー向けUIへ表示してよい。
+    LINE_BOT_BASIC_ID: str = ""
+
+    # LINE通知配信バックグラウンドワーカーのON/OFF（安全弁。
+    # OUTBOUND_CALL_WORKER_ENABLEDと同じ設計思想）。
+    LINE_NOTIFICATION_WORKER_ENABLED: bool = True
+    LINE_NOTIFICATION_WORKER_POLL_INTERVAL_SECONDS: int = 5
+
     # ===== 機能フラグ =====
     FEATURE_AI_RESPONSES: bool = True
     FEATURE_PAYMENT_PROCESSING: bool = True

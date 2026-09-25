@@ -180,9 +180,22 @@
     </main>
 
     <script>
+        // Phase N2: LINE連携フロー中にログインが必要になった場合、ログイン後は
+        // 通常のowner.htmlではなくline-link.htmlへ戻す（連携を継続するため）。
+        // 通常のログインには一切影響しない（pending_line_link_tokenが無ければ
+        // 従来通りowner.htmlへ遷移する）。
+        function _lineLinkRedirectTarget() {
+            const pendingLinkToken = sessionStorage.getItem('pending_line_link_token');
+            if (pendingLinkToken) {
+                sessionStorage.removeItem('pending_line_link_token');
+                return 'line-link.html?linkToken=' + encodeURIComponent(pendingLinkToken);
+            }
+            return 'owner.html';
+        }
+
         // すでにログイン済みのオーナーは店舗オーナーページへ
         if (localStorage.getItem('receptra_token')) {
-            window.location.href = 'owner.html';
+            window.location.href = _lineLinkRedirectTarget();
         }
 
         function showMsg(el, text, type) {
@@ -217,7 +230,7 @@
                 }
                 saveSession(data);
                 showMsg(msg, 'ログインしました。移動します…', 'success');
-                window.location.href = 'owner.html';
+                window.location.href = _lineLinkRedirectTarget();
             } catch (err) {
                 showMsg(msg, err.message, 'error');
             } finally {

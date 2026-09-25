@@ -1820,6 +1820,32 @@
             <div id="owner-notices-list"><p class="empty-hint">読み込み中...</p></div>
         </div>
 
+        <!-- Phase N2: LINE Owner通知。上の「お知らせ」(N1)とは別のカード。
+             連携操作・テスト送信・設定保存は各ボタンごとに即時完結するため、
+             「全体を保存」の対象には含めない。 -->
+        <div class="card" id="line-notifications-card">
+            <h2>LINE通知</h2>
+            <p class="hint">
+                新しい予約や、対応が必要なお問い合わせを、お店のLINEにも通知します。RECEPTRAへのログインは不要で、スマートフォンにすぐ届きます。
+            </p>
+            <div id="line-status-area"><p class="empty-hint">読み込み中...</p></div>
+
+            <div id="line-shop-settings-area" style="margin-top:18px; display:none;">
+                <h3 style="font-size:15px; margin-bottom:8px;">この店舗の通知設定</h3>
+                <label style="display:block; margin-bottom:6px;">
+                    <input type="checkbox" id="line-setting-enabled"> この店舗のLINE通知を有効にする
+                </label>
+                <label style="display:block; margin-bottom:6px;">
+                    <input type="checkbox" id="line-setting-action-required"> 対応が必要なお問い合わせ
+                </label>
+                <label style="display:block; margin-bottom:6px;">
+                    <input type="checkbox" id="line-setting-reservation"> 新規予約の通知（送信数が多くなる場合があります）
+                </label>
+                <button type="button" class="btn-outline" id="line-settings-save-btn" style="margin-top:8px;">この店舗の設定を保存</button>
+                <div class="msg" id="line-settings-msg" style="margin-top:8px;"></div>
+            </div>
+        </div>
+
         <!-- PHASE5-B: 「全体を保存」。基本情報・店舗情報・AIスタッフ設定・通知設定・
              AI電話受付設定の5フォームをまとめて保存する（Human Handoff基盤で
              AI電話受付設定フォームを追加）。FAQ・クーポン・テーブル・スタッフ・予約・
@@ -2229,6 +2255,7 @@
             loadPhoneReceptionSettings();
             loadCallbackRequests();
             loadOwnerNotices();
+            loadLineStatus();
         }
 
         // ---------- 画像設定（ロゴ・サムネイル・カバー） ----------
@@ -6637,6 +6664,129 @@
                 alert(typeof e.message === 'string' ? e.message : '既読化に失敗しました');
             }
         }
+
+        // ---------- Phase N2: LINE Owner通知 ----------
+        // 重要: LINE userId・Channel ID・Webhook URL・Access Tokenは、
+        // このUIのどこにも一切表示しない（「連携済み」かどうかのみ表示する）。
+
+        async function loadLineStatus() {
+            const area = document.getElementById('line-status-area');
+            try {
+                const [statusRes, friendRes] = await Promise.all([
+                    authFetch('/api/v1/line-notifications/connection'),
+                    authFetch('/api/v1/line-notifications/friend-add-info'),
+                ]);
+                if (!statusRes.ok || !friendRes.ok) throw new Error('取得に失敗しました');
+                const status = await statusRes.json();
+                const friend = await friendRes.json();
+                renderLineStatus(status, friend);
+                document.getElementById('line-shop-settings-area').style.display = 'block';
+                loadLineShopSettings();
+            } catch (e) {
+                area.innerHTML = '<p class="empty-hint">読み込みに失敗しました</p>';
+            }
+        }
+
+        function renderLineStatus(status, friend) {
+            const area = document.getElementById('line-status-area');
+            if (!friend.configured) {
+                area.innerHTML = '<p class="empty-hint">LINE通知は現在準備中です</p>';
+                return;
+            }
+            if (status.connected) {
+                area.innerHTML =
+                    '<p>連携済み</p>' +
+                    '<button type="button" class="btn-outline" id="line-test-btn">テスト通知を送る</button> ' +
+                    '<button type="button" class="btn-outline btn-danger" id="line-revoke-btn">連携解除</button>' +
+                    '<p class="hint" style="margin-top:8px;">テスト通知の送信も、LINEの通知件数にカウントされる場合があります。</p>' +
+                    '<div class="msg" id="line-test-msg" style="margin-top:8px;"></div>';
+                document.getElementById('line-test-btn').addEventListener('click', sendLineTestNotification);
+                document.getElementById('line-revoke-btn').addEventListener('click', revokeLineConnection);
+            } else {
+                area.innerHTML =
+                    '<p>未連携</p>' +
+                    '<a class="btn" href="' + friend.add_friend_url + '" target="_blank" rel="noopener">LINEを連携する</a>' +
+                    '<p class="hint" style="margin-top:8px;">上のボタンからRECEPTRA公式LINEを友だち追加すると、届いたメッセージから連携を完了できます。</p>';
+            }
+        }
+
+        async function sendLineTestNotification() {
+            const msg = document.getElementById('line-test-msg');
+            try {
+                const res = await authFetch('/api/v1/line-notifications/connection/test', { method: 'POST' });
+                const data = await res.json();
+                if (res.status === 429) {
+                    msg.textContent = data.detail || '送信間隔が短すぎます。しばらく待ってから再度お試しください';
+                    msg.className = 'msg error';
+                } else if (data.sent) {
+                    msg.textContent = 'テスト通知を送信しました';
+                    msg.className = 'msg success';
+                } else {
+                    msg.textContent = 'テスト通知の送信に失敗しました';
+                    msg.className = 'msg error';
+                }
+                msg.style.display = 'block';
+            } catch (e) {
+                msg.textContent = 'テスト通知の送信に失敗しました';
+                msg.className = 'msg error';
+                msg.style.display = 'block';
+            }
+        }
+
+        async function revokeLineConnection() {
+            if (!confirm('LINE連携を解除しますか？')) return;
+            try {
+                await authFetch('/api/v1/line-notifications/connection/revoke', { method: 'POST' });
+                await loadLineStatus();
+            } catch (e) {
+                alert('連携解除に失敗しました');
+            }
+        }
+
+        async function loadLineShopSettings() {
+            try {
+                const res = await authFetch(
+                    '/api/v1/shops/' + encodeURIComponent(shopId) + '/line-notifications/settings'
+                );
+                if (!res.ok) throw new Error('取得に失敗しました');
+                const data = await res.json();
+                document.getElementById('line-setting-enabled').checked = !!data.enabled;
+                document.getElementById('line-setting-action-required').checked = !!data.action_required_enabled;
+                document.getElementById('line-setting-reservation').checked = !!data.reservation_enabled;
+            } catch (e) {
+                // 取得失敗時はデフォルト値のまま（保存時に改めて反映される）
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+            const saveBtn = document.getElementById('line-settings-save-btn');
+            if (saveBtn) {
+                saveBtn.addEventListener('click', async function () {
+                    const msg = document.getElementById('line-settings-msg');
+                    try {
+                        const res = await authFetch(
+                            '/api/v1/shops/' + encodeURIComponent(shopId) + '/line-notifications/settings',
+                            {
+                                method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    enabled: document.getElementById('line-setting-enabled').checked,
+                                    action_required_enabled: document.getElementById('line-setting-action-required').checked,
+                                    reservation_enabled: document.getElementById('line-setting-reservation').checked,
+                                }),
+                            }
+                        );
+                        if (!res.ok) throw new Error('保存に失敗しました');
+                        msg.textContent = '保存しました';
+                        msg.className = 'msg success';
+                    } catch (e) {
+                        msg.textContent = '保存に失敗しました';
+                        msg.className = 'msg error';
+                    }
+                    msg.style.display = 'block';
+                });
+            }
+        });
 
         // ---------- Phase3D: FAQ ----------
         let faqCache = [];

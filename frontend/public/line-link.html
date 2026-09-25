@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LINE連携 | RECEPTRA</title>
+<style>
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+        background: #f5f6f8;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+    }
+    .card {
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+        padding: 32px 24px;
+        max-width: 420px;
+        width: 90%;
+        text-align: center;
+    }
+    .card h1 {
+        font-size: 18px;
+        margin-bottom: 12px;
+        color: #222;
+    }
+    .card p {
+        font-size: 14px;
+        color: #555;
+        line-height: 1.7;
+    }
+    .card a.btn {
+        display: inline-block;
+        margin-top: 16px;
+        background: #06c755;
+        color: #fff;
+        padding: 12px 24px;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: bold;
+    }
+    .spinner {
+        width: 28px;
+        height: 28px;
+        border: 3px solid #eee;
+        border-top-color: #06c755;
+        border-radius: 50%;
+        margin: 0 auto 16px;
+        animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="card" id="card">
+    <div class="spinner"></div>
+    <h1>LINE連携の準備をしています…</h1>
+    <p>そのままお待ちください。</p>
+</div>
+
+<script>
+(function () {
+    const card = document.getElementById('card');
+
+    function showMessage(title, body, showLoginLink) {
+        card.innerHTML = '<h1>' + title + '</h1><p>' + body + '</p>' +
+            (showLoginLink ? '<a class="btn" href="owner-login.html">ログインする</a>' : '');
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const linkToken = params.get('linkToken');
+
+    if (!linkToken) {
+        showMessage('リンクが正しくありません', 'LINEアプリから届いたメッセージのリンクを、もう一度お試しください。', false);
+        return;
+    }
+
+    const token = localStorage.getItem('receptra_token');
+    if (!token) {
+        // ログイン後にこのページへ戻れるよう、linkTokenを一時的に保存する。
+        sessionStorage.setItem('pending_line_link_token', linkToken);
+        showMessage(
+            'ログインが必要です',
+            'LINE連携を完了するには、RECEPTRAオーナーアカウントにログインしてください。ログイン後、自動的にこのページへ戻ります。',
+            true
+        );
+        return;
+    }
+
+    fetch('/api/v1/line-notifications/connection/link/start', {
+        method: 'POST',
+        headers: {
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json'
+        }
+    })
+        .then(function (res) {
+            if (res.status === 401) {
+                localStorage.removeItem('receptra_token');
+                sessionStorage.setItem('pending_line_link_token', linkToken);
+                showMessage(
+                    'ログインが必要です',
+                    'ログインの有効期限が切れています。再度ログインしてください。ログイン後、自動的にこのページへ戻ります。',
+                    true
+                );
+                return null;
+            }
+            if (!res.ok) {
+                throw new Error('failed');
+            }
+            return res.json();
+        })
+        .then(function (data) {
+            if (!data) return;
+            const nonce = data.nonce;
+            const url = 'https://access.line.me/dialog/bot/accountLink?linkToken=' +
+                encodeURIComponent(linkToken) + '&nonce=' + encodeURIComponent(nonce);
+            window.location.href = url;
+        })
+        .catch(function () {
+            showMessage(
+                '連携を開始できませんでした',
+                'しばらくしてから、LINEアプリのメッセージからもう一度お試しください。',
+                false
+            );
+        });
+})();
+</script>
+</body>
+</html>

@@ -75,6 +75,17 @@ from app.models.owner_notification import (
     OwnerNotificationRelatedEntityType,
 )
 
+# Phase N2: LINE Owner通知（配信層。新規テーブル。他のPhase3系モデルと同様、
+# alembicは使わずBase.metadata.create_all()で自動作成される。Phase N1の
+# OwnerNotificationEvent生成ロジックには一切変更を加えていない）。
+from app.models.line_notification import (
+    OwnerLineConnection,
+    ShopLineNotificationSetting,
+    LineLinkNonce,
+    LineNotificationDelivery,
+    LineNotificationDeliveryStatus,
+)
+
 __all__ = [
     # User/Tenant
     "Tenant",
@@ -150,4 +161,11 @@ __all__ = [
     "OwnerNotificationEventType",
     "OwnerNotificationPriority",
     "OwnerNotificationRelatedEntityType",
+
+    # Phase N2: LINE Owner通知（配信層）
+    "OwnerLineConnection",
+    "ShopLineNotificationSetting",
+    "LineLinkNonce",
+    "LineNotificationDelivery",
+    "LineNotificationDeliveryStatus",
 ]
