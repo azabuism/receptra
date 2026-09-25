@@ -4,6 +4,7 @@ Reservation (予約) エンドポイント
 """
 
 import logging
+import time
 import uuid
 from datetime import datetime, date as date_type, timedelta, timezone
 from typing import Optional, List
@@ -44,6 +45,45 @@ router = APIRouter(prefix="/api/v1/reservations", tags=["reservations"])
 
 VALID_STATUSES = {s.value for s in ReservationStatus}
 SLOT_INTERVAL_MINUTES = 30
+
+# ===== Phase W1監査で判明: GET .../availability と POST .../create は元々
+# 未認証で呼び出せる公開エンドポイントであるにもかかわらず、レート制限が
+# 一切なかった（realtime_voice.pyのRealtime Voice Tool群には既に同種の
+# 簡易レート制限があるが、通常のWeb予約フォーム経路には適用されていなかった）。
+# 有料の外部サービスを新規導入せず、realtime_voice.pyと全く同じ設計
+# （プロセス内メモリ保持のshop_idキー付きスライディングウィンドウ、
+# 単一ワーカー前提）をそのまま踏襲する。新しい仕組みを発明しない。=====
+_PUBLIC_AVAILABILITY_RATE_WINDOW_SECONDS = 60
+_PUBLIC_AVAILABILITY_RATE_MAX_REQUESTS = 30
+_public_availability_requests: dict[str, list] = {}
+
+_PUBLIC_CREATE_RATE_WINDOW_SECONDS = 60
+_PUBLIC_CREATE_RATE_MAX_REQUESTS = 10
+_public_create_requests: dict[str, list] = {}
+
+
+def _check_public_availability_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _public_availability_requests.setdefault(shop_id, [])
+    bucket[:] = [t for t in bucket if now - t < _PUBLIC_AVAILABILITY_RATE_WINDOW_SECONDS]
+    if len(bucket) >= _PUBLIC_AVAILABILITY_RATE_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
+
+
+def _check_public_create_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _public_create_requests.setdefault(shop_id, [])
+    bucket[:] = [t for t in bucket if now - t < _PUBLIC_CREATE_RATE_WINDOW_SECONDS]
+    if len(bucket) >= _PUBLIC_CREATE_RATE_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
 
 # ===== Phase3E-3: reservation_dateの基準（JST-local-naive）と揃えた「現在時刻」 =====
 #
@@ -1634,6 +1674,8 @@ async def get_availability(
     resource_type: Optional[str] = Query(None, description="リソースの種別（部屋・ベッド等が混在する店舗で、自動判定できない場合にのみ指定。通常は省略可）"),
     db: AsyncSession = Depends(get_db)
 ) -> AvailabilityResponse:
+    _check_public_availability_rate_limit(shop_id)
+
     shop = await db.get(Shop, shop_id)
     if not shop or not shop.is_active:
         raise HTTPException(status_code=404, detail="店舗が見つかりません")
@@ -1822,6 +1864,8 @@ async def create_reservation(
     db: AsyncSession = Depends(get_db),
     current_user: Optional[CurrentUser] = Depends(get_optional_current_user),
 ) -> ReservationCreateResponse:
+    _check_public_create_rate_limit(request.shop_id)
+
     # Phase3B: idempotency_keyが指定されている場合（Realtime Voice経由のみを想定。
     # 通常のWeb予約・チャット予約は指定しないため、この分岐には入らず従来通り動作する）、
     # 既に同一キーで成立済みの予約があれば、新たに作成せずそれをそのまま成功として返す。

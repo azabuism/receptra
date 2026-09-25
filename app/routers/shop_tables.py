@@ -79,7 +79,19 @@ async def _get_owned_shop(shop_id: str, current_user: CurrentUser, db: AsyncSess
     response_model=List[ShopTableResponse],
     summary="テーブル一覧を取得"
 )
-async def list_tables(shop_id: str, db: AsyncSession = Depends(get_db)):
+async def list_tables(
+    shop_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Phase W1監査で発見: このエンドポイントには元々認証・テナントチェックが
+    一切なく、任意のshop_idに対して内部table_id等を無制限に取得できた
+    （POST/PUT/DELETE等の変更系エンドポイントは元から_get_owned_shop()で
+    保護されていたが、GET一覧のみ保護漏れだった）。同じshop_tables.py内の
+    create_table()等と同一の認証パターンをそのまま適用し、挙動を揃える。
+    """
+    await _get_owned_shop(shop_id, current_user, db)
     result = await db.execute(
         select(ShopTable).filter(ShopTable.shop_id == shop_id).order_by(ShopTable.display_order, ShopTable.created_at)
     )

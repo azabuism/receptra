@@ -467,6 +467,66 @@ class ShopListResponse(BaseModel):
     items: List[ShopResponse]
 
 
+class ShopPublicResponse(BaseModel):
+    """
+    公開（未認証）店舗レスポンススキーマ。
+
+    重要: このスキーマはShopResponseとは完全に独立しており、tenant_id（内部の
+    テナントFK）を一切含まない。ShopNotificationSettingsResponse /
+    ShopPhoneReceptionSettingsResponse と同じ設計方針（Customer向け公開APIと
+    オーナー向け認証済みAPIのレスポンスを混在させない）を、既存のShopResponse
+    （公開・オーナー両方で共用されていた）にも適用したもの。
+
+    Phase W1監査で判明: tenant_idはRECEPTRA店舗ページ（frontend/public/shop.html）
+    からは一切参照されておらず、公開エンドポイント(GET /shops/{id}, GET /shops/search)
+    がShopResponseをそのまま返すことで意図せず公開されていた。tenant_id以外の
+    フィールドはShopResponseと完全に同一（他は元々公開して問題ない一般連絡先等）。
+    """
+    id: str
+    name: str
+    description: Optional[str]
+    category: str
+    business_type: Optional[str] = None
+    address: str
+    latitude: Optional[float]
+    longitude: Optional[float]
+    phone: Optional[str]
+    email: Optional[str]
+    website: Optional[str]
+    thumbnail_url: Optional[str]
+    cover_image_url: Optional[str]
+    is_active: bool
+    is_featured: bool
+    reservations_enabled: bool = False
+    staff_schedule_enabled: bool = False
+    total_reservations: Optional[int]
+    total_reviews: Optional[int]
+    average_rating: Optional[float]
+    created_at: datetime
+    updated_at: datetime
+    shop_hours: Optional[List[ShopHoursResponse]] = []
+    features: Optional[List[str]] = []
+    reservation_duration_minutes: Optional[int] = 90
+    logo_url: Optional[str] = None
+    ai_supported_languages: Optional[List[str]] = Field(
+        default_factory=lambda: ["ja"], description="AI受付が実際に対応する言語コードのリスト（日本語を必ず含む）"
+    )
+    staff_supported_languages: Optional[List[str]] = Field(
+        default_factory=lambda: ["ja"], description="店頭スタッフが対応できる言語コードのリスト"
+    )
+
+    class Config:
+        from_attributes = True
+
+
+class ShopPublicListResponse(BaseModel):
+    """公開（未認証）店舗一覧レスポンススキーマ。ShopPublicResponse同様tenant_idを含まない。"""
+    total: int = Field(..., description="総件数")
+    limit: int
+    offset: int
+    items: List[ShopPublicResponse]
+
+
 class ShopRegisterResponse(BaseModel):
     """店舗登録レスポンススキーマ"""
     success: bool

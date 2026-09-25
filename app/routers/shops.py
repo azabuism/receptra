@@ -20,6 +20,7 @@ from app.schemas.shop import (
     ShopUpdateRequest, ShopHoursBulkUpdateRequest,
     ShopNotificationSettingsResponse, ShopNotificationSettingsUpdateRequest,
     ShopPhoneReceptionSettingsResponse, ShopPhoneReceptionSettingsUpdateRequest,
+    ShopPublicResponse, ShopPublicListResponse,
 )
 from app.deps import get_current_user, get_current_tenant
 from app.schemas.user import CurrentUser
@@ -44,6 +45,25 @@ def _build_shop_response(shop: Shop) -> ShopResponse:
     # ShopResponse上は常に「実際に有効な言語リスト」を返す（from_orm はORMの
     # 属性値がNoneの場合、スキーマ側の default_factory を適用しないため、
     # ここで明示的にフォールバックする）。日本語は常に含まれる。
+    response.ai_supported_languages = effective_ai_languages(shop.ai_supported_languages)
+    response.staff_supported_languages = effective_languages(shop.staff_supported_languages)
+    return response
+
+
+def _build_shop_public_response(shop: Shop) -> ShopPublicResponse:
+    """
+    Phase W1監査で発見: 公開（未認証）エンドポイントが_build_shop_response()の
+    ShopResponse（tenant_idを含む）をそのまま返しており、tenant_idが意図せず
+    公開されていた。ShopPublicResponse（tenant_idを含まない）で組み立て直す。
+    tenant_id以外のロジックは_build_shop_response()と完全に同一。
+    """
+    response = ShopPublicResponse.from_orm(shop)
+    if getattr(shop, "thumbnail_mime_type", None):
+        response.thumbnail_url = f"/api/v1/media/shop-thumbnail/{shop.id}"
+    if getattr(shop, "cover_mime_type", None):
+        response.cover_image_url = f"/api/v1/media/shop-cover/{shop.id}"
+    if getattr(shop, "logo_mime_type", None):
+        response.logo_url = f"/api/v1/media/shop-logo/{shop.id}"
     response.ai_supported_languages = effective_ai_languages(shop.ai_supported_languages)
     response.staff_supported_languages = effective_languages(shop.staff_supported_languages)
     return response
@@ -550,7 +570,7 @@ async def delete_shop(
 
 @router.get(
     "/search",
-    response_model=ShopListResponse,
+    response_model=ShopPublicListResponse,
     summary="店舗を検索",
     description="キーワード、カテゴリ、位置情報で店舗を検索"
 )
@@ -567,7 +587,7 @@ async def search_shops(
     limit: int = Query(20, ge=1, le=100, description="取得件数"),
     offset: int = Query(0, ge=0, description="オフセット"),
     db: AsyncSession = Depends(get_db)
-) -> ShopListResponse:
+) -> ShopPublicListResponse:
     """
     店舗を検索します
     
@@ -639,15 +659,15 @@ async def search_shops(
         result = await db.execute(stmt)
         shops = result.scalars().all()
         
-        shop_list = [_build_shop_response(shop) for shop in shops]
-        
-        return ShopListResponse(
+        shop_list = [_build_shop_public_response(shop) for shop in shops]
+
+        return ShopPublicListResponse(
             total=total or 0,
             limit=limit,
             offset=offset,
             items=shop_list
         )
-    
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -657,14 +677,14 @@ async def search_shops(
 
 @router.get(
     "/{shop_id}",
-    response_model=ShopResponse,
+    response_model=ShopPublicResponse,
     summary="店舗詳細を取得",
     description="指定された店舗IDの詳細情報を取得"
 )
 async def get_shop(
     shop_id: str,
     db: AsyncSession = Depends(get_db)
-) -> ShopResponse:
+) -> ShopPublicResponse:
     """
     指定された店舗の詳細情報を取得します
     """
@@ -675,14 +695,14 @@ async def get_shop(
             .filter(Shop.id == shop_id)
         )
         shop = result.scalar_one_or_none()
-        
+
         if not shop:
             raise HTTPException(
                 status_code=404,
                 detail="店舗が見つかりません"
             )
-        
-        return _build_shop_response(shop)
+
+        return _build_shop_public_response(shop)
     
     except HTTPException:
         raise

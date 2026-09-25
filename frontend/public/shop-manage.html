@@ -3044,7 +3044,9 @@
         async function loadTables() {
             const container = document.getElementById('table-list');
             try {
-                const res = await fetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/tables');
+                // Phase W1: GET一覧が認証必須化されたため（テナント越しの内部table_id
+                // 漏洩を防ぐ修正）、同ファイル内の他の呼び出しと同じauthFetch()に統一。
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/tables');
                 const tables = await res.json();
                 if (!tables.length) {
                     container.innerHTML = '<p class="empty-hint">まだテーブルが登録されていません</p>';

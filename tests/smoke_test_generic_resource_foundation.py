@@ -198,7 +198,11 @@ async def main():
             }, headers=owner_a)
             assert r.status_code == 200, f"ShopTable作成のregression: {r.status_code} {r.text}"
             table_id = r.json()["id"]
-            r = await client.get(f"/api/v1/shops/{shop_a}/tables")
+            # Phase W1: GET一覧も_get_owned_shop()で認証必須化されたため
+            # （他テナントへのtable_id漏洩防止）、owner_aのトークンを付与する。
+            # 未認証アクセスが拒否されること自体はPhase W1側の新規テスト
+            # （smoke_test_public_shop_page_web_booking.pyのC項目）で検証済み。
+            r = await client.get(f"/api/v1/shops/{shop_a}/tables", headers=owner_a)
             assert r.status_code == 200 and any(t["id"] == table_id for t in r.json()), "ShopTable一覧のregression"
             r = await client.delete(f"/api/v1/shops/{shop_a}/tables/{table_id}", headers=owner_a)
             assert r.status_code == 200, f"ShopTable削除のregression: {r.status_code} {r.text}"

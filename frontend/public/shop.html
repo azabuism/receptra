@@ -192,8 +192,6 @@
         }
         .lightbox.open { display: flex; }
         .lightbox img { max-width: 100%; max-height: 90vh; border-radius: 8px; }
-        .booking-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
-        @media (max-width: 560px) { .booking-row { grid-template-columns: 1fr; } }
         .field { margin-bottom: 14px; }
         .field label { display: block; font-size: 13px; font-weight: 700; color: #555; margin-bottom: 6px; }
         .field input, .field textarea, .field select {
@@ -217,21 +215,56 @@
         .slot-btn.selected { background: var(--primary); border-color: var(--primary); color: var(--white); }
         .slot-btn.unavailable { color: #ccc; border-color: #f0f0f0; cursor: not-allowed; text-decoration: line-through; }
         .booking-hint { font-size: 13px; color: #999; margin-bottom: 14px; }
-        .ai-booking-row {
-            display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px;
-            padding-bottom: 18px; border-bottom: 1px solid #f2f2f2;
+        /* Phase W1: Web予約をPRIMARY、AI受付をSECONDARYとする階層
+           （Section 33「予約するためにAIと話す必要はない」というUX方針）。
+           以前はこのブロックが#booking-card冒頭にあり視覚的な主導線だったが、
+           既存フォームの下に「分からないことがありますか？」という控えめな
+           セカンダリ導線として移動した。ai-booking-btnのvoice側も、以前は
+           primary色で強く塗っていたが、chatと同じ軽いトーンへ統一している。 */
+        #booking-ai-secondary {
+            margin-top: 20px; padding-top: 18px; border-top: 1px solid #f2f2f2;
         }
+        .ai-booking-question { font-size: 13px; color: #999; margin-bottom: 10px; }
+        .ai-booking-row { display: flex; gap: 10px; flex-wrap: wrap; }
         .ai-booking-btn {
-            flex: 1; min-width: 160px; display: flex; align-items: center; justify-content: center; gap: 8px;
-            padding: 13px 16px; border-radius: 12px; font-size: 14px; font-weight: 700;
+            flex: 1; min-width: 150px; display: flex; align-items: center; justify-content: center; gap: 8px;
+            padding: 10px 14px; border-radius: 10px; font-size: 13px; font-weight: 700;
             text-decoration: none; font-family: inherit; cursor: pointer;
+            background: var(--white); color: var(--primary-dark); border: 2px solid #f0f0f0;
         }
-        .ai-booking-btn.chat { background: #fff1e6; color: var(--primary-dark); border: 2px solid var(--primary); }
-        .ai-booking-btn.chat:hover { background: #ffe4cc; }
-        .ai-booking-btn.voice { background: var(--primary); color: var(--white); border: 2px solid var(--primary); }
-        .ai-booking-btn.voice:hover { background: var(--primary-dark); }
-        .ai-booking-or { font-size: 12px; color: #bbb; text-align: center; margin: -10px 0 18px; }
+        .ai-booking-btn:hover { border-color: var(--primary); background: #fff8f3; }
         .booking-hint.error { color: #ef4444; }
+        /* ---------- 来店日カレンダー（Phase W1） ---------- */
+        .rc-calendar {
+            background: var(--light); border-radius: 12px; padding: 14px; user-select: none;
+        }
+        .rc-calendar-head {
+            display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;
+            font-size: 14px; font-weight: 700; color: var(--dark);
+        }
+        .rc-cal-nav {
+            width: 32px; height: 32px; min-height: 32px; border-radius: 50%; border: none;
+            background: var(--white); color: var(--primary-dark); font-size: 18px; font-weight: 700;
+            cursor: pointer; line-height: 1;
+        }
+        .rc-cal-nav:hover { background: #fff0e6; }
+        .rc-cal-nav:disabled { opacity: 0.35; cursor: not-allowed; }
+        .rc-calendar-dow {
+            display: grid; grid-template-columns: repeat(7, 1fr); text-align: center;
+            font-size: 11px; color: #999; margin-bottom: 4px;
+        }
+        .rc-calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+        .rc-cal-day {
+            aspect-ratio: 1; min-height: 40px; display: flex; align-items: center; justify-content: center;
+            border-radius: 10px; font-size: 14px; font-weight: 700; border: none; background: var(--white);
+            color: var(--dark); cursor: pointer; font-family: inherit;
+        }
+        .rc-cal-day:hover:not(:disabled) { border: 2px solid var(--primary); }
+        .rc-cal-day.rc-cal-empty { background: transparent; cursor: default; }
+        .rc-cal-day.rc-cal-today { box-shadow: inset 0 0 0 2px var(--primary-dark); }
+        .rc-cal-day.rc-cal-selected { background: var(--primary); color: var(--white); }
+        .rc-cal-day:disabled { color: #ccc; background: transparent; cursor: not-allowed; }
+        @media (max-width: 400px) { .rc-cal-day { min-height: 34px; font-size: 13px; } }
         .booking-msg {
             font-size: 13px; margin-top: 12px; padding: 10px 12px; border-radius: 8px; display: none;
         }
@@ -286,64 +319,74 @@
 
             <div class="card" id="booking-card">
                 <h2>ご予約</h2>
-                <div class="ai-booking-row">
-                    <a href="#" class="ai-booking-btn chat" id="ai-chat-btn">💬 チャットで予約</a>
-                    <a href="#" class="ai-booking-btn voice" id="ai-voice-btn">📞 通話で予約</a>
-                </div>
-                <p class="ai-booking-or">または、フォームからご予約</p>
                 <p class="booking-hint" id="booking-intro-hint">会員登録は不要です。日時と人数を選んで、そのまま予約できます。</p>
-                <div class="field" id="booking-service-field" style="display:none;">
-                    <label for="booking-service">ご希望のサービス *</label>
-                    <select id="booking-service">
-                        <option value="">選択してください</option>
-                    </select>
-                </div>
-                <div class="field" id="booking-staff-field" style="display:none;">
-                    <label for="booking-staff">担当スタッフ（任意）</label>
-                    <select id="booking-staff">
-                        <option value="">指名なし（お任せ）</option>
-                    </select>
-                </div>
-                <div class="booking-row">
-                    <div class="field" style="margin-bottom:0;">
-                        <label for="booking-date">来店日</label>
-                        <input type="date" id="booking-date">
+                <div id="booking-web-flow">
+                    <div class="field" id="booking-service-field" style="display:none;">
+                        <label for="booking-service">ご希望のサービス *</label>
+                        <select id="booking-service">
+                            <option value="">選択してください</option>
+                        </select>
                     </div>
-                    <div class="field" id="booking-party-field" style="margin-bottom:0;">
+                    <div class="field" id="booking-staff-field" style="display:none;">
+                        <label for="booking-staff">担当スタッフ（任意）</label>
+                        <select id="booking-staff">
+                            <option value="">指名なし（お任せ）</option>
+                        </select>
+                    </div>
+                    <div class="field" id="booking-party-field">
                         <label for="booking-party">人数</label>
                         <input type="number" id="booking-party" min="1" max="999" value="2">
                     </div>
+                    <div class="field">
+                        <label id="booking-calendar-label">来店日</label>
+                        <input type="date" id="booking-date" style="display:none;">
+                        <div class="rc-calendar" id="booking-calendar">
+                            <div class="rc-calendar-head">
+                                <button type="button" class="rc-cal-nav" id="cal-prev-month" aria-label="前の月">‹</button>
+                                <span id="cal-month-label"></span>
+                                <button type="button" class="rc-cal-nav" id="cal-next-month" aria-label="次の月">›</button>
+                            </div>
+                            <div class="rc-calendar-dow" id="cal-dow"></div>
+                            <div class="rc-calendar-grid" id="cal-grid"></div>
+                        </div>
+                    </div>
+                    <div id="booking-slots-wrap" style="margin-top: 16px; display:none;">
+                        <p class="booking-hint" id="booking-slots-hint" style="margin-bottom:10px;"></p>
+                        <div class="booking-slots" id="booking-slots"></div>
+                    </div>
+                    <div id="booking-form-wrap" style="display:none; margin-top: 20px; padding-top: 18px; border-top: 1px solid #f0f0f0;">
+                        <p class="booking-selected" id="booking-selected-label"></p>
+                        <div class="field">
+                            <label for="booking-name">お名前 *</label>
+                            <input type="text" id="booking-name" required>
+                        </div>
+                        <div class="field">
+                            <label for="booking-phone">電話番号 *</label>
+                            <input type="tel" id="booking-phone" required inputmode="tel">
+                        </div>
+                        <div class="field">
+                            <label for="booking-email">メールアドレス</label>
+                            <input type="email" id="booking-email">
+                        </div>
+                        <div class="field">
+                            <label for="booking-notes">ご要望・備考</label>
+                            <textarea id="booking-notes" placeholder="アレルギーや個室希望など"></textarea>
+                        </div>
+                        <div class="field" id="booking-coupon-field" style="display:none;">
+                            <label for="booking-coupon">クーポンコード（お持ちの方）</label>
+                            <input type="text" id="booking-coupon" placeholder="例：SAVE20" autocapitalize="characters">
+                            <p class="booking-hint" id="booking-coupon-msg" style="margin-top:6px;"></p>
+                        </div>
+                        <button type="button" class="btn" id="booking-submit-btn">この内容で予約する</button>
+                        <div class="booking-msg" id="booking-msg"></div>
+                    </div>
                 </div>
-                <button type="button" class="btn" id="booking-check-btn">空き状況を確認</button>
-                <div id="booking-slots-wrap" style="margin-top: 16px; display:none;">
-                    <p class="booking-hint" id="booking-slots-hint" style="margin-bottom:10px;"></p>
-                    <div class="booking-slots" id="booking-slots"></div>
-                </div>
-                <div id="booking-form-wrap" style="display:none; margin-top: 20px; padding-top: 18px; border-top: 1px solid #f0f0f0;">
-                    <p class="booking-selected" id="booking-selected-label"></p>
-                    <div class="field">
-                        <label for="booking-name">お名前 *</label>
-                        <input type="text" id="booking-name" required>
+                <div id="booking-ai-secondary">
+                    <p class="ai-booking-question" id="ai-booking-question">分からないことがありますか？</p>
+                    <div class="ai-booking-row">
+                        <a href="#" class="ai-booking-btn chat" id="ai-chat-btn">💬 チャットで予約</a>
+                        <a href="#" class="ai-booking-btn voice" id="ai-voice-btn">📞 通話で予約</a>
                     </div>
-                    <div class="field">
-                        <label for="booking-phone">電話番号 *</label>
-                        <input type="tel" id="booking-phone" required>
-                    </div>
-                    <div class="field">
-                        <label for="booking-email">メールアドレス</label>
-                        <input type="email" id="booking-email">
-                    </div>
-                    <div class="field">
-                        <label for="booking-notes">ご要望・備考</label>
-                        <textarea id="booking-notes" placeholder="アレルギーや個室希望など"></textarea>
-                    </div>
-                    <div class="field" id="booking-coupon-field" style="display:none;">
-                        <label for="booking-coupon">クーポンコード（お持ちの方）</label>
-                        <input type="text" id="booking-coupon" placeholder="例：SAVE20" autocapitalize="characters">
-                        <p class="booking-hint" id="booking-coupon-msg" style="margin-top:6px;"></p>
-                    </div>
-                    <button type="button" class="btn" id="booking-submit-btn">この内容で予約する</button>
-                    <div class="booking-msg" id="booking-msg"></div>
                 </div>
             </div>
 
@@ -498,9 +541,48 @@
             // 完全に同一（call.htmlは見た目のみが異なる）。
             document.getElementById('ai-voice-btn').href = '/call.html?id=' + encodeURIComponent(shop.id);
             currentBusinessType = shop.business_type || null;
-            setServiceBookingMode(SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1);
-            if (SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1) {
-                loadBookingServices(shop.id);
+
+            // Phase W1監査で判明: shop.reservations_enabled（オンライン予約の
+            // 課金アクティベーション）が無効な店舗でも、以前はWeb予約フォームを
+            // そのまま表示しており、空き枠を選んで送信した後に初めて
+            // 「この店舗は現在予約を受け付けていません」で弾かれていた。
+            // reservations_enabledをrender()の時点で見て、無効な店舗では
+            // Web予約フローそのものを表示せず、AI受付CTAのみを案内する
+            // （AI音声・AIチャット経路は元々このフラグの影響を受けない別経路）。
+            const webBookingAvailable = !!shop.reservations_enabled;
+            document.getElementById('booking-web-flow').style.display = webBookingAvailable ? 'block' : 'none';
+            document.getElementById('booking-intro-hint').style.display = webBookingAvailable ? 'block' : 'none';
+            const aiQuestionEl = document.getElementById('ai-booking-question');
+            const aiSecondaryEl = document.getElementById('booking-ai-secondary');
+            if (webBookingAvailable) {
+                aiQuestionEl.textContent = '分からないことがありますか？';
+                aiSecondaryEl.style.borderTop = '';
+                aiSecondaryEl.style.marginTop = '';
+                aiSecondaryEl.style.paddingTop = '';
+            } else {
+                // Web予約自体が使えない店舗では、AI受付がこのお店にとっての
+                // 唯一のご予約導線になるため、区切り線・余白を外し主導線らしく見せる。
+                aiQuestionEl.textContent = 'AIスタッフがご予約・お問い合わせを承ります';
+                aiSecondaryEl.style.borderTop = 'none';
+                aiSecondaryEl.style.marginTop = '0';
+                aiSecondaryEl.style.paddingTop = '0';
+            }
+
+            if (webBookingAvailable) {
+                setServiceBookingMode(SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1);
+                if (SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1) {
+                    loadBookingServices(shop.id);
+                }
+                // カレンダーの定休日グレーアウトは、既にレスポンスへ含まれている
+                // shop.shop_hours（週次の営業時間）だけから安価に算出する。
+                // 特別休業日・上書き営業時間は考慮しない（実際の可否は日付クリック時に
+                // 既存のavailability APIが正として最終判定するため、機能的な問題はない。
+                // 監査レポート56番に既知の制約として明記済み）。
+                calClosedWeekdays = new Set(
+                    (shop.shop_hours || []).filter(function (h) { return h.is_closed; })
+                        .map(function (h) { return h.day_of_week; })
+                );
+                renderCalendar();
             }
 
             const cover = shop.cover_image_url || shop.thumbnail_url;
@@ -850,7 +932,6 @@
             document.getElementById('booking-staff-field').style.display = isServiceBased ? 'block' : 'none';
             document.getElementById('booking-party-field').style.display = isServiceBased ? 'none' : 'block';
             document.getElementById('booking-coupon-field').style.display = isServiceBased ? 'block' : 'none';
-            document.querySelector('.booking-row').style.gridTemplateColumns = isServiceBased ? '1fr' : '';
             document.getElementById('booking-intro-hint').textContent = isServiceBased
                 ? '会員登録は不要です。サービスと日時を選んで、そのまま予約できます。'
                 : '会員登録は不要です。日時と人数を選んで、そのまま予約できます。';
@@ -889,6 +970,10 @@
                 const staffList = await staffRes.json();
                 const eligible = [];
                 for (const st of staffList) {
+                    // Phase W1監査で判明: nomination_allowed=falseは「指名UIに出さない」
+                    // ためのフラグ（可用性判定には影響しない）。この一覧構築時に
+                    // フィルタしていなかった箇所を是正。
+                    if (st.nomination_allowed === false) continue;
                     try {
                         const svcRes = await fetch('/api/v1/staff/' + encodeURIComponent(st.id) + '/services');
                         const services = await svcRes.json();
@@ -906,19 +991,94 @@
             } catch (e) {
                 // スタッフ一覧の取得に失敗しても「指名なし」で予約は続けられる
             }
+            if (calSelectedDateStr) checkAvailability();
         });
 
-        // ---------- ご予約 ----------
-        (function initBookingDefaults() {
-            const dateInput = document.getElementById('booking-date');
-            const today = new Date();
-            const yyyy = today.getFullYear();
-            const mm = ('0' + (today.getMonth() + 1)).slice(-2);
-            const dd = ('0' + today.getDate()).slice(-2);
-            const todayStr = yyyy + '-' + mm + '-' + dd;
-            dateInput.value = todayStr;
-            dateInput.min = todayStr;
-        })();
+        // ---------- ご予約：来店日カレンダー（Phase W1） ----------
+        // 既存の<input type="date" id="booking-date">はdisplay:noneのまま残し、
+        // 「選択中の日付を保持する既存の値の入れ物」としてのみ使い続ける。
+        // 空き状況確認・予約送信のJSはこれまで通りdocument.getElementById('booking-date').value
+        // を読むだけで、カレンダーUIはこの隠しinputへ値を書き込む役目に徹する
+        // （空き状況判定・予約作成ロジック自体には一切手を加えない）。
+        function todayDateStr() {
+            const d = new Date();
+            return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+        }
+        const RC_TODAY_STR = todayDateStr();
+        let calViewYear = parseInt(RC_TODAY_STR.slice(0, 4), 10);
+        let calViewMonth = parseInt(RC_TODAY_STR.slice(5, 7), 10) - 1; // 0-indexed
+        let calSelectedDateStr = null;
+        // shop.shop_hoursから「毎週この曜日は定休日」を安価に導出し、カレンダーの
+        // グレーアウトのみに使う（実際の空き判定は既存のavailability APIが正とする。
+        // 特別休業日・上書き営業時間はここでは考慮しない = Phase W1監査の既知の制約）。
+        let calClosedWeekdays = null; // Set<number> where 0=Sun..6=Sat (Dateのgetday()系に合わせる)
+
+        function dateStrToWeekdayIdx(y, m, d) {
+            // JSのDate#getDay()は0=日..6=土。DAY_NAMES配列は['月','火',...,'日']
+            // （day_of_week: 0=月..6=日、既存の営業時間テーブル描画と同じ規約）。
+            const jsDay = new Date(y, m, d).getDay(); // 0=Sun..6=Sat
+            return (jsDay + 6) % 7; // 0=Mon..6=Sun に変換
+        }
+
+        function renderCalendar() {
+            const grid = document.getElementById('cal-grid');
+            const dowEl = document.getElementById('cal-dow');
+            const label = document.getElementById('cal-month-label');
+            const prevBtn = document.getElementById('cal-prev-month');
+
+            label.textContent = calViewYear + '年' + (calViewMonth + 1) + '月';
+            dowEl.innerHTML = DAY_NAMES.map(function (n) { return '<span>' + n + '</span>'; }).join('');
+
+            const firstOfMonth = new Date(calViewYear, calViewMonth, 1);
+            const firstWeekdayIdx = (firstOfMonth.getDay() + 6) % 7; // 0=Mon..6=Sun
+            const daysInMonth = new Date(calViewYear, calViewMonth + 1, 0).getDate();
+
+            const isCurrentOrPastMonth = (calViewYear < parseInt(RC_TODAY_STR.slice(0, 4), 10)) ||
+                (calViewYear === parseInt(RC_TODAY_STR.slice(0, 4), 10) && calViewMonth <= parseInt(RC_TODAY_STR.slice(5, 7), 10) - 1);
+            prevBtn.disabled = isCurrentOrPastMonth;
+
+            let html = '';
+            for (let i = 0; i < firstWeekdayIdx; i++) {
+                html += '<span class="rc-cal-day rc-cal-empty"></span>';
+            }
+            for (let d = 1; d <= daysInMonth; d++) {
+                const dateStr = calViewYear + '-' + ('0' + (calViewMonth + 1)).slice(-2) + '-' + ('0' + d).slice(-2);
+                const isPast = dateStr < RC_TODAY_STR;
+                const isToday = dateStr === RC_TODAY_STR;
+                const isSelected = dateStr === calSelectedDateStr;
+                const weekdayIdx = dateStrToWeekdayIdx(calViewYear, calViewMonth, d);
+                const isClosedWeekday = calClosedWeekdays ? calClosedWeekdays.has(weekdayIdx) : false;
+                const disabled = isPast || isClosedWeekday;
+                const cls = ['rc-cal-day'];
+                if (isToday) cls.push('rc-cal-today');
+                if (isSelected) cls.push('rc-cal-selected');
+                html += '<button type="button" class="' + cls.join(' ') + '" data-date="' + dateStr + '"' +
+                    (disabled ? ' disabled' : '') + '>' + d + '</button>';
+            }
+            grid.innerHTML = html;
+
+            grid.querySelectorAll('.rc-cal-day:not(.rc-cal-empty):not(:disabled)').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    calSelectedDateStr = btn.dataset.date;
+                    document.getElementById('booking-date').value = calSelectedDateStr;
+                    renderCalendar();
+                    checkAvailability();
+                });
+            });
+        }
+
+        document.getElementById('cal-prev-month').addEventListener('click', function () {
+            calViewMonth -= 1;
+            if (calViewMonth < 0) { calViewMonth = 11; calViewYear -= 1; }
+            renderCalendar();
+        });
+        document.getElementById('cal-next-month').addEventListener('click', function () {
+            calViewMonth += 1;
+            if (calViewMonth > 11) { calViewMonth = 0; calViewYear += 1; }
+            renderCalendar();
+        });
+
+        document.getElementById('booking-date').min = RC_TODAY_STR;
 
         function showBookingMsg(text, type) {
             const el = document.getElementById('booking-msg');
@@ -926,7 +1086,18 @@
             el.className = 'booking-msg ' + type;
         }
 
-        document.getElementById('booking-check-btn').addEventListener('click', async function () {
+        // 人数・サービス・担当者の変更時は、既に日付が選択済みなら空き状況を
+        // 再取得する（従来は「空き状況を確認」ボタンを押し直す必要があったが、
+        // カレンダー方式では明示的な確認ボタンがないため、条件が変わったら
+        // 選択済みの枠を一旦クリアし、再確認を促す）。
+        document.getElementById('booking-party').addEventListener('change', function () {
+            if (calSelectedDateStr) checkAvailability();
+        });
+        document.getElementById('booking-staff').addEventListener('change', function () {
+            if (calSelectedDateStr) checkAvailability();
+        });
+
+        async function checkAvailability() {
             if (!currentShopId) return;
             const isServiceBased = SERVICE_BASED_TYPES.indexOf(currentBusinessType) !== -1;
             const date = document.getElementById('booking-date').value;
@@ -934,18 +1105,18 @@
             const serviceId = isServiceBased ? document.getElementById('booking-service').value : '';
             const staffId = isServiceBased ? document.getElementById('booking-staff').value : '';
 
-            if (!date) {
-                alert('来店日を選択してください');
-                return;
-            }
-            if (isServiceBased && !serviceId) {
-                alert('ご希望のサービスを選択してください');
-                return;
-            }
-
             const slotsWrap = document.getElementById('booking-slots-wrap');
             const slotsEl = document.getElementById('booking-slots');
             const hintEl = document.getElementById('booking-slots-hint');
+
+            if (!date) return;
+            if (isServiceBased && !serviceId) {
+                slotsWrap.style.display = 'block';
+                slotsEl.innerHTML = '';
+                hintEl.textContent = 'ご希望のサービスを選択してください';
+                return;
+            }
+
             document.getElementById('booking-form-wrap').style.display = 'none';
             selectedBookingTime = null;
 
@@ -1000,7 +1171,7 @@
             } catch (err) {
                 hintEl.textContent = typeof err.message === 'string' ? err.message : '空き状況の取得に失敗しました';
             }
-        });
+        }
 
         document.getElementById('booking-submit-btn').addEventListener('click', async function () {
             if (!currentShopId || !selectedBookingTime) return;
@@ -1042,11 +1213,20 @@
                 payload.number_of_people = partySize;
             }
 
+            // Phase W1監査で判明: この送信fetchには元々タイムアウトが一切なく、
+            // 通信が詰まった場合「送信中…」のままボタンが無期限に無効化され続ける
+            // 恐れがあった。realtime-voice-engine.jsのfetchToolWithTimeout()と
+            // 同じAbortControllerの考え方を、フォーム送信という別文脈向けに
+            // 値だけ変えて（ライブ通話中の無音回避ではなく、送信詰まりからの
+            // 復帰が目的のため15秒）流用する。
+            const submitController = new AbortController();
+            const submitTimeoutId = setTimeout(function () { submitController.abort(); }, 15000);
             try {
                 const res = await fetch('/api/v1/reservations/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(payload),
+                    signal: submitController.signal
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || '予約に失敗しました');
@@ -1069,7 +1249,13 @@
                 document.getElementById('booking-coupon').value = '';
                 selectedBookingTime = null;
             } catch (err) {
-                const msg = typeof err.message === 'string' ? err.message : '予約に失敗しました';
+                // Section 27: 技術的なエラー文言をそのまま見せず、再度空き状況を
+                // 確認し直せる状態へ自然に戻す（枠が先に埋まった場合の
+                // reason_code="fully_booked"のdetailメッセージは既にバックエンド側で
+                // お客様向けの文面になっているため、そのまま表示するだけでよい）。
+                const msg = err.name === 'AbortError'
+                    ? '通信がタイムアウトしました。もう一度お試しください。'
+                    : (typeof err.message === 'string' ? err.message : '予約に失敗しました');
                 if (couponCode && msg.indexOf('クーポン') !== -1 && couponMsgEl) {
                     couponMsgEl.textContent = msg;
                     couponMsgEl.className = 'booking-hint error';
@@ -1077,6 +1263,7 @@
                     showBookingMsg(msg, 'error');
                 }
             } finally {
+                clearTimeout(submitTimeoutId);
                 btn.disabled = false;
             }
         });
