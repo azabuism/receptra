@@ -5,8 +5,8 @@ Conversation Opening / Intent Classification（通話冒頭のご用件把握）
 1. _INTENT_CLASSIFICATION_TEMPLATE の内容チェック（純粋な文字列検証）:
    - RESERVATION/CALLBACK・HUMAN_HANDOFF/QUESTION・INFORMATION/OTHER・UNCLEAR
      の4分類が含まれていること。
-   - 「20秒」はあくまで目安であり、待機時間ではないという注記が含まれて
-     いること。
+   - 「5秒」はあくまで目安であり、待機時間ではないという注記が含まれて
+     いること（PHASE TELEPHONE GUIDANCE UPDATEで20秒から短縮）。
    - input_audio_buffer.commit / response.create のようなプロトコルレベルの
      文言が一切含まれていないこと（クライアント側の強制打ち切りを一切
      指示していないことの確認。谷村様の明示的な禁止事項）。
@@ -66,17 +66,19 @@ def _test_template_content():
     assert "QUESTION" in tmpl and "INFORMATION" in tmpl, "QUESTION/INFORMATION分類が見つかりません"
     assert "OTHER" in tmpl and "UNCLEAR" in tmpl, "OTHER/UNCLEAR分類が見つかりません"
 
-    # 1b. 「20秒」はあくまで目安であり、待機時間ではないことの明記
-    assert "20秒" in tmpl, "20秒への言及が見つかりません"
+    # 1b. 「5秒」はあくまで目安であり、待機時間ではないことの明記
+    # （PHASE TELEPHONE GUIDANCE UPDATEで20秒から5秒へ短縮。20秒という
+    # 具体的な数値への言及自体はテンプレートから除去されている想定）。
+    assert "5秒" in tmpl, "5秒への言及が見つかりません"
     assert "待機時間ではありません" in tmpl or "待たなければならない" in tmpl, (
-        "20秒が待機時間ではないという注記が見つかりません"
+        "5秒が待機時間ではないという注記が見つかりません"
     )
     # 早く分かった場合はすぐ動く、という具体例が含まれていること
-    assert "5秒" in tmpl or "8秒" in tmpl or "10秒" in tmpl, "早期確定時にすぐ動く旨の具体例が見つかりません"
+    assert "2秒" in tmpl or "3秒" in tmpl, "早期確定時にすぐ動く旨の具体例が見つかりません"
 
     # 1c. プロトコルレベルの文言（クライアント側の強制介入）が一切含まれて
     # いないこと。これらはAI向けinstructionsとして意味を持たないだけでなく、
-    # 「20秒でこれらを送信する」という誤読を絶対に招いてはならない。
+    # 「5秒でこれらを送信する」という誤読を絶対に招いてはならない。
     forbidden_terms = [
         "input_audio_buffer.commit",
         "response.create",
