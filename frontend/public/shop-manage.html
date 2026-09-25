@@ -138,6 +138,10 @@
         .btn-outline:hover { border-color: var(--primary); color: var(--primary); }
         .btn-danger { color: var(--error); }
         .btn-danger:hover { border-color: var(--error); }
+        /* PHASE P2: Web AI受付カードの追加ボタン群。既存.btn-outlineの見た目を
+           踏襲しつつ、モバイルでのタップ領域を44px以上確保するための専用クラス
+           (既存.btn-outlineの他の利用箇所には影響しない)。 */
+        .webcall-action-btn { min-height: 44px; padding: 10px 18px; font-size: 13px; }
         .msg {
             font-size: 13px; margin-top: 12px; padding: 10px 12px; border-radius: 8px; display: none;
         }
@@ -1651,16 +1655,26 @@
              スタッフへの転送設定は、データ・設定項目のみ今回用意し、実際に
              電話を転送する仕組み自体はまだ実装されていない（notif-bannerで
              明示する。既存の「AIからの予約通知」カードの「準備中」表示と
-             同じパターンを踏襲）。 -->
+             同じパターンを踏襲）。
+
+             PHASE P2: このカードのタイトル・トグルの見出しを「Web AI受付」向けに
+             リラベルした（見せ方の変更のみ）。#ai-phone-reception-enabled が
+             実際に制御しているのは既存の /realtime-voice/session 発行可否のみで、
+             現時点ではこれが「お客様がURL/QRから使うWeb AI受付」と完全に一致するため、
+             ラベル変更は虚偽表示にならない。将来Vonage/PSTNの電話回線受付が
+             別チャネルとして実装される際は、このフィールドを電話受付にも
+             兼用し続けられるかを再評価する必要がある（P2では未対応・変更なし）。
+             フォームのid・保存関数（_savePhoneReceptionCore）・「全体を保存」への
+             登録は一切変更していない。 -->
         <div class="card">
-            <h2>AIによる電話受付</h2>
-            <p class="hint">お客様との音声通話に、AIスタッフが応対するかどうかを設定します。</p>
+            <h2>Web AI受付</h2>
+            <p class="hint">SNSやホームページから、お客様がAI受付と直接話せます。</p>
 
             <form id="phone-reception-settings-form">
                 <div class="notif-toggle-row">
                     <div>
-                        <div class="notif-toggle-title">AIが電話受付を行う</div>
-                        <div class="notif-toggle-desc">OFFにすると、AIは一切応答しなくなります（AIスタッフが話し始めてからお断りするのではなく、そもそも接続そのものを行いません）。</div>
+                        <div class="notif-toggle-title">Web AI受付を公開する</div>
+                        <div class="notif-toggle-desc">OFFにすると、お客様がAI受付ページのURLやQRコードにアクセスしても、AIは一切応答しなくなります（接続そのものを行いません）。</div>
                     </div>
                     <label class="toggle-switch">
                         <input type="checkbox" id="ai-phone-reception-enabled">
@@ -1668,7 +1682,9 @@
                     </label>
                 </div>
 
-                <div class="notif-banner" style="margin-top: 20px;">
+                <h3 style="font-size: 13px; color: #999; margin: 22px 0 10px; font-weight: 700;">スタッフへの取り次ぎ（準備中・電話回線向け）</h3>
+
+                <div class="notif-banner" style="margin-top: 0;">
                     スタッフへの取り次ぎ（電話中にそのままスタッフへおつなぎする機能）は現在準備中です。今のうちに設定だけ済ませておくことができます。
                 </div>
 
@@ -1704,6 +1720,54 @@
                 <button type="submit" class="btn" id="phone-reception-settings-save-btn" style="margin-top: 14px;">保存する</button>
                 <div class="msg" id="phone-reception-settings-msg"></div>
             </form>
+
+            <!-- PHASE P2: 以下は完全に追加のみのブロック。上のフォーム(保存処理)とは
+                 独立しており、id・JS関数を一切共有しない。#ai-phone-reception-enabled
+                 の現在のON/OFF状態を表示専用でミラーする(js/web-ai-call-card.jsが
+                 ポーリングで同期。プログラムによる.checked代入はchangeイベントを
+                 発火しないため)。公開URL・QR・SNS案内はすべてクライアント側のみで
+                 完結し、新しいAPI呼び出しは一切発生しない。 -->
+            <div id="web-ai-call-block" style="margin-top: 26px; padding-top: 22px; border-top: 1px solid #eee;">
+                <div id="web-ai-call-status-row" style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px;">
+                    <span id="web-ai-call-status-badge" style="font-size: 13px; font-weight: 700; color: #999;">状態を確認中…</span>
+                </div>
+                <p class="hint" id="web-ai-call-status-caveat" style="display: none; margin-top: -8px; margin-bottom: 14px;"></p>
+
+                <div class="field" style="margin-bottom: 10px;">
+                    <label for="web-ai-call-url">あなたのAI受付URL</label>
+                    <input type="text" id="web-ai-call-url" readonly
+                           style="width: 100%; font-size: 13px; background: #fafafa; word-break: break-all;"
+                           onclick="this.select();">
+                </div>
+
+                <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px;">
+                    <button type="button" class="btn-outline webcall-action-btn" id="web-ai-call-copy-btn">URLをコピー</button>
+                    <button type="button" class="btn-outline webcall-action-btn" id="web-ai-call-open-btn">AI受付ページを開く</button>
+                </div>
+                <div class="msg" id="web-ai-call-copy-msg"></div>
+
+                <div style="margin-top: 20px;">
+                    <label style="display: block; font-size: 13px; font-weight: 700; margin-bottom: 8px; color: #666;">QRコード</label>
+                    <div id="web-ai-call-qr" style="width: 200px; max-width: 100%; background: #fff; padding: 12px; border: 1px solid #eee; border-radius: 12px;"></div>
+                    <p class="hint" style="margin-top: 10px; margin-bottom: 0;">店頭POPや名刺、チラシにも利用できます。</p>
+                    <button type="button" class="btn-outline webcall-action-btn" id="web-ai-call-qr-save-btn" style="margin-top: 10px;">QRコードを保存</button>
+                </div>
+
+                <div style="margin-top: 26px;">
+                    <label style="display: block; font-size: 13px; font-weight: 700; margin-bottom: 8px; color: #666;">SNS・Webに設置</label>
+                    <ul class="hint" style="margin: 0 0 12px; padding-left: 18px; line-height: 1.9;">
+                        <li><strong>Instagram：</strong>プロフィールの「リンク」欄にURLを貼り付けてください。</li>
+                        <li><strong>LINE公式アカウント：</strong>リッチメニューやメッセージにURLを貼り付けてください。</li>
+                        <li><strong>ホームページ：</strong>ボタンやリンクとしてURLを設置してください。</li>
+                        <li><strong>その他のSNS：</strong>投稿やプロフィールにURLを貼り付けてください。</li>
+                    </ul>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                        <button type="button" class="btn-outline webcall-action-btn" id="web-ai-call-copy-instagram">Instagram用URLをコピー</button>
+                        <button type="button" class="btn-outline webcall-action-btn" id="web-ai-call-copy-line">LINE公式用URLをコピー</button>
+                        <button type="button" class="btn-outline webcall-action-btn" id="web-ai-call-copy-web">Web用URLをコピー</button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="card">
@@ -6792,6 +6856,11 @@
             }
         }
     </script>
+    <!-- PHASE P2: Web AI受付カード(公開URL・コピー・QR・SNS案内)専用の追加スクリプト。
+         上のメインスクリプトのid・関数には一切依存せず読み込み専用でDOM要素を参照する。
+         qrcode-lib.jsは完全オフラインのベンダー同梱ライブラリ(外部通信なし)。 -->
+    <script src="js/qrcode-lib.js"></script>
+    <script src="js/web-ai-call-card.js"></script>
     <footer class="rc-footer">
         <div class="rc-footer-links">
             <a href="receptra-pricing.html">料金プラン</a>
