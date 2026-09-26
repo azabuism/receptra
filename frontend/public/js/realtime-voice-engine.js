@@ -3312,18 +3312,49 @@
                 + ' (tool=' + (item.name || '(不明)') + (toolResultState === 'success' ? '' : ', outcome=' + toolResultState) + ')');
 
             logEvent('Tool結果送信: ' + JSON.stringify(output));
-            dc.send(JSON.stringify({
-                type: 'conversation.item.create',
-                item: {
-                    type: 'function_call_output',
-                    call_id: callId,
-                    output: JSON.stringify(output),
-                },
-            }));
-            lastToolLabel = (item.name || '(不明)') + ': output_sent';
-            updateAudioDiagnosticsPanel();
-            pushTimelineEvent('TOOL_OUTPUT_SENT (tool=' + (item.name || '(不明)') + ')');
-            sendResponseCreate('tool_result:' + (item.name || 'unknown'));
+            // FAST TURN 3.6A（会話継続停止の修正・最重要）: このdc.send()だけが、
+            // ファイル内の他すべてのdc.send()呼び出し（input_audio_buffer.commit系・
+            // sendResponseCreate・Zero-Wait会話履歴通知）と異なり、try/catchで
+            // 保護されていなかった。DataChannelが何らかの理由で送信不可能な
+            // 状態（例: readyStateがopenでない、切断寸前等）だった場合、ここで
+            // 例外が投げられると、この関数はこの時点で即座に中断し、以降の
+            // TOOL_OUTPUT_SENT記録・sendResponseCreate()呼び出し・
+            // TOOL_CONTINUATION_REQUESTED記録が一切実行されないまま終わる
+            // （呼び出し元のhandleFunctionCallItem(...).catch(e => logEvent(...))は
+            // 例外をログに残すだけで、Realtime側には何も送られないため、
+            // check_availability等のTool自体は正常終了しているにもかかわらず、
+            // AIが二度と応答を再開できず会話が無音のまま停止する＝実機で確認
+            // された症状と一致する）。他のdc.send()と同じtry/catchパターンに
+            // 揃え、失敗時は非fatal（通話は継続）としてログに残す。
+            let functionCallOutputSendFailed = false;
+            try {
+                dc.send(JSON.stringify({
+                    type: 'conversation.item.create',
+                    item: {
+                        type: 'function_call_output',
+                        call_id: callId,
+                        output: JSON.stringify(output),
+                    },
+                }));
+                lastToolLabel = (item.name || '(不明)') + ': output_sent';
+                updateAudioDiagnosticsPanel();
+                pushTimelineEvent('TOOL_OUTPUT_SENT (tool=' + (item.name || '(不明)') + ')');
+            } catch (e) {
+                functionCallOutputSendFailed = true;
+                lastToolLabel = (item.name || '(不明)') + ': output_send_failed';
+                updateAudioDiagnosticsPanel();
+                pushTimelineEvent('TOOL_OUTPUT_SEND_FAILED (tool=' + (item.name || '(不明)') + '): ' + (e && e.message));
+                logEvent('Tool結果送信(dc.send)に失敗しました（tool=' + (item.name || '(不明)') + '）: ' + (e && e.message));
+            }
+            // function_call_output自体の送信に失敗した場合でも、sendResponseCreate()
+            // 自体は既存どおりdc.readyStateを確認して安全にno-opするため
+            // （呼び出しても新たな例外や二重送信のリスクは無い）、ここで
+            // return等はせず既存の継続要求フローへそのまま進める。dc自体が
+            // 生きていて今回のsendだけがたまたま失敗したケースでは、これにより
+            // AIが（Tool結果無しの状態にはなるが）完全に無応答のまま停止する
+            // ことだけは避けられる。dc自体が閉じている場合はsendResponseCreate()
+            // 側のRESPONSE_CREATE_SKIPPEDが記録され、挙動は変化しない。
+            sendResponseCreate('tool_result:' + (item.name || 'unknown') + (functionCallOutputSendFailed ? ':output_send_failed' : ''));
             pushTimelineEvent('TOOL_CONTINUATION_REQUESTED (tool=' + (item.name || '(不明)') + ')');
             lastToolLabel = (item.name || '(不明)') + ': continuation_requested';
             updateAudioDiagnosticsPanel();
@@ -3370,6 +3401,12 @@
             if (type === 'output_audio_buffer.started') {
                 aiAudioOutputActive = true;
                 lastAiAudioEventAt = performance.now();
+                // FAST TURN 3.6A（UI_STATE整合性・UXのみ、latencyへは無影響）:
+                // 実際にAIの音声出力が始まった瞬間を「AI_SPEAKING」として
+                // 明示する。Tool Callありターンでは、この直前まで
+                // 「確認しています」（下のresponse.done分岐を参照）が
+                // 表示されているはずで、ここで初めて「応答中」に切り替わる。
+                subStatusText.textContent = 'AIスタッフが応答中';
                 pushTimelineEvent('AI_AUDIO_STARTED');
                 // NAME Forced Commit Observation PoC（PHASE9）
                 maybeLogPocReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
@@ -3668,21 +3705,24 @@
                 }
             } else if (type === 'response.done') {
                 lastAiAudioEventAt = performance.now();
-                subStatusText.textContent = '待機中（お話しください）';
-                // FAST TURN 3.4（iPhone vs Mac / 「時間確認以降」の遅さ診断・
-                // 観測専用。UI文言・挙動は一切変更しない）: Tool Callを含む
-                // ターンでは、Tool結果を踏まえた最終応答が来る前に、
-                // function_callのみの中間応答についてもこのresponse.doneが
-                // 1回発火する（既存のresponseHasFunctionCallフラグが、その
-                // 判定にそのまま使える）。その時点でも上のsubStatusTextは
-                // 無条件に「待機中（お話しください）」へ戻ってしまうため、
-                // 実際にはToolの往復処理中（＝AIはまだ何も答えていない）
-                // にもかかわらず、画面上は「待機中」に見える可能性がある。
-                // これが実機での「時間確認以降、待機中の表示のまま長く感じる」
-                // という報告の一因かどうかを実機ログで確認できるよう、
-                // このタイミングでのresponseHasFunctionCallの値だけを記録する
-                // （dc.send等は一切行わない。UIの表示は変更しない）。
-                pushTimelineEvent('UI_STATE: 待機中表示 (この応答のresponseHasFunctionCall=' + responseHasFunctionCall + ')');
+                // FAST TURN 3.6A（UI_STATE修正・UXのみ、latency/挙動は無変更）:
+                // FAST TURN 3.4の観測で、Tool Callを含むターンではfunction_call
+                // のみの中間応答についてもこのresponse.doneが1回発火し、
+                // 実際にはToolの往復処理中（＝AIはまだ何も答えていない）に
+                // もかかわらず画面が「待機中（お話しください）」に戻ってしまう
+                // ことを確認済み（実機でも再現を確認）。この中間応答
+                // （responseHasFunctionCall===true）では「待機中」へ戻さず、
+                // 「確認しています」（PROCESSING）を表示し続ける。本当に
+                // ユーザーの発話待ちに戻ったこと（function_callを含まない
+                // 最終応答が完了したこと）が確定した場合のみ「待機中」に戻す。
+                // dc.send等のRealtime制御イベントは一切変更しない（表示文言のみ）。
+                if (responseHasFunctionCall) {
+                    subStatusText.textContent = '確認しています';
+                } else {
+                    subStatusText.textContent = '待機中（お話しください）';
+                }
+                pushTimelineEvent('UI_STATE: ' + (responseHasFunctionCall ? '確認しています表示' : '待機中表示')
+                    + ' (この応答のresponseHasFunctionCall=' + responseHasFunctionCall + ')');
                 // 安全網: 通常はoutput_audio_buffer.stopped/clearedで既にfalseに
                 // 戻っているはずだが、稀にそれらのイベントを取りこぼした場合でも
                 // aiAudioOutputActiveが誤ってtrueのまま残らないようにする。
@@ -3723,6 +3763,10 @@
                 // 続くresponse.doneではまだ「ユーザーの回答待ち」状態にしない
                 // （Tool往復中の待ち時間を無言としてカウントしないためのフラグ）。
                 responseHasFunctionCall = true;
+                // FAST TURN 3.6A（UI_STATE修正・UXのみ）: Tool呼び出しが確定した
+                // この時点で「確認しています」（PROCESSING）へ切り替える
+                // （続くresponse.doneのUI_STATE分岐がこの後も同じ文言を維持する）。
+                subStatusText.textContent = '確認しています';
                 handleFunctionCallItem(msg.item).catch((e) => {
                     logEvent('Tool処理中にエラー: ' + e.message);
                 });
