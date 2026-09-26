@@ -86,6 +86,12 @@ from app.models.line_notification import (
     LineNotificationDeliveryStatus,
 )
 
+# PHASE O2: 商品事前注文・受取予約の安全なデータ基盤（新規テーブル。他の
+# Phase3系モデルと同様、alembicは使わずBase.metadata.create_all()で自動
+# 作成される。既存Reservation/Resource/ShopTable/CustomerMemory/
+# OwnerNotification/CallbackRequest/Outboundには一切変更を加えていない）。
+from app.models.pre_order import PreOrder, PreOrderItem, PreOrderStatus, PreOrderConfirmationStatus
+
 __all__ = [
     # User/Tenant
     "Tenant",
@@ -168,4 +174,10 @@ __all__ = [
     "LineLinkNonce",
     "LineNotificationDelivery",
     "LineNotificationDeliveryStatus",
+
+    # PHASE O2: 商品事前注文・受取予約の安全なデータ基盤
+    "PreOrder",
+    "PreOrderItem",
+    "PreOrderStatus",
+    "PreOrderConfirmationStatus",
 ]

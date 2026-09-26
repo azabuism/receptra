@@ -40,6 +40,12 @@ class OwnerNotificationEventType(str, enum.Enum):
     """「オーナーがどう対応するイベントか」を表す種別。増やしすぎない。"""
     RESERVATION_CREATED = "RESERVATION_CREATED"
     OWNER_ACTION_REQUIRED = "OWNER_ACTION_REQUIRED"
+    # PHASE O2: 事前注文（PreOrder）の受付を表すevent_type。この列はString(30)の
+    # plain columnでDB enum/CHECK制約を持たないため、この追加自体にDB migration
+    # リスクは無い（Section16参照）。ただし本フェーズでは実際にこのevent_typeで
+    # 通知イベントを生成するロジック（notify_pre_order_created()相当）はまだ
+    # 実装しない。O3でcreate serviceと接続する（Section16の明示指示）。
+    PRE_ORDER_CREATED = "PRE_ORDER_CREATED"
 
 
 class OwnerNotificationPriority(str, enum.Enum):
@@ -56,6 +62,10 @@ class OwnerNotificationRelatedEntityType(str, enum.Enum):
     """
     RESERVATION = "reservation"
     CALLBACK_REQUEST = "callback_request"
+    # PHASE O2: related_entity_id が PreOrder.id を指す場合。この列も
+    # String(30)のplain columnのため、追加にDB migrationリスクは無い
+    # （OwnerNotificationEventType.PRE_ORDER_CREATEDと同様、Section16参照）。
+    PRE_ORDER = "pre_order"
 
 
 class OwnerNotificationEvent(Base):

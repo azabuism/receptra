@@ -224,6 +224,13 @@ class Shop(Base):
     # FK制約違反でdelete_shop()が失敗するため）。
     callback_requests = relationship("CallbackRequest", back_populates="shop", cascade="all, delete-orphan")
 
+    # PHASE O2: 商品事前注文・受取予約（PreOrder）。reservations/menu_items/
+    # callback_requestsと同じ理由（店舗削除時にORM cascadeが無いとFK制約
+    # 違反でdelete_shop()が失敗する）でcascade="all, delete-orphan"とする。
+    # Reservationとは完全に独立したテーブルであり、Reservationのrelationship
+    # には一切変更を加えていない。
+    pre_orders = relationship("PreOrder", back_populates="shop", cascade="all, delete-orphan")
+
     # インデックス
     __table_args__ = (
         Index("ix_shops_tenant", "tenant_id"),
