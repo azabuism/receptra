@@ -94,6 +94,7 @@ def _check_public_create_rate_limit(shop_id: str) -> None:
 def _to_item_response(item) -> PreOrderItemResponse:
     return PreOrderItemResponse(
         id=item.id,
+        product_id=item.product_id,
         product_name=item.product_name,
         quantity=item.quantity,
         variant=item.variant,
@@ -113,7 +114,7 @@ def _to_public_response(pre_order: PreOrder) -> PreOrderPublicCreateResponse:
         customer_message_code=customer_message_code(pre_order.confirmation_status),
         items=[
             PreOrderItemPublicResponse(
-                id=item.id, product_name=item.product_name,
+                id=item.id, product_id=item.product_id, product_name=item.product_name,
                 quantity=item.quantity, variant=item.variant, unit_price=item.unit_price,
             )
             for item in pre_order.items

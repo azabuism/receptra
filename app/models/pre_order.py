@@ -53,6 +53,22 @@ Reservation（「何人で来店するか」）とPreOrder（「何を何個受�
 - product_idのような将来のProduct masterへのFKは、対応するテーブルが
   存在しない現時点では追加しない（存在しないテーブルへのFKを作らない。
   Section9のYAGNI原則）。
+
+★★★ PHASE O5での変更（上記YAGNI判断の更新）:
+PreOrderProductというテーブルが実在するようになった（PHASE O4）ため、
+PreOrderItem.product_idを新規追加する。ただしこの列は「後方互換のための
+Optional」であり、既存のO3/O4 product_name一致経路（AI音声受付等）を
+置き換えるものではない（Section1/3のO5仕様）。
+- nullable・indexのみ・ondelete指定なし・relationship無し。これは
+  app/models/reservation.pyのResource_id/service_id/coupon_idと完全に
+  同じ規約（ALTER TABLEで後付けするFK-likeな列にDBレベルの外部キー制約は
+  張らない。参照整合性はアプリケーション層のみで保証する）。
+- 過去注文の表示は常にproduct_name/unit_priceのsnapshot列を正本とし、
+  product_id経由のライブJOINでは絶対に読まない（Section3/23）。これにより
+  商品の名前変更・価格変更・inactive化・削除のいずれが起きても、過去の
+  PreOrderItem表示は一切変化しない。商品削除時にCASCADEでPreOrderItemを
+  消す設計は禁止（Section23）——product_idにondelete=CASCADEを付けない
+  ことで、そもそも構造的に発生し得ない。
 """
 
 from datetime import datetime
@@ -184,10 +200,20 @@ class PreOrderItem(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     pre_order_id = Column(String(36), ForeignKey("pre_orders.id"), nullable=False, index=True)
 
+    # PHASE O5: PreOrderProductへの参照（後方互換のためnullable）。
+    # ★product_idはあくまで「参照用」であり、過去注文表示の正本ではない
+    # （正本は下のproduct_name/unit_priceのsnapshot列）。ondelete指定なし・
+    # relationship無し（Reservation.service_id等と同じ規約。モデルdocstring
+    # のPHASE O5セクション参照）。Public Web UIは必ずこの列を伴って注文する
+    # 想定だが、既存のAI音声受付等はこの列を持たずproduct_nameのみで注文する
+    # 経路を引き続き使用してよい（app/schemas/pre_order.pyのdocstring参照）。
+    product_id = Column(String(36), ForeignKey("pre_order_products.id"), nullable=True, index=True)
+
     # 将来Product masterが出来ても過去の注文明細の表示が変わらないよう、
-    # 注文時点の商品名をsnapshotとして保持する（Section8）。
-    # product_idのような将来のFKは、対応するテーブルが存在しない現時点では
-    # 追加しない（Section9のYAGNI原則）。
+    # 注文時点の商品名をsnapshotとして保持する（Section8）。product_idが
+    # 指定された明細でも、この列には常にBackendが解決したPreOrderProduct.name
+    # をコピーする（クライアント指定のproduct_nameは信用しない。Section2のO5
+    # 追加指示）。
     product_name = Column(String(255), nullable=False)
     quantity = Column(Integer, nullable=False)  # 1以上（app/schemas/pre_order.pyでgt=0を強制）
 
@@ -195,6 +221,11 @@ class PreOrderItem(Base):
     # 単価（円）。float禁止（Section11）。既存コードベースはDecimalを一切
     # 使わずInteger円で統一しているため（MenuItem.price等）、それに合わせる。
     # 不明な場合はNULL。AIが価格を推測して埋めることは禁止（Section11）。
+    # PHASE O5: product_idが指定された明細は、注文時点のPreOrderProduct.price
+    # をこの列にsnapshotする（クライアントが価格を送信する経路は存在せず、
+    # Backendが取得したPreOrderProductの値のみを使う。Section2/19のO5追加指示）。
+    # product_nameのみの既存経路（AI音声等）は従来通り常にNoneのまま
+    # （tests/smoke_test_phase_o3_preorder_backend.pyの既存アサーション互換）。
     unit_price = Column(Integer, nullable=True)
     item_note = Column(Text, nullable=True)
 

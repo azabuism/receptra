@@ -9,8 +9,22 @@ CRUD）にURL構造を合わせる。PreOrderProductはMenuItemと同じく「�
 file uploadが無いため、shop_media.pyのForm/Fileではなく通常のJSON body
 （Pydantic schema）を使う。
 
-Public向けエンドポイントは存在しない（Section21/35: 価格・自動確定ルールは
-Owner認証済みルートからのみ参照可能。Public Product schemaはO5で検討）。
+PHASE O4時点ではPublic向けエンドポイントは存在しなかった（Section21/35:
+価格・自動確定ルールはOwner認証済みルートからのみ参照可能）。
+
+PHASE O5でPublic向け商品一覧エンドポイントを追加した（下記
+list_pre_order_products_public()）。既存のOwner専用一覧
+（GET /{shop_id}/pre-order-products）と同一パスの認証有無だけで挙動を
+分岐する設計にはしていない——レスポンス形状（内部の自動確定ルールを含む/
+含まない）が全く異なるため、パスをサフィックスで分ける
+（GET /{shop_id}/pre-order-products/public）。このコードベースには
+"/public/"のようなURLセグメントで公開/非公開を区別する既存の前例が無く
+（監査済み。他の公開APIはDependsの有無のみで区別: 例えば
+app/routers/shop_media.pyのGET /{shop_id}/menuは常に未認証で公開だが、
+POST/PATCH/DELETEの同じ/{shop_id}/menuはDepends(get_current_user)必須、
+という「同一パス・メソッド違いで区別」パターン）、今回は同一リソースの
+GETに対してOwner用とPublic用で全く異なるレスポンス形状が必要なため、
+サフィックスでパスを分ける最小限の新規命名とした。
 """
 
 import logging
@@ -31,6 +45,7 @@ from app.schemas.pre_order_product import (
     PreOrderProductCreateRequest,
     PreOrderProductUpdateRequest,
     PreOrderProductResponse,
+    PreOrderProductPublicResponse,
 )
 
 logger = logging.getLogger("receptra.pre_order_products")
@@ -82,6 +97,46 @@ async def list_pre_order_products(
         .order_by(PreOrderProduct.display_order, PreOrderProduct.created_at)
     )
     return [_to_response(p) for p in result.scalars().all()]
+
+
+@router.get(
+    "/{shop_id}/pre-order-products/public",
+    response_model=List[PreOrderProductPublicResponse],
+    summary="事前注文の商品一覧を取得（Public / 未認証）",
+    description=(
+        "PHASE O5: 一般顧客向けPre-Order UIが商品選択に使う未認証エンドポイント。"
+        "is_active=Trueの商品のみを返し、価格以外の内部ルール"
+        "（auto_confirm_max_quantity/minimum_lead_time_minutes）は一切含めない"
+        "（Section5/35: 数量上限をPublicに公開して入力制限の材料にさせないため）。"
+        "店舗が存在しない場合とshop.pre_order_enabled=Falseの場合は、どちらも"
+        "内部事情を区別せず同じ404にする（Section17/32: 安全な一般向け表示に"
+        "倒す。「この店舗は存在しない」のか「事前注文をOFFにしている」のかを"
+        "Publicに区別させない）。"
+    ),
+)
+async def list_pre_order_products_public(
+    shop_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> List[PreOrderProductPublicResponse]:
+    shop = await db.get(Shop, shop_id)
+    if not shop or not shop.is_active or not shop.pre_order_enabled:
+        raise HTTPException(status_code=404, detail="現在、この店舗では事前注文を受け付けていません")
+
+    result = await db.execute(
+        select(PreOrderProduct).filter(
+            PreOrderProduct.shop_id == shop_id, PreOrderProduct.is_active.is_(True)
+        ).order_by(PreOrderProduct.display_order, PreOrderProduct.created_at)
+    )
+    return [
+        PreOrderProductPublicResponse(
+            id=p.id,
+            name=p.name,
+            description=p.description,
+            price=p.price,
+            display_order=p.display_order,
+        )
+        for p in result.scalars().all()
+    ]
 
 
 @router.post(

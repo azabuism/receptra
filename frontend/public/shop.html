@@ -338,6 +338,28 @@
         .booking-inline-hint {
             font-size: 12px; color: var(--primary-dark); margin-top: 6px; display: none;
         }
+
+        /* ---------- PHASE O5: 事前注文・店頭受取 ---------- */
+        /* owner_confirmation_requiredはエラーでも予約確定でもない「専用の成功状態」
+           のため、.booking-msg.error/.successのどちらとも視覚的に明確に区別する
+           （O5仕様Section15: 「注文確定」と誤解させる表示を絶対にしない）。 */
+        .booking-msg.pending { background: #fff7e0; color: #b45309; display: block; }
+        .pre-order-product-row { align-items: center; }
+        .pre-order-qty-stepper {
+            display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+        }
+        .pre-order-qty-btn {
+            width: 32px; height: 32px; min-height: 32px; border-radius: 50%; border: 2px solid #eee;
+            background: var(--white); color: var(--primary-dark); font-size: 16px; font-weight: 700;
+            cursor: pointer; font-family: inherit; line-height: 1;
+        }
+        .pre-order-qty-btn:hover { border-color: var(--primary); }
+        .pre-order-qty-input {
+            width: 52px; text-align: center; padding: 6px 4px; border: var(--border); border-radius: 8px;
+            font-size: 15px; font-family: inherit;
+        }
+        .pre-order-summary-row { padding: 8px 0; border-bottom: 1px solid #f2f2f2; font-size: 14px; }
+        .pre-order-summary-row:last-child { border-bottom: none; }
 </style>
 </head>
 <body>
@@ -471,6 +493,59 @@
             <div class="card" id="menu-card" style="display:none;">
                 <h2>メニュー</h2>
                 <div id="menu-content"></div>
+            </div>
+
+            <!-- PHASE O5: 事前注文・店頭受取（Public Web UI）。
+                 shop.pre_order_enabled=falseの店舗、または商品が1件も無い店舗では
+                 表示しない（Backend側の /pre-order-products/public が404/空配列を
+                 返すのに合わせてloadPreOrderProducts()がdisplay:none;のままにする。
+                 Section17: Frontendだけの制御に依存せず、Backend側
+                 （POST /pre-orders/create のpre_order_enabledチェック・
+                 GET .../pre-order-products/publicの404）でも必ず拒否する）。 -->
+            <div class="card" id="pre-order-card" style="display:none;">
+                <h2>事前注文・店頭受取</h2>
+                <p class="booking-hint" id="pre-order-intro-hint">商品を選んで、お受け取り日時をご指定いただけます。会員登録は不要です。</p>
+
+                <div id="pre-order-products-list"></div>
+
+                <!-- Section9: 数量上限をUIで強制しない代わりの案内文のみ。
+                     input要素にはmax属性を一切設定しない。 -->
+                <p class="booking-hint" id="pre-order-qty-note" style="display:none;">数量や受取日時によっては、店舗確認後の確定となる場合があります。</p>
+
+                <button type="button" class="btn" id="pre-order-next-btn" disabled>注文内容を入力する</button>
+
+                <div id="pre-order-form-wrap" style="display:none; margin-top: 20px; padding-top: 18px; border-top: 1px solid #f0f0f0;">
+                    <div class="field">
+                        <label for="pre-order-pickup-date">受取希望日</label>
+                        <input type="date" id="pre-order-pickup-date">
+                    </div>
+                    <div class="field">
+                        <label for="pre-order-pickup-time">受取希望時刻</label>
+                        <input type="time" id="pre-order-pickup-time">
+                    </div>
+                    <div class="field">
+                        <label for="pre-order-name">お名前</label>
+                        <input type="text" id="pre-order-name" required>
+                    </div>
+                    <div class="field">
+                        <label for="pre-order-phone">電話番号</label>
+                        <input type="tel" id="pre-order-phone" required inputmode="tel">
+                    </div>
+                    <div class="field">
+                        <label for="pre-order-note">ご要望（任意）</label>
+                        <textarea id="pre-order-note" placeholder="ご要望があればご記入ください"></textarea>
+                    </div>
+                    <div class="booking-msg" id="pre-order-form-msg"></div>
+                    <button type="button" class="btn" id="pre-order-review-btn">注文内容を確認する</button>
+                </div>
+
+                <div id="pre-order-confirm-wrap" style="display:none; margin-top: 20px; padding-top: 18px; border-top: 1px solid #f0f0f0;">
+                    <p class="booking-selected">ご注文内容の確認</p>
+                    <div id="pre-order-confirm-summary"></div>
+                    <button type="button" class="btn" id="pre-order-submit-btn">この内容で注文する</button>
+                </div>
+
+                <div class="booking-msg" id="pre-order-msg"></div>
             </div>
 
             <div class="card" id="staff-section-card" style="display:none;">
@@ -771,6 +846,16 @@
 
             loadGallery(shop.id);
             loadMenu(shop.id);
+            // PHASE O5 Section17: shop.pre_order_enabledがfalseの場合はそもそも
+            // Public商品一覧を取得しにいかない（Backend側の404で判明するのを待たず、
+            // 既に手元にある情報でUXを綺麗にする）。ただしBackend側の拒否
+            // （GET .../pre-order-products/publicの404・POST .../createの400）が
+            // 唯一の安全装置であり、この分岐はその補助に過ぎない。
+            if (shop.pre_order_enabled) {
+                loadPreOrderProducts(shop.id);
+            } else {
+                document.getElementById('pre-order-card').style.display = 'none';
+            }
             loadStaffSection(shop.id, webBookingAvailable);
             initMap(shop);
             initRelationButtons(shop.id);
@@ -1092,6 +1177,312 @@
                 document.getElementById('menu-card').style.display = 'block';
             } catch (err) {}
         }
+
+        // ---------- PHASE O5: 事前注文・店頭受取 ----------
+        // 商品マスター一覧（Public API由来）。auto_confirm_max_quantity/
+        // minimum_lead_time_minutesはPublic APIから一切返されない
+        // （Section5/35: 内部の自動確定ルールをPublicに公開しない）ため、
+        // このFrontendはそれらの値を一切知らない・参照しない。
+        var preOrderProducts = [];
+        // { productId: quantity }。0は「未選択」として扱う（Section8）。
+        var preOrderQuantities = {};
+        // 「注文内容を確認する」時点でスナップショットした送信対象
+        // （商品・数量・受取日時・氏名・電話番号）。確認画面の表示と実際の送信
+        // 内容を完全に一致させるため、送信直前に再度DOMを読み直さない。
+        var pendingPreOrderSubmission = null;
+        // Section13: 二重送信防止。確認画面に入った時点で1回だけ生成し、
+        // 同じ内容の再送信（タイムアウト後の再試行等）では同じキーを使い回す
+        // ことで、Backend側のidempotency_key機構（app/schemas/pre_order.pyの
+        // PreOrderPublicCreateRequest.idempotency_key docstring参照）と対になる。
+        var preOrderIdempotencyKey = null;
+
+        async function loadPreOrderProducts(shopId) {
+            const cardEl = document.getElementById('pre-order-card');
+            try {
+                const res = await fetch(
+                    '/api/v1/shops/' + encodeURIComponent(shopId) + '/pre-order-products/public'
+                );
+                if (!res.ok) {
+                    // Section17: pre_order_enabled=false・店舗404のいずれの場合も
+                    // Backend側が404を返す（内部事情を区別しない設計。
+                    // app/routers/pre_order_products.pyのdocstring参照）ため、
+                    // Frontend側もこの一覧セクション自体を出さないだけでよい。
+                    cardEl.style.display = 'none';
+                    return;
+                }
+                const products = await res.json();
+                if (!products.length) {
+                    cardEl.style.display = 'none';
+                    return;
+                }
+                preOrderProducts = products.slice().sort(function (a, b) {
+                    return a.display_order - b.display_order;
+                });
+                renderPreOrderProducts();
+                cardEl.style.display = 'block';
+            } catch (err) {
+                cardEl.style.display = 'none';
+            }
+        }
+
+        function formatPreOrderPrice(price) {
+            // Section4: price===nullとprice===0を区別する。0円扱いに丸めない。
+            if (price == null) return '価格は店舗にご確認ください';
+            return '¥' + price.toLocaleString();
+        }
+
+        function formatPreOrderPickupLabel(iso) {
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return iso;
+            const pad = function (n) { return (n < 10 ? '0' : '') + n; };
+            return d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日 '
+                + pad(d.getHours()) + ':' + pad(d.getMinutes());
+        }
+
+        function renderPreOrderProducts() {
+            const listEl = document.getElementById('pre-order-products-list');
+            listEl.innerHTML = preOrderProducts.map(function (p) {
+                const qty = preOrderQuantities[p.id] || 0;
+                return '<div class="menu-card-row pre-order-product-row" data-product-id="' + p.id + '">' +
+                    '<div class="menu-card-info">' +
+                        '<div class="mname">' + escapeHtml(p.name) + '</div>' +
+                        '<div class="mprice">' + formatPreOrderPrice(p.price) + '</div>' +
+                        (p.description ? '<div class="mdesc">' + escapeHtml(p.description) + '</div>' : '') +
+                    '</div>' +
+                    '<div class="pre-order-qty-stepper">' +
+                        '<button type="button" class="pre-order-qty-btn" data-action="dec" data-product-id="' + p.id + '" aria-label="数量を減らす">−</button>' +
+                        // Section9: max属性は絶対に付けない（自動確定上限を理由に
+                        // 入力そのものを不可能にしない）。min=0のみ（負数防止）。
+                        '<input type="number" class="pre-order-qty-input" inputmode="numeric" min="0" value="' + qty + '" data-product-id="' + p.id + '" aria-label="' + escapeHtml(p.name) + 'の数量">' +
+                        '<button type="button" class="pre-order-qty-btn" data-action="inc" data-product-id="' + p.id + '" aria-label="数量を増やす">＋</button>' +
+                    '</div>' +
+                '</div>';
+            }).join('');
+
+            listEl.querySelectorAll('.pre-order-qty-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    const pid = btn.dataset.productId;
+                    const current = preOrderQuantities[pid] || 0;
+                    const next = btn.dataset.action === 'inc' ? current + 1 : Math.max(0, current - 1);
+                    preOrderQuantities[pid] = next;
+                    const input = listEl.querySelector('.pre-order-qty-input[data-product-id="' + pid + '"]');
+                    if (input) input.value = next;
+                    updatePreOrderNextEnabled();
+                });
+            });
+            listEl.querySelectorAll('.pre-order-qty-input').forEach(function (input) {
+                input.addEventListener('input', function () {
+                    const pid = input.dataset.productId;
+                    let v = parseInt(input.value, 10);
+                    if (isNaN(v) || v < 0) v = 0;
+                    preOrderQuantities[pid] = v;
+                    updatePreOrderNextEnabled();
+                });
+            });
+        }
+
+        function selectedPreOrderItems() {
+            return preOrderProducts
+                .filter(function (p) { return (preOrderQuantities[p.id] || 0) > 0; })
+                .map(function (p) { return { product: p, qty: preOrderQuantities[p.id] }; });
+        }
+
+        function updatePreOrderNextEnabled() {
+            // Section8: 最低1商品以上選択しないと次へ進めない（Frontend UX上の制御。
+            // Backendのmin_length=1でも再検証される。app/schemas/pre_order.pyの
+            // PreOrderPublicCreateRequest.items参照）。
+            const items = selectedPreOrderItems();
+            document.getElementById('pre-order-next-btn').disabled = items.length === 0;
+            document.getElementById('pre-order-qty-note').style.display = items.length > 0 ? 'block' : 'none';
+        }
+
+        function showPreOrderFormError(text) {
+            const el = document.getElementById('pre-order-form-msg');
+            el.textContent = text;
+            el.className = 'booking-msg error';
+        }
+
+        function showPreOrderMsg(text, type) {
+            const el = document.getElementById('pre-order-msg');
+            el.textContent = text;
+            el.className = 'booking-msg ' + type;
+        }
+
+        function generatePreOrderIdempotencyKey() {
+            if (window.crypto && window.crypto.randomUUID) return 'web-' + window.crypto.randomUUID();
+            return 'web-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        }
+
+        function resetPreOrderFlow() {
+            preOrderQuantities = {};
+            pendingPreOrderSubmission = null;
+            preOrderIdempotencyKey = null;
+            renderPreOrderProducts();
+            updatePreOrderNextEnabled();
+            document.getElementById('pre-order-form-wrap').style.display = 'none';
+            document.getElementById('pre-order-confirm-wrap').style.display = 'none';
+            document.getElementById('pre-order-form-msg').textContent = '';
+            document.getElementById('pre-order-form-msg').className = 'booking-msg';
+        }
+
+        function renderPreOrderConfirmSummary(items, pickupAtIso, name, phone, note) {
+            let anyNullPrice = false;
+            let total = 0;
+            const rows = items.map(function (it) {
+                const p = it.product;
+                if (p.price != null) {
+                    total += p.price * it.qty;
+                } else {
+                    anyNullPrice = true;
+                }
+                return '<div class="pre-order-summary-row">' +
+                    escapeHtml(p.name) + ' × ' + it.qty +
+                    (p.price != null ? '（単価 ¥' + p.price.toLocaleString() + '）' : '（価格は店舗にご確認ください）') +
+                '</div>';
+            }).join('');
+
+            // Section4: 全商品にpriceが設定されている場合のみ合計を表示する。
+            // 1商品でもNULLなら、確定した総額であるかのような表示はしない。
+            const totalHtml = (!anyNullPrice && items.length > 0)
+                ? '<div class="pre-order-summary-row"><strong>合計 ¥' + total.toLocaleString() + '</strong></div>'
+                : '<div class="pre-order-summary-row">一部商品は価格未設定のため、合計金額は表示されません（店舗にご確認ください）</div>';
+
+            document.getElementById('pre-order-confirm-summary').innerHTML =
+                rows + totalHtml +
+                '<div class="pre-order-summary-row">受取希望日時: ' + escapeHtml(formatPreOrderPickupLabel(pickupAtIso)) + '</div>' +
+                '<div class="pre-order-summary-row">お名前: ' + escapeHtml(name) + '</div>' +
+                '<div class="pre-order-summary-row">電話番号: ' + escapeHtml(phone) + '</div>' +
+                (note ? '<div class="pre-order-summary-row">ご要望: ' + escapeHtml(note) + '</div>' : '');
+        }
+
+        document.getElementById('pre-order-next-btn').addEventListener('click', function () {
+            if (selectedPreOrderItems().length === 0) return;
+            document.getElementById('pre-order-form-wrap').style.display = 'block';
+            document.getElementById('pre-order-confirm-wrap').style.display = 'none';
+            document.getElementById('pre-order-pickup-date').min = RC_TODAY_STR;
+        });
+
+        document.getElementById('pre-order-review-btn').addEventListener('click', function () {
+            const items = selectedPreOrderItems();
+            if (items.length === 0) {
+                showPreOrderFormError('商品を1点以上選択してください');
+                return;
+            }
+            const dateVal = document.getElementById('pre-order-pickup-date').value;
+            const timeVal = document.getElementById('pre-order-pickup-time').value;
+            const name = document.getElementById('pre-order-name').value.trim();
+            const phone = document.getElementById('pre-order-phone').value.trim();
+            const note = document.getElementById('pre-order-note').value.trim();
+
+            if (!dateVal || !timeVal) {
+                showPreOrderFormError('受取希望日時を選択してください');
+                return;
+            }
+            if (!name || !phone) {
+                showPreOrderFormError('お名前と電話番号を入力してください');
+                return;
+            }
+            const pickupAt = dateVal + 'T' + timeVal + ':00';
+            const pickupDateObj = new Date(pickupAt);
+            // Section10: 過去日時は明確に禁止する（Frontend/Backend両方で検証）。
+            // ただしminimum_lead_time_minutesはここでは一切見ない・強制しない
+            // （リードタイム不足はowner_confirmation_requiredへ落ちるだけで、
+            // 拒否理由にしてはいけない。Section10/35）。
+            if (isNaN(pickupDateObj.getTime()) || pickupDateObj.getTime() <= Date.now()) {
+                showPreOrderFormError('過去の日時は選択できません');
+                return;
+            }
+
+            showPreOrderFormError('');
+            document.getElementById('pre-order-form-msg').className = 'booking-msg';
+            renderPreOrderConfirmSummary(items, pickupAt, name, phone, note);
+            pendingPreOrderSubmission = { items: items, pickupAt: pickupAt, name: name, phone: phone, note: note };
+            preOrderIdempotencyKey = generatePreOrderIdempotencyKey();
+            document.getElementById('pre-order-confirm-wrap').style.display = 'block';
+            document.getElementById('pre-order-msg').className = 'booking-msg';
+        });
+
+        document.getElementById('pre-order-submit-btn').addEventListener('click', async function () {
+            if (!pendingPreOrderSubmission || !currentShopId) return;
+            const btn = this;
+            // Section13: 二重送信防止（disabled + loading表示）。成功/失敗後に
+            // 正しく状態を戻す（finallyで必ずdisabled解除）。
+            btn.disabled = true;
+            const originalLabel = btn.textContent;
+            btn.textContent = '送信中…';
+            showPreOrderMsg('', '');
+            document.getElementById('pre-order-msg').className = 'booking-msg';
+
+            // PHASE O5 Section2/19: product_idを必ず送る。product_nameは後方互換
+            // フィールドとしてschema上は必須のため送るが、product_id指定時は
+            // Backend側で必ずPreOrderProductの正式名称に上書きされ、この値は
+            // 保存されない（app/services/pre_orders.pyのcreate_public_pre_order()
+            // 参照）。unit_price/price系フィールドはそもそも一切送らない
+            // （Section19: クライアントから価格を送信できる設計にしない）。
+            const payload = {
+                shop_id: currentShopId,
+                customer_name: pendingPreOrderSubmission.name,
+                customer_phone: pendingPreOrderSubmission.phone,
+                pickup_at: pendingPreOrderSubmission.pickupAt,
+                items: pendingPreOrderSubmission.items.map(function (it) {
+                    return {
+                        product_id: it.product.id,
+                        product_name: it.product.name,
+                        quantity: it.qty,
+                    };
+                }),
+                idempotency_key: preOrderIdempotencyKey,
+            };
+            if (pendingPreOrderSubmission.note) payload.customer_note = pendingPreOrderSubmission.note;
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(function () { controller.abort(); }, 15000);
+            try {
+                const res = await fetch('/api/v1/pre-orders/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                    signal: controller.signal
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    // Section16: Ownerが商品を無効化/削除した後の古い画面からの送信は、
+                    // 別商品への置換・あいまい一致を一切せず、再読み込みを促す。
+                    if (typeof data.detail === 'string' && data.detail.indexOf('商品') !== -1) {
+                        showPreOrderMsg('商品情報が更新されました。商品一覧を再読み込みしてください。', 'error');
+                        await loadPreOrderProducts(currentShopId);
+                        resetPreOrderFlow();
+                        return;
+                    }
+                    throw new Error(data.detail || 'ご注文の受付に失敗しました');
+                }
+
+                // Section14/15: confirmedとowner_confirmation_requiredを文章・
+                // 視覚的に明確に区別する。owner_confirmation_requiredを「注文確定」
+                // であるかのように表示することは絶対にしない。
+                if (data.confirmation_status === 'confirmed') {
+                    showPreOrderMsg(
+                        'ご注文を受け付けました。受取予定：' + formatPreOrderPickupLabel(data.pickup_at),
+                        'success'
+                    );
+                } else {
+                    showPreOrderMsg(
+                        'ご注文を受け付けました。店舗で内容を確認後、確定となります。',
+                        'pending'
+                    );
+                }
+                resetPreOrderFlow();
+            } catch (err) {
+                const msg = err.name === 'AbortError'
+                    ? '通信がタイムアウトしました。もう一度お試しください。'
+                    : (typeof err.message === 'string' ? err.message : 'ご注文の受付に失敗しました');
+                showPreOrderMsg(msg, 'error');
+            } finally {
+                clearTimeout(timeoutId);
+                btn.disabled = false;
+                btn.textContent = originalLabel;
+            }
+        });
 
         // ---------- 地図 ----------
         async function initMap(shop) {

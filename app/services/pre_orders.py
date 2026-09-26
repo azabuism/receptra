@@ -113,8 +113,46 @@ def _minutes_until(pickup_at: datetime, basis_now: datetime) -> float:
     return (pickup_at - basis_now).total_seconds() / 60.0
 
 
-async def determine_pre_order_confirmation(
+async def _resolve_and_validate_product_id_items(
     db: AsyncSession, shop_id: str, data: PreOrderPublicCreateRequest
+) -> Dict[str, PreOrderProduct]:
+    """PHASE O5 Section2/19/35: product_idが指定された明細を、product_id単独で
+    厳密に解決・検証する。app/routers/reservations.pyのservice_id検証
+    （create_reservation()内、Optional[Service]をservice_idで解決する箇所）と
+    完全に同じテンプレート:
+
+    - 存在しない場合と、他店舗（shop_idが一致しない）の場合を、同じ汎用
+      メッセージ・同じreason_codeの404にする（他店舗の商品IDが「存在する」
+      こと自体を外部に漏らさないため。tenant分離のための意図的な設計）。
+    - is_active=Falseの場合は400（存在はするが現在は注文不可、という別の
+      理由であることを区別する）。
+
+    ★★★ 最重要（O5ユーザー追加指示）: product_idが見つからない場合に
+    product_nameへフォールバックして代替商品を探すことは絶対に行わない。
+    別商品への誤爆・他店舗商品への意図しない一致を防ぐため、ここで
+    見つからなければ即座に注文全体を拒否する（HTTPExceptionをそのまま
+    呼び出し元へ伝播させる）。この関数はcreate_public_pre_order()の中で
+    determine_pre_order_confirmation()より前に呼ばれ、確定判定に到達する前に
+    不正なproduct_idを含む注文を弾く。
+    """
+    resolved: Dict[str, PreOrderProduct] = {}
+    for item in data.items:
+        if not item.product_id or item.product_id in resolved:
+            continue
+        product = await db.get(PreOrderProduct, item.product_id)
+        if not product or product.shop_id != shop_id:
+            raise _http_error(404, "指定された商品が見つかりません", reason_code="product_unavailable")
+        if not product.is_active:
+            raise _http_error(400, "この商品は現在ご注文いただけません", reason_code="product_unavailable")
+        resolved[item.product_id] = product
+    return resolved
+
+
+async def determine_pre_order_confirmation(
+    db: AsyncSession,
+    shop_id: str,
+    data: PreOrderPublicCreateRequest,
+    resolved_products_by_id: Optional[Dict[str, PreOrderProduct]] = None,
 ) -> str:
     """PreOrderが自動確定(confirmed)できるか、店舗確認が必要
     (owner_confirmation_required)かを決定する、唯一の判定箇所（Section12/23）。
@@ -125,8 +163,7 @@ async def determine_pre_order_confirmation(
     全itemsが以下をすべて満たした場合のみconfirmedを返す（Section9: 一部の
     商品だけconfirmedという状態は作らない）:
 
-    1. 商品名がその店舗の有効な(is_active=True)PreOrderProductと完全一致する
-       （未知の商品はreject せず owner_confirmation_required。Section31）
+    1. 商品が特定できる（後述の2経路のいずれか）
     2. quantity <= product.auto_confirm_max_quantity
        （NULLは「自動確定しない」を意味する。Section6）
     3. 受取までのリードタイム(分) >= product.minimum_lead_time_minutes
@@ -138,18 +175,37 @@ async def determine_pre_order_confirmation(
 
     routerやAI側でこの判断を行ってはならない（この関数を経由しない限り
     confirmedにはならない、という構造そのものが安全装置）。
+
+    ★★★ PHASE O5での拡張: 商品特定の経路をproduct_id優先に変更（Section20）。
+    - item.product_idが指定されている場合: resolved_products_by_id（事前に
+      _resolve_and_validate_product_id_items()で検証済み）からのみ解決する。
+      product_nameによるfallbackは行わない（存在しない場合は安全側で
+      owner_confirmation_requiredへ落とさず、そのまま拒否する。呼び出し元
+      create_public_pre_order()は必ず事前検証を通しているため通常は
+      到達しないが、直接この関数を呼ぶ将来の呼び出し元に対する防御として
+      ここでも同じ規約を維持する）。
+    - item.product_idが指定されていない場合: 従来通りproduct_nameの
+      trim済み完全一致で解決する（O3/O4のAI音声受付等との後方互換）。
     """
-    products = await _get_active_products_by_name(db, shop_id)
+    resolved_products_by_id = resolved_products_by_id or {}
+    products_by_name = await _get_active_products_by_name(db, shop_id)
     basis_now = _pickup_basis_now()
     lead_minutes = _minutes_until(data.pickup_at, basis_now)
 
     item: PreOrderItemPublicCreate
     for item in data.items:
-        product = products.get(item.product_name)
-        if product is None:
-            # Section31: 商品マスターに無い商品名（AI/自由発話経由の未知商品を
-            # 含む）はrejectせず、常にowner_confirmation_requiredにする。
-            return PreOrderConfirmationStatus.OWNER_CONFIRMATION_REQUIRED.value
+        if item.product_id:
+            # PHASE O5: product_id経路。product_nameへのfallbackは絶対にしない。
+            product = resolved_products_by_id.get(item.product_id)
+            if product is None:
+                raise _http_error(404, "指定された商品が見つかりません", reason_code="product_unavailable")
+        else:
+            product = products_by_name.get(item.product_name)
+            if product is None:
+                # Section31: 商品マスターに無い商品名（AI/自由発話経由の未知商品を
+                # 含む）はrejectせず、常にowner_confirmation_requiredにする。
+                return PreOrderConfirmationStatus.OWNER_CONFIRMATION_REQUIRED.value
+
         if product.auto_confirm_max_quantity is None:
             return PreOrderConfirmationStatus.OWNER_CONFIRMATION_REQUIRED.value
         if item.quantity > product.auto_confirm_max_quantity:
@@ -219,7 +275,15 @@ async def create_public_pre_order(db: AsyncSession, data: PreOrderPublicCreateRe
     if data.pickup_at <= _pickup_basis_now():
         raise _http_error(400, "過去の日時で受取予約をすることはできません", reason_code="time_in_past")
 
-    confirmation_status = await determine_pre_order_confirmation(db, shop.id, data)
+    # PHASE O5 Section2/19/35: product_idが指定された明細を、determine_pre_order_
+    # confirmation()より前に厳密検証する。存在しない/他店舗/inactiveのいずれかで
+    # あれば、確定判定に到達する前に注文全体を安全側でreject する（HTTPException
+    # がそのまま呼び出し元へ伝播する）。
+    resolved_products_by_id = await _resolve_and_validate_product_id_items(db, shop.id, data)
+
+    confirmation_status = await determine_pre_order_confirmation(
+        db, shop.id, data, resolved_products_by_id
+    )
 
     pre_order = PreOrder(
         shop_id=data.shop_id,
@@ -234,12 +298,26 @@ async def create_public_pre_order(db: AsyncSession, data: PreOrderPublicCreateRe
         idempotency_key=data.idempotency_key,
     )
     for item in data.items:
+        if item.product_id:
+            # PHASE O5 Section2: product_id経路では、商品名・単価ともに
+            # クライアント指定の値を一切信用せず、Backendがresolved_products_by_id
+            # で解決済みのPreOrderProductからsnapshotする（product_name改ざん・
+            # 価格改ざんの両方をここで無効化する）。
+            product = resolved_products_by_id[item.product_id]
+            snapshot_product_name = product.name
+            snapshot_unit_price = product.price
+        else:
+            # 既存O3/O4経路（AI音声等）: 従来通りクライアント指定のproduct_name
+            # をそのまま保存し、unit_priceは常にNone（Section8の既存挙動を維持）。
+            snapshot_product_name = item.product_name
+            snapshot_unit_price = None
         pre_order.items.append(
             PreOrderItem(
-                product_name=item.product_name,
+                product_id=item.product_id,
+                product_name=snapshot_product_name,
                 quantity=item.quantity,
                 variant=item.variant,
-                unit_price=None,  # Section8: Public requestからunit_priceを受け取らない
+                unit_price=snapshot_unit_price,
             )
         )
     db.add(pre_order)

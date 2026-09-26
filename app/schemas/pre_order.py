@@ -70,6 +70,9 @@ class PreOrderCreate(BaseModel):
 
 class PreOrderItemResponse(BaseModel):
     id: str
+    # PHASE O5: 追加（後方互換の破壊なし）。参照用のみで、表示の正本ではない
+    # （表示の正本はproduct_name/unit_priceのsnapshot。モデルdocstring参照）。
+    product_id: Optional[str] = None
     product_name: str
     quantity: int
     variant: Optional[str] = None
@@ -106,15 +109,51 @@ class PreOrderResponse(BaseModel):
 # ============================================================
 
 class PreOrderItemPublicCreate(BaseModel):
-    """Public Create APIが受け取る商品明細。unit_priceフィールドは
-    そもそも存在しない（Section8: 顧客側が価格を自由入力できないようにする）。
-    extra="forbid"により、"unit_price"等の未知フィールドを送ってきても
-    リクエスト全体がバリデーションエラーで拒否される（Section43）。"""
+    """Public Create APIが受け取る商品明細。unit_price/price系フィールドは
+    そもそも存在しない（Section8/O5 Section19: 顧客側が価格を自由入力できない
+    ようにする。Public Web用schemaでも価格を入力フィールドとして受け取らない、
+    というO5追加指示をextra="forbid"と合わせて構造的に満たす）。
+    extra="forbid"により、"unit_price"/"price"等の未知フィールドを送ってきても
+    リクエスト全体がバリデーションエラーで拒否される（Section43）。
+
+    ★★★ PHASE O5: product_id と product_name の二経路（Section1/2/3のO5追加指示）:
+    - product_id を指定した明細（Public Web UIが新規に使う経路）:
+      product_idのみで商品を特定する。product_nameへのフォールバックは
+      一切行わない（存在しない/他店舗/inactiveのいずれであっても、
+      product_nameで再検索して代替商品を当てることは絶対にしない。
+      app/services/pre_orders.py の _resolve_and_validate_product_id_items()
+      参照）。この経路ではproduct_nameフィールド自体は後方互換のため必須の
+      ままだが、値はBackendが解決したPreOrderProduct.nameで必ず上書きされ、
+      クライアント指定の値がそのまま保存されることはない。
+    - product_id を指定しない明細（O3/O4からの既存経路。AI音声受付等）:
+      従来通りproduct_nameのtrim済み完全一致でのみ商品を特定する。この経路の
+      挙動はO5で一切変更しない（未知の商品名はrejectせずowner_confirmation_
+      requiredにする、というO3/O4の挙動を維持）。
+
+    product_idはこの2経路を安全に共存させるためのOptionalフィールドであり、
+    「後方互換のため」だけに存在する。新しいPublic Web UIがproduct_id無しで
+    注文することは想定しない（ただしPOST /api/v1/pre-orders/createはAI経路と
+    Web経路の共通入口であり、Backend単独では呼び出し元を安全に区別できない
+    ため、schemaレベルで強制はできない。O5完了報告に明記する制約）。
+    """
     model_config = ConfigDict(extra="forbid")
 
-    product_name: str = Field(..., min_length=1, max_length=255, description="商品名")
+    # PHASE O5: 新規追加。Optionalは後方互換のためのみ（上記docstring参照）。
+    product_id: Optional[str] = Field(
+        None, min_length=1, max_length=36,
+        description="商品マスターID（PreOrderProduct.id）。指定した場合、product_nameへのフォールバックは一切行わない",
+    )
+    product_name: str = Field(..., min_length=1, max_length=255, description="商品名。product_id指定時はBackend側で解決した正式名称に置き換えられる")
     quantity: int = Field(..., gt=0, description="数量。1以上の整数のみ")
     variant: Optional[str] = Field(None, max_length=255, description="サイズ・味・色などのバリエーション（任意）")
+
+    @field_validator("product_id")
+    @classmethod
+    def _trim_product_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
 
     @field_validator("product_name")
     @classmethod
@@ -187,6 +226,9 @@ class PreOrderItemPublicResponse(BaseModel):
     受け取らないことと、レスポンスにunit_priceフィールドが存在すること自体は
     矛盾しない）。"""
     id: str
+    # PHASE O5: 追加（後方互換の破壊なし）。product_id経路の明細ではPreOrderProduct.id、
+    # product_name経路の明細では常にNone。
+    product_id: Optional[str] = None
     product_name: str
     quantity: int
     variant: Optional[str] = None

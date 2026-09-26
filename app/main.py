@@ -430,6 +430,22 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ shops.pre_order_enabled カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # PHASE O5: PreOrderItem.product_id（PreOrderProductへの参照用列。
+            # 後方互換のためnullable、ondelete指定なし・DBレベルの外部キー制約は
+            # 張らない——app/models/reservation.pyのservice_id/resource_id/
+            # coupon_idと全く同じ規約。app/models/pre_order.pyのPHASE O5コメント
+            # 参照）。既存のPreOrderItem行には一切影響しない（NULLのまま）。
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE pre_order_items ADD COLUMN IF NOT EXISTS product_id VARCHAR(36)"
+                ))
+                await conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_pre_order_items_product_id "
+                    "ON pre_order_items (product_id)"
+                ))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ pre_order_items.product_id カラム/インデックスの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 
