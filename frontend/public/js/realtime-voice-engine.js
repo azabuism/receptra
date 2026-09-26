@@ -277,6 +277,14 @@
         let toolContinuationTraceT0 = null;
         let toolContinuationTraceActive = false;
 
+        // FAST TURN HOTFIX 6（今回追加）: Tool継続response（check_availability等の
+        // Tool結果を受けた2回目のresponse.create）がOpenAI側のrate limitで
+        // failedになった場合の、call_id単位・最大1回のbounded retry用の状態。
+        // このcall_idに対して既に1回retryを試みたかどうかだけを覚える単純な
+        // null管理（複数call_idの同時追跡はしない＝1ターンにつき1つのTool
+        // 継続トレースのみを保持する既存方針と同じ）。
+        let toolContinuationRateLimitRetryUsedForCallId = null;
+
         // ===== FAST TURN HOTFIX 4（今回追加）: TOOL CONTINUATION RESPONSE
         // WATCHDOG（診断専用・観測のみ） =====
         // 背景: 実機で「明日、二人で12時に予約したいです」に対しAIが
@@ -5142,6 +5150,45 @@
                         if (debugMode && sdErr && sdErr.message) {
                             console.log('[RESPONSE_DONE_FAILED_ERROR_MESSAGE_DEBUG_ONLY]', sdErr.message);
                         }
+                        // FAST TURN HOTFIX 6（今回追加・bounded recovery。今回のみ
+                        // behavior変更）: 実機でerror_type=tokens,
+                        // error_code=Rate_limit_exceededが、Tool継続response
+                        // （check_availability等のTool結果を受けた2回目の
+                        // response.create）の失敗として直接観測された。この
+                        // 「Tool継続中・rate limit由来」という証拠がある場合に
+                        // 限り、call_idごとに最大1回だけ、追加の待機時間を
+                        // 挟まずresponse.createを即座に再送する。
+                        // - 固定delay/exponential backoffは、公式ドキュメントから
+                        //   安全な待機秒数を確認できなかったため、勘の数値を
+                        //   避けて意図的に追加していない。
+                        // - retry storm防止: toolContinuationRateLimitRetryUsedFor
+                        //   CallIdを送信前に即座にセットするため、同一call_idへの
+                        //   2回目のretryは（このtryブロックが例外を投げた場合を
+                        //   含め）絶対に発生しない。
+                        // - 汎用のsendResponseCreate()をそのまま使うため、新しい
+                        //   dc.send()呼び出し経路は増えない（既存の9箇所のまま）。
+                        // - このretry応答自体は既存のtoolContinuationTrace(T0〜T10)
+                        //   には乗せない（この直後のT10ブロックが今回のresponse.
+                        //   doneで通常どおりトレースを閉じるため）。retryの結果は
+                        //   汎用のRESPONSE_CREATED/RESPONSE_DONE/（再失敗時は）
+                        //   RESPONSE_DONE_FAILEDマーカーで追跡できる。
+                        const isRateLimitedForRetry = !!(errCode && String(errCode).toLowerCase() === 'rate_limit_exceeded');
+                        if (respStatus === 'failed' && isRateLimitedForRetry && toolContinuationTraceActive
+                            && toolContinuationTraceCallId
+                            && toolContinuationRateLimitRetryUsedForCallId !== toolContinuationTraceCallId) {
+                            toolContinuationRateLimitRetryUsedForCallId = toolContinuationTraceCallId;
+                            const retryLine = 'TOOL_CONTINUATION_RATE_LIMIT_RETRY (attempt=1, callIdTail=' + corrCallIdTail
+                                + ', previousResponseIdTail=' + respIdTail + ')';
+                            pushTimelineEvent(retryLine);
+                            console.log('[' + retryLine + ']');
+                            // ユーザーを無音のまま放置しない（新しい音声は試みず、
+                            // 既存の「確認しています」表示を維持するだけ。この
+                            // response.doneのUI_STATE分岐は本ブロックより前に
+                            // 既に「待機中」へ切り替えてしまっているため、
+                            // ここで明示的に戻す）。
+                            subStatusText.textContent = '確認しています';
+                            sendResponseCreate('tool_continuation_rate_limit_retry');
+                        }
                     } catch (diagErr) {
                         pushTimelineEvent('RESPONSE_DONE_FAILED_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
                     }
@@ -5221,6 +5268,29 @@
                 handleFunctionCallItem(msg.item).catch((e) => {
                     logEvent('Tool処理中にエラー: ' + e.message);
                 });
+            } else if (type === 'rate_limits.updated') {
+                // FAST TURN HOTFIX 6（今回追加・観測専用）: 実機でTool継続response
+                // がerror_type=tokens, error_code=Rate_limit_exceededで失敗した
+                // ことが直接確認された。OpenAI Realtime APIはrate_limits.updated
+                // イベントで現在のrate limit状況を送ってくることがあると複数の
+                // 情報源（コミュニティ報告・関連issue）で確認できたが、各entry
+                // の正確なfield名（name/limit/remaining/reset_seconds等）を
+                // 公式ドキュメントから断定できなかったため、推測でfield名を
+                // 決め打ちせず、msg.rate_limitsが存在すればその中身を汎用的に
+                // （キー名を問わずJSON化して）記録するだけに留める。これにより
+                // 次回実機テストで実際のschemaを実測できる。PIIは含まれ得ない
+                // （rate limitのメタデータのみのため）が、万一未知の内容が
+                // 混入しても影響が無いよう長さを打ち切る。
+                try {
+                    const rl = msg.rate_limits;
+                    if (rl) {
+                        const rlJson = JSON.stringify(rl).slice(0, 500);
+                        pushTimelineEvent('RATE_LIMITS_UPDATED ' + rlJson);
+                        console.log('[RATE_LIMITS_UPDATED]', rlJson);
+                    }
+                } catch (rlErr) {
+                    pushTimelineEvent('RATE_LIMITS_UPDATED_MARKER_ERROR (' + ((rlErr && rlErr.message) || '不明') + ')');
+                }
             } else if (type === 'error') {
                 logEvent('サーバーエラー: ' + JSON.stringify(msg.error || msg));
                 showErrorBanner('通話中にエラーが発生しました。お手数ですが、もう一度おかけ直しください。');
@@ -5563,6 +5633,12 @@
             // 残留したTOOL CONTINUATION RESPONSE WATCHDOGタイマーが万一あれば
             // 破棄する（次の通話の別のcall_idに対して誤発火しないように）。
             cancelToolContinuationResponseWatchdog('new_call_setup');
+            // FAST TURN HOTFIX 6（今回追加・安全網）: 前の通話のcall_idに対する
+            // retry使用済みフラグが新しい通話へ誤って引き継がれないようにする
+            // （call_id自体はOpenAI側で通話ごとに新規発行されるため実害は
+            // 無いはずだが、既存の他のtoolContinuation*系状態と同じく明示的に
+            // リセットする）。
+            toolContinuationRateLimitRetryUsedForCallId = null;
             updatePlaybackRecoveryButton();
 
             // Mobile Real-Call Failure Investigation: 新しい通話開始のたびに
@@ -6364,6 +6440,8 @@
             // FAST TURN HOTFIX 4（今回追加・観測専用・安全網）: 通話終了時に
             // TOOL CONTINUATION RESPONSE WATCHDOGが動いていれば破棄する。
             cancelToolContinuationResponseWatchdog('cleanup_connection');
+            // FAST TURN HOTFIX 6（今回追加・安全網）
+            toolContinuationRateLimitRetryUsedForCallId = null;
             updatePlaybackRecoveryButton();
             setStatus(stMicTrackEl, 'なし', null);
             setStatus(stWebrtcEl, 'closed', null);

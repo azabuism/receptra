@@ -329,7 +329,13 @@ await test('Q: FAST TURN 3.6B) T10(CONTINUATION_RESPONSE_DONE)はfunction_call�
     // RESPONSE_DONE_FAILED診断ブロック（status_details/error捕捉、約60行の
     // コメント込み）が追加され、実測オフセットが6701文字まで伸びたため、
     // ウィンドウを3200→7200へ拡張（測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 7200);
+    // さらにFAST TURN HOTFIX 6で、同じRESPONSE_DONE_FAILEDブロック内に
+    // bounded rate-limit retryロジック（toolContinuationRateLimitRetryUsedForCallId
+    // によるガード・sendResponseCreate呼び出し・関連コメント）が追加され、
+    // T10マッチ開始位置の実測オフセットが9315文字、トレース終了確認
+    // （toolContinuationTraceActive = false;まで含む）の終端が9522文字まで
+    // 伸びたため、ウィンドウを7200→10500へ再拡張（測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 10500);
     assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*pushToolContinuationTrace\('T10_CONTINUATION_RESPONSE_DONE/.test(block),
         'T10 must only be recorded for the final response.done (no function_call), never for the intermediate function-call-only response.done');
     assert.ok(/T10_CONTINUATION_RESPONSE_DONE[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
@@ -445,7 +451,11 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     // さらにFAST TURN HOTFIX 5で、RESPONSE_DONE_FAILED診断ブロックが同じ
     // ハンドラ内・このガードより前に追加され、実測オフセットが6256文字まで
     // 伸びたため、ウィンドウを2800→6800へ再拡張（測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 6800);
+    // さらにFAST TURN HOTFIX 6で、同じRESPONSE_DONE_FAILEDブロック内に
+    // bounded rate-limit retryロジックが追加され、startSilenceTimerIfNeeded
+    // 呼び出しまでの実測オフセットが8870文字まで伸びたため、ウィンドウを
+    // 6800→10000へ再拡張（測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 10000);
     // PHASE O5.6診断: startSilenceTimerIfNeeded()に診断専用の第2引数
     // （armReasonForDiag、例: 'response_done_no_function_call'）が追加された。
     // ガード条件(!responseHasFunctionCall)自体・呼び出し自体（第1引数は

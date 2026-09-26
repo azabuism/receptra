@@ -232,7 +232,11 @@ await test('配線確認: startCall()内でresetAckFallbackCallState()が呼ば�
     // 追加分だけ実際の出現位置が後ろへ移動することがあるため、余裕を持たせた
     // 固定長を使う。実測位置固定ではなく、実測より十分大きい値を使うことで
     // 将来の追加リセット行にもある程度耐えられるようにする）。
-    const window = SRC.slice(idx, idx + 11000);
+    // FAST TURN HOTFIX 6で、startCall()内の新規通話セットアップ箇所に
+    // toolContinuationRateLimitRetryUsedForCallId = null; のリセット行が
+    // 追加され、resetAckFallbackCallState();までの実測オフセットが11249
+    // 文字まで伸びたため、ウィンドウを11000→13000へ再拡張（測定値+余裕分）。
+    const window = SRC.slice(idx, idx + 13000);
     assert.ok(window.includes('resetAckFallbackCallState();'), 'startCall() must reset the ack-fallback playback position for each new call');
 });
 

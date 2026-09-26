@@ -307,15 +307,46 @@ test('G3) debugMode=trueの場合のみ、error.messageが専用のDEBUG_ONLYラ
 // =======================================================================
 // H. read-only — does not mutate existing T0-T10 / turn trace state
 // =======================================================================
-test('H) RESPONSE_DONE_FAILEDブロックはtoolContinuationTrace*・turnLatencyTrace*等の既存状態を一切書き換えない（読み取り専用）', () => {
+test('H) RESPONSE_DONE_FAILEDブロックはtoolContinuationTrace*・turnLatencyTrace*等の既存トレース状態を一切書き換えない（診断部分は読み取り専用のまま）', () => {
+    // FAST TURN HOTFIX 6での変更点: このブロックは、もはや完全な
+    // 「読み取り専用（診断のみ）」ではない。Tool継続中・rate_limit_exceeded
+    // という証拠がある場合に限り、bounded（最大1回・call_idごと）で
+    // sendResponseCreate()を呼ぶretryロジックが追加された（このretry自体の
+    // 詳細な安全性テストはtests/test_rate_limit_recovery.jsのC/D/E/E2/F/G/K
+    // 等が専任で担当している）。したがって「sendResponseCreateを一切呼ばない」
+    // というHOTFIX 5時点のアサーションはこのHOTFIX 6ではもはや正しくないため、
+    // 更新した。一方で、以下は引き続き（HOTFIX 6でも）真であるべき不変条件：
+    //   - 既存のtoolContinuationTrace*/turnLatencyTraceId状態への直接代入は
+    //     依然として一切行わない（retryは新しい専用変数
+    //     toolContinuationRateLimitRetryUsedForCallIdのみを更新する）。
+    //   - dc.send()を直接呼ぶことは一切ない（送信は必ずsendResponseCreate()
+    //     経由のみ）。
     // 実際の代入文はこのコードベースの慣習上 "name = value" のように前後に
     // 空白を伴う（"turnLatencyTraceId=" のようにログ文字列の一部としてのみ
     // 空白無しで出現する箇所と区別するため \s+ を要求する）。
     assert.ok(!/\btoolContinuationTraceActive\s+=\s+(?!=)/.test(FAILED_BLOCK_SRC), 'must not assign to toolContinuationTraceActive');
     assert.ok(!/\btoolContinuationTraceCallId\s+=\s+(?!=)/.test(FAILED_BLOCK_SRC), 'must not assign to toolContinuationTraceCallId');
     assert.ok(!/\bturnLatencyTraceId\s+=\s+(?!=)/.test(FAILED_BLOCK_SRC), 'must not assign to turnLatencyTraceId');
-    assert.ok(!FAILED_BLOCK_SRC.includes('dc.send'), 'must never call dc.send');
-    assert.ok(!FAILED_BLOCK_SRC.includes('sendResponseCreate'), 'must never call sendResponseCreate');
+    // dc.send直呼び出しの有無はコード行のみを対象に判定する（このブロックには
+    // 「新しいdc.send()呼び出し経路は増えない」旨の日本語コメントが含まれており、
+    // コメント込みの単純な文字列一致だとそのコメント自体に誤って一致するため）。
+    const codeOnlyForDcSendCheck = FAILED_BLOCK_SRC
+        .split('\n')
+        .map((line) => {
+            const idx = line.indexOf('//');
+            return idx === -1 ? line : line.slice(0, idx);
+        })
+        .join('\n');
+    assert.ok(!codeOnlyForDcSendCheck.includes('dc.send('), 'must never call dc.send directly');
+    // sendResponseCreateは、bounded rate-limit retry専用のガード条件配下でのみ
+    // 呼ばれるべきである（無条件・無制限に呼ばれていないことを最低限確認する。
+    // 呼び出しが「本当に安全に1回しか起きないか」の詳細な検証は
+    // tests/test_rate_limit_recovery.jsが担当する）。コメント行（// ...）に
+    // "sendResponseCreate()"という語自体が説明として登場するため、dc.send
+    // チェックと同様にコメントを取り除いたコード本体のみを対象にする。
+    const sendResponseCreateCallCount = (codeOnlyForDcSendCheck.match(/\bsendResponseCreate\s*\(/g) || []).length;
+    assert.strictEqual(sendResponseCreateCallCount, 1, 'sendResponseCreate must be called from exactly one call site inside this block (the bounded rate-limit retry)');
+    assert.ok(/toolContinuationRateLimitRetryUsedForCallId\s*!==\s*toolContinuationTraceCallId/.test(FAILED_BLOCK_SRC), 'the single sendResponseCreate call site must remain guarded by the per-call_id retry-used check');
 });
 
 // =======================================================================
