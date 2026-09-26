@@ -229,14 +229,14 @@ await test('配線確認: startCall()内でresetAckFallbackCallState()が呼ば�
     assert.notStrictEqual(idx, -1, 'startCall not found');
     // startCall本体はかなり長いため、次のトップレベル関数定義に到達するまでの
     // 範囲ではなく、十分広いウィンドウで探索する。
-    const window = SRC.slice(idx, idx + 9000);
+    const window = SRC.slice(idx, idx + 9600);
     assert.ok(window.includes('resetAckFallbackCallState();'), 'startCall() must reset the ack-fallback playback position for each new call');
 });
 
 await test('配線確認: response.output_item.done(function_call)ハンドラがmaybeSendSpeakThenWorkAckFallbackを呼んでいる', () => {
     const idx = SRC.indexOf("type === 'response.output_item.done' && msg.item && msg.item.type === 'function_call'");
     assert.notStrictEqual(idx, -1, 'function_call output_item.done handler not found');
-    const block = SRC.slice(idx, idx + 1600);
+    const block = SRC.slice(idx, idx + 2200);
     assert.ok(block.includes('maybeSendSpeakThenWorkAckFallback(msg.item, callGeneration);'),
         'the ack-fallback decision must be wired into the function_call detection handler, using the shared callGeneration counter');
     // 呼び出し順序: 安全網の再生判定は、Tool本体の非同期処理

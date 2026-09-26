@@ -256,7 +256,7 @@ await test('E: UI_STATE) function_callを含む応答のresponse.doneでは「�
 await test('F: UI_STATE) function_call検出時点で即座に「確認しています」(PROCESSING)へ切り替える', () => {
     const idx = SRC.indexOf("type === 'response.output_item.done' && msg.item && msg.item.type === 'function_call'");
     assert.notStrictEqual(idx, -1, 'function_call output_item.done handler not found');
-    const block = SRC.slice(idx, idx + 1200);
+    const block = SRC.slice(idx, idx + 2000);
     assert.ok(block.includes("responseHasFunctionCall = true;"));
     assert.ok(block.includes("subStatusText.textContent = '確認しています';"),
         'must switch to PROCESSING text as soon as a function_call is detected, not wait for response.done');

@@ -392,9 +392,22 @@
         // 初めて全店舗（本番）へ適用する機能。約3秒はあくまで上限目安であり、
         // 通常のsemantic_vadがそれより早くspeech_stopped→committedまで進んだ場合は
         // 何もせずそのまま任せる（下のmaybeSendShortAnswerCommit()のコメント参照）。
-        // SHORT_ANSWER（今回追加）: TIME/DATE/PARTY_SIZEのような短答質問。
-        // 既存YES_NO/SHORT_CHOICEと同じ3秒上限を採用する（ユーザー指示16）。
-        const ANSWER_WINDOW_LIMITS_MS = { NAME: 5000, PHONE: 10000, YES_NO: 3000, SHORT_CHOICE: 3000, VISIT_REASON: 30000, SHORT_ANSWER: 3000 };
+        // SHORT_ANSWER（PHASE O5.8で本Answer Window機構からは除外・置換）:
+        // 当初はTIME/DATE/PARTY_SIZEのような短答質問にも既存YES_NO/SHORT_CHOICEと
+        // 同じ「speech_startedを起点に3秒」という設計を適用していたが、O5.7 Audit
+        // の結果、これは「話し終わってからどれくらい経ったか」ではなく
+        // 「話し始めてから何秒か」を基準にしてしまうため、(a)長い一続きの発話を
+        // 話している最中に強制commitしてしまうリスク、(b)環境雑音による
+        // speech_started/speech_stopped の繰り返しでAnswer Window自体が一度も
+        // 完走できずForced Commitが永久に発火しないリスク、の両方を抱えることが
+        // 判明した（O5.7 Audit Report参照）。そのためSHORT_ANSWERのみ、この
+        // 共有Answer Window機構（本テーブル・startAnswerWindowIfNeeded/
+        // cancelAnswerWindow）からは意図的に外し、下のSHORT_ANSWER_FINALIZE_GRACE_MS
+        // による「speech_stopped基準」の新方式（armQuickAnswerFinalizeTimer/
+        // cancelQuickAnswerFinalizeTimer）へ完全に置換した。NAME/PHONE/YES_NO/
+        // SHORT_CHOICE/VISIT_REASONは全て本テーブル・本機構をそのまま使い続けて
+        // おり、今回一切変更していない（O5.8スコープ外）。
+        const ANSWER_WINDOW_LIMITS_MS = { NAME: 5000, PHONE: 10000, YES_NO: 3000, SHORT_CHOICE: 3000, VISIT_REASON: 30000 };
 
         // ===== NAME Forced Commit Observation PoC: 追加の最小状態（今回追加） =====
         // 有効化条件・目的はファイル冒頭のnameCommitPocEnabled定義を参照。
@@ -542,10 +555,17 @@
         // このSHORT_ANSWER世代について、既に手動commitを送信済みならその世代番号
         // （未送信ならnull）。同一世代につき手動commitは最大1回のみ。
         let quickAnswerCommitSentGeneration = null;
-        // このSHORT_ANSWER世代について、手動commitより前に正常なターン終了
-        // （speech_stopped/committed/item_created）が先に届いたかどうか。
-        // trueの場合、送信直前の最終確認で手動commitを見送る
-        // （NAME PoC/Short Choice/PHONEと同じレース対策）。
+        // このSHORT_ANSWER世代について、Realtime server側が既に自律的にこの
+        // ターンを処理した（input_audio_buffer.committed／conversation.item.created
+        // をサーバー側から受信した）かどうか。trueの場合、送信直前の最終確認で
+        // 手動commitを見送る（NAME PoC/Short Choice/PHONEと同じレース対策）。
+        //
+        // PHASE O5.8で意味を変更（重要）: 旧設計ではspeech_stoppedもこのフラグを
+        // trueにしていたが、O5.8の新方式ではspeech_stoppedそのものがFinalization
+        // Grace（下記）の起点になるため、speech_stoppedではもうこのフラグを
+        // 立てない。あくまで「サーバーが実際にこのターンを処理した」という
+        // イベント（committed/item_created/response.created/function_call）のみが
+        // このフラグ（またはFinalization Timerの直接cancel）の対象。
         let quickAnswerTurnNormalCompletionSeen = false;
         // 直近の手動commit送信時刻（elapsed_ms計測の起点。performance.now()）。
         // null＝現在手動commit送信待ち/観測対象ではない。
@@ -556,6 +576,47 @@
         // 手動commit送信後に観測したい4種の反応それぞれについて、一度だけ
         // elapsed_msを記録済みかどうか（二重ログ防止。既存3機構と同じ構造）。
         let quickAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+
+        // ===== PHASE O5.8: SHORT_ANSWER Finalization Grace（speech_stopped基準） =====
+        // O5.7 Auditの結論（推測ではなく実測での確認は今後の実機ログで行うが、
+        // コード構造上の欠陥として確定した点）: 旧SHORT_ANSWER Answer Window
+        // （上のANSWER_WINDOW_LIMITS_MSから今回除外した3秒版）は
+        // 「speech_startedを起点に3秒」だったため、(a) 3秒を超える一続きの
+        // 発話を話している最中に強制commitしてしまう危険、(b) 環境雑音による
+        // speech_started/speech_stopped の繰り返しでタイマーが一度も完走できず
+        // Forced Commitが永久に発火しない危険、の両方を抱えていた。
+        //
+        // 新設計は「話し終わってからどれくらい経ったか」を基準にする:
+        //   speech_started → (発話中は何もしない) → speech_stopped →
+        //   SHORT_ANSWER_FINALIZE_GRACE_MS だけ待つ →
+        //   その間に新たなspeech_startedが来なければfinalize（Forced Commit）。
+        // 新たなspeech_startedが来た場合は、まだ話している途中（言い淀み・
+        // 言い直し等）である可能性を優先し、grace timerを無条件でcancelする
+        // （ユーザー指示4・6）。
+        //
+        // 対象はSHORT_ANSWER（TIME/DATE/PARTY_SIZE）のみ。NAME/PHONE/YES_NO/
+        // SHORT_CHOICE/VISIT_REASONは今回のO5.8では一切変更していない
+        // （引き続き上のANSWER_WINDOW_LIMITS_MS・startAnswerWindowIfNeeded/
+        // cancelAnswerWindowをそのまま使用する）。
+        //
+        // 配置について: この定数はSHORT_ANSWER Forced Commit専用の値であり、
+        // 汎用のANSWER_WINDOW_LIMITS_MSとは意図的に別テーブル・別定数にした
+        // （SHORT_ANSWERを同テーブルから除外したことと対応させるため）。
+        // magic numberとしてタイマー呼び出し箇所へ直接埋め込まず、他の
+        // タイミング系定数（SILENCE_TIMEOUT_MS等）と同じくnamed constとして
+        // このSHORT_ANSWER Forced Commitセクション内に配置する。
+        const SHORT_ANSWER_FINALIZE_GRACE_MS = 1200;
+        // 現在armされているFinalization Grace timerのsetTimeout ID
+        // （null＝非アクティブ）。
+        let quickAnswerFinalizeTimerId = null;
+        // 現在のFinalization Grace timerがarmされた時刻（performance.now()。
+        // timerAgeMs/actualElapsedMs算出用）。
+        let quickAnswerFinalizeArmedAt = null;
+        // 現在のFinalization Grace timerがどのquickAnswerGeneration（SHORT_ANSWER
+        // 質問の世代）についてarmされたか。発火時にquickAnswerGenerationと
+        // 一致するかを再確認し、既に次のSHORT_ANSWER質問へ進んでいた場合の
+        // 誤発火を防ぐ（NAME/PHONE等と同じ世代ガードの考え方）。
+        let quickAnswerFinalizeGeneration = null;
 
         // ===== Conversation Takeover Observation PoC: 追加の最小状態（今回追加） =====
         // 目的・設計方針の詳細はファイル冒頭のtakeoverPocEnabled定義の
@@ -940,12 +1001,11 @@
                 // input_audio_buffer.commitを最大1回だけ送信する。それ以外の
                 // 場合、この呼び出しは内部で何もせずに戻る。
                 maybeSendPhoneCommit(type, myGeneration);
-                // SHORT_ANSWER Forced Commit（今回追加・全店舗適用）:
-                // type==='SHORT_ANSWER'（TIME/DATE/PARTY_SIZE）の場合、
-                // maybeSendQuickAnswerCommit()が改めて全条件を確認したうえで
-                // input_audio_buffer.commitを最大1回だけ送信する。それ以外の
-                // 場合、この呼び出しは内部で何もせずに戻る。
-                maybeSendQuickAnswerCommit(type, myGeneration);
+                // PHASE O5.8: SHORT_ANSWER（TIME/DATE/PARTY_SIZE）は
+                // ANSWER_WINDOW_LIMITS_MSから除外したため、typeがここで
+                // 'SHORT_ANSWER'になることはもう無い（maybeSendQuickAnswerCommit
+                // は下のarmQuickAnswerFinalizeTimer経由・speech_stopped基準の
+                // 新方式からのみ呼ばれる）。旧呼び出しはここでは行わない。
             }, limitMs);
         }
 
@@ -1166,36 +1226,91 @@
             pushTimelineEvent('PHONE_COMMIT_REACTION (' + label + ', elapsed_ms=' + Math.round(performance.now() - phoneCommitSentAt) + ')');
         }
 
-        // ===== SHORT_ANSWER Forced Commit: 2つの中核関数（今回追加・全店舗適用） =====
+        // ===== PHASE O5.8: SHORT_ANSWER Finalization Grace の2つの中核関数 =====
+        // O5.7 Auditの結論に基づき、SHORT_ANSWERの「いつForced Commit候補と
+        // するか」の判断基準を、旧「speech_startedから3秒」から新
+        // 「speech_stoppedからSHORT_ANSWER_FINALIZE_GRACE_MS(1200ms)」へ完全に
+        // 置換する。以下の2関数がこの新方式の中核。maybeSendQuickAnswerCommit()
+        // 自体（実際にinput_audio_buffer.commitを送る部分）は変更しない
+        // （ユーザー指示9: Forced Commitの意味自体は変えない。timer起点のみ
+        // 修正する）。
+
+        // speech_stoppedのたびに呼ぶ。expectedAnswerType==='SHORT_ANSWER'の
+        // 場合のみ、既存のFinalization Grace timerがあれば安全にcancelしてから
+        // （ユーザー指示5: 「最後のspeech_stoppedから1.2秒を取り直す」設計）、
+        // 新たに1.2秒のgrace timerをarmする。それ以外のtypeでは何もしない
+        // （NAME/PHONE/YES_NO/SHORT_CHOICE/VISIT_REASONは既存のAnswer Window
+        // 機構をそのまま使い続けるため、本関数はSHORT_ANSWER専用）。
+        function armQuickAnswerFinalizeTimer(myGeneration) {
+            if (expectedAnswerType !== 'SHORT_ANSWER') return;
+            cancelQuickAnswerFinalizeTimer('rearm_on_speech_stopped');
+            const armedForGeneration = quickAnswerGeneration;
+            quickAnswerFinalizeArmedAt = performance.now();
+            quickAnswerFinalizeGeneration = armedForGeneration;
+            pushTimelineEvent('SHORT_ANSWER_FINALIZE_ARMED (durationMs=' + SHORT_ANSWER_FINALIZE_GRACE_MS
+                + ', callGeneration=' + myGeneration
+                + ', expectedAnswerType=' + expectedAnswerType
+                + ', elapsedSinceSpeechStoppedMs=' + (msSince(lastSpeechStoppedAt) === null ? 'null' : msSince(lastSpeechStoppedAt)) + ')');
+            quickAnswerFinalizeTimerId = setTimeout(() => {
+                quickAnswerFinalizeTimerId = null;
+                const actualElapsedMs = quickAnswerFinalizeArmedAt === null ? null : msSince(quickAnswerFinalizeArmedAt);
+                quickAnswerFinalizeArmedAt = null;
+                quickAnswerFinalizeGeneration = null;
+                pushTimelineEvent('SHORT_ANSWER_FINALIZE_FIRED (expectedDurationMs=' + SHORT_ANSWER_FINALIZE_GRACE_MS
+                    + ', actualElapsedMs=' + (actualElapsedMs === null ? 'null' : actualElapsedMs)
+                    + ', callGeneration=' + myGeneration
+                    + ', dcReadyState=' + (dc ? dc.readyState : null)
+                    + ', quickAnswerTurnNormalCompletionSeen=' + quickAnswerTurnNormalCompletionSeen + ')');
+                if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない
+                if (armedForGeneration !== quickAnswerGeneration) return; // 既に次のSHORT_ANSWER質問へ進んでいれば何もしない（世代ガード）
+                maybeSendQuickAnswerCommit('SHORT_ANSWER', myGeneration);
+            }, SHORT_ANSWER_FINALIZE_GRACE_MS);
+        }
+
+        // Finalization Grace timerを安全にcancelする。以下のいずれかから呼ばれる:
+        // (a) 新たなspeech_startedが来た時（ユーザー指示4: まだ話している途中
+        //     である可能性を優先）
+        // (b) armQuickAnswerFinalizeTimer自身が再armする直前（ユーザー指示5）
+        // (c) response.createdが正常に届いた時（ユーザー指示13）
+        // (d) function_callへ正常に進んだ時（ユーザー指示14）
+        // armされていなければ何もしない（no-op。既存のcancelAnswerWindow()と
+        // 同じ形の安全設計）。
+        function cancelQuickAnswerFinalizeTimer(reason) {
+            if (quickAnswerFinalizeTimerId === null) return;
+            const timerAgeMs = quickAnswerFinalizeArmedAt === null ? null : msSince(quickAnswerFinalizeArmedAt);
+            clearTimeout(quickAnswerFinalizeTimerId);
+            quickAnswerFinalizeTimerId = null;
+            quickAnswerFinalizeArmedAt = null;
+            quickAnswerFinalizeGeneration = null;
+            pushTimelineEvent('SHORT_ANSWER_FINALIZE_CANCELLED (timerAgeMs=' + (timerAgeMs === null ? 'null' : timerAgeMs)
+                + ', reason=' + reason + ', callGeneration=' + callGeneration + ')');
+        }
+
+        // ===== SHORT_ANSWER Forced Commit: 実際の送信本体（今回追加・全店舗適用） =====
         // NAME Forced Commit Observation PoC・Short Choice 3-Second Turn・PHONE
         // Forced Commitで実機検証済みの安全なパターン（commitは1世代につき最大
         // 1回・送信直前に正常完了フラグを再確認・response.createは絶対に追加
         // 送信しない・datachannel未オープンやsend例外は非fatal）をそのまま
         // 踏襲する。Short Choice/PHONEと同じく店舗gatingを一切行わない（全店舗の
         // 本番通話で動作する）。
-
-        // Expected Answer Window（startAnswerWindowIfNeeded）が期限切れになった
-        // 時点で、answerType が SHORT_ANSWER（TIME/DATE/PARTY_SIZE）で、かつ
-        // まだ正常なターン終了（speech_stopped/committed/item_created）が届いて
-        // いない場合に限り、input_audio_buffer.commitを最大1回だけ手動送信する。
-        // response.createは絶対に追加送信しない（他3機構と全く同じ理由:
-        // サーバー側semantic_vadが既に内部的にauto-commit＋auto-responseを
-        // 開始している可能性を排除できず、手動response.createを重ねると二重
-        // 応答を招くリスクがあるため）。
         //
-        // 「3秒は客の発話を機械的に切るためのものではない」について（重要・
-        // 監査結果）: この関数はExpected Answer Windowが期限切れになった時点、
-        // つまり通常のsemantic_vadがそれより先にspeech_stopped等へ進んでいない
-        // 場合にのみ呼ばれる。客がまだ話し続けている自然な発話（例:「来週の
-        // 土曜日なんですけど、できれば午後で……」）と、単なる背景ノイズ等に
-        // よるspeech_stopped遅延を、ブラウザJS側から発話内容ベースで区別する
-        // 安全な手段は今回の監査でも見つかっていない（input_audio_transcription
-        // が未設定のため発話内容に一切アクセスできないという、Short Choice/
-        // NAME PoC監査時と全く同じ構造的制約）。この限界は、既に本番で同じ
-        // 仕組みが稼働しているShort Choice（2択質問でも客が長く話す可能性は
-        // 理論上ある）と同一のものであり、新たにSHORT_ANSWERだけに生じる
-        // リスクではないと判断し、既存precedentと同じ扱い（完了報告のopen
-        // itemとして明記）とした。
+        // PHASE O5.8で呼び出し元を変更（本関数自体のロジックは無変更）: 旧
+        // Expected Answer Window（speech_started起点3秒）ではなく、上の
+        // armQuickAnswerFinalizeTimer()のFinalization Grace（speech_stopped起点
+        // 1.2秒）が満了した時点で呼ばれるようになった。
+        //
+        // 「grace期間は客の発話を機械的に切るためのものではない」について
+        // （重要・O5.7 Audit結果を踏まえた更新）: 本関数はspeech_stoppedが
+        // 一度も届かない限り絶対に呼ばれない（旧設計の「speech_startedから
+        // 3秒」と異なり、話している最中に強制commitされることは構造上
+        // 起こらない。これはユーザー指示21の必須要件そのものである）。
+        // 呼ばれるのはあくまで「客が話し終えたとサーバー側VADが判定した後、
+        // 1.2秒待っても次のspeech_startedが来ない」場合のみ。ただし、
+        // 「話し終えた」というVADの判定自体が短い言い淀み等でも一時的に
+        // 成立し得ることは変わらないため（本関数はarmQuickAnswerFinalizeTimer
+        // 側で新たなspeech_startedがあれば必ずcancelされる設計により、その
+        // ケースは既にカバーされている）、この限界は既に本番で稼働している
+        // Short Choice等と同一のものである。
         function maybeSendQuickAnswerCommit(answerType, myGeneration) {
             if (answerType !== 'SHORT_ANSWER') return; // TIME/DATE/PARTY_SIZEのみが対象
             if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない（保険）
@@ -3970,7 +4085,17 @@
                 userVadState = 'speech';
                 updateAudioDiagnosticsPanel();
                 // Expected Answer Window（PHASE6: 起点はユーザーの発話開始）。
+                // NAME/PHONE/YES_NO/SHORT_CHOICE/VISIT_REASON専用（SHORT_ANSWERは
+                // PHASE O5.8でこの機構から除外済み。ANSWER_WINDOW_LIMITS_MSに
+                // SHORT_ANSWERが存在しないため、type==='SHORT_ANSWER'ではこの
+                // 呼び出しは何もせず即returnする）。
                 startAnswerWindowIfNeeded(callGeneration);
+                // PHASE O5.8: SHORT_ANSWER Finalization Grace timerが動いている
+                // 最中に新たなspeech_startedが来た場合、まだ話している途中
+                // （言い淀み・言い直し等）である可能性を優先し、無条件でcancelする
+                // （ユーザー指示4・6）。expectedAnswerTypeがSHORT_ANSWER以外の
+                // 場合、このtimerは元々armされていないため無害なno-op。
+                cancelQuickAnswerFinalizeTimer('speech_started_again');
                 // PHONE Forced Commit（今回追加）: PHONEターン中のユーザー発話
                 // 開始を専用マーカーとしても記録する（既存の汎用USER_SPEECH_STARTED
                 // に加え、実機ログでPHONEターンだけを追いやすくするため）。
@@ -4010,11 +4135,18 @@
                 // キャンセル済み（PHONE/NAME/YES_NO/SHORT_CHOICEで共有している
                 // 同一のanswerWindowTimerIdのため、専用のキャンセル関数は不要）。
                 phoneTurnNormalCompletionSeen = true;
-                // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）: 同じく
-                // 正常終了したため、このTIME/DATE/PARTY_SIZEターンの世代について
-                // はもう手動commitを送らない。Answer Window自体は上の
-                // cancelAnswerWindow()で既にキャンセル済み。
-                quickAnswerTurnNormalCompletionSeen = true;
+                // PHASE O5.8: SHORT_ANSWER（TIME/DATE/PARTY_SIZE）はここが
+                // 新方式の起点そのもの。旧設計（このspeech_stoppedを「正常終了」
+                // として扱いForced Commitを完全に諦める）とは意味が逆転した点に
+                // 注意（O5.7 Auditの結論）。expectedAnswerType==='SHORT_ANSWER'の
+                // 場合のみ、ここでFinalization Grace（1.2秒）をarmする
+                // （armQuickAnswerFinalizeTimer内部で、既存timerがあれば安全に
+                // cancelしてから取り直す。ユーザー指示5）。それ以外のtypeでは
+                // 内部で何もせずに戻る。quickAnswerTurnNormalCompletionSeen
+                // （＝「サーバーが自律的にこのターンを処理した」フラグ）は、
+                // もうここでは立てない。committed/item_created/response.created/
+                // function_callの各イベントでのみ立てる（下記参照）。
+                armQuickAnswerFinalizeTimer(callGeneration);
                 // PHASE6相関用（PIIなし）: 対応するspeech_startedからの経過時間
                 // （＝サーバーがユーザー発話と判定していた継続時間）を記録する。
                 // 短時間の相槌（「はい」「違います」等）も本物の短い発話として
@@ -4121,6 +4253,19 @@
                 maybeLogPhoneReactionElapsed('responseCreated', 'response.created');
                 // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）
                 maybeLogQuickAnswerReactionElapsed('responseCreated', 'response.created');
+                // PHASE O5.8（ユーザー指示13・重要）: response.createdが正常に
+                // 届いた時点で、まだSHORT_ANSWER Finalization Grace timerが
+                // 残っていれば必ずcancelする。これにより、サーバー側が既に
+                // 自力で応答を開始したにもかかわらず、1.2秒後に古いForced
+                // Commitが遅れて発火することを防ぐ（二重commit・二重response
+                // 防止。ユーザー指示12）。silenceStateの状態（'waiting'かどうか）
+                // に関わらず常に評価する（Silence Timeoutの条件とは独立）。
+                // 併せてquickAnswerTurnNormalCompletionSeenも立て、万一この
+                // response.createdの直前にcommitted/item_createdが届いていない
+                // 順序で届いた場合でも、送信直前の最終レース確認で二重に守れる
+                // ようにする。
+                cancelQuickAnswerFinalizeTimer('response_created');
+                quickAnswerTurnNormalCompletionSeen = true;
                 // Silence Timeout: この回の応答にfunction_callが含まれるかどうかを
                 // 新しい応答サイクルの開始時点でリセットする（response.doneで判定に使う）。
                 responseHasFunctionCall = false;
@@ -4202,6 +4347,14 @@
                 // 続くresponse.doneではまだ「ユーザーの回答待ち」状態にしない
                 // （Tool往復中の待ち時間を無言としてカウントしないためのフラグ）。
                 responseHasFunctionCall = true;
+                // PHASE O5.8（ユーザー指示14）: 正常なfunction_callへ進んだ場合、
+                // 既にターン処理が前進しているため、残存するSHORT_ANSWER
+                // Finalization Grace timerがあればここでcancelする（1.2秒後に
+                // 古いForced Commitが遅れて発火することを防ぐ）。O5.5 ack
+                // fallback・T0-T10トレースより前に評価しても、それらの処理には
+                // 一切影響しない（本cancelは純粋にタイマー1個をclearするのみ）。
+                cancelQuickAnswerFinalizeTimer('function_call_started');
+                quickAnswerTurnNormalCompletionSeen = true;
                 // FAST TURN 3.6A（UI_STATE修正・UXのみ）: Tool呼び出しが確定した
                 // この時点で「確認しています」（PROCESSING）へ切り替える
                 // （続くresponse.doneのUI_STATE分岐がこの後も同じ文言を維持する）。
@@ -4611,6 +4764,13 @@
             quickAnswerCommitSentAt = null;
             quickAnswerCommitCallGeneration = null;
             quickAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+            // PHASE O5.8: SHORT_ANSWER Finalization Grace timerも、新しい通話
+            // ごとに必ずリセットする（前回通話のタイマーを持ち越さない。万一
+            // 前回通話終了時にarmされたまま残っていた場合の防御的clearTimeoutも
+            // 兼ねる）。
+            if (quickAnswerFinalizeTimerId !== null) { clearTimeout(quickAnswerFinalizeTimerId); quickAnswerFinalizeTimerId = null; }
+            quickAnswerFinalizeArmedAt = null;
+            quickAnswerFinalizeGeneration = null;
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。
