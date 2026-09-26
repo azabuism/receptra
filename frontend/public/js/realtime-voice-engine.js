@@ -63,6 +63,58 @@
         // Completion機構へ統合しない、という明示的な方針に基づく）。
         const takeoverPocEnabled = debugMode && shopId === NAME_COMMIT_POC_SHOP_ID;
 
+        // ===== LOCAL SILENCE ASSIST — OBSERVATION PoC（FAST TURN 4・観測専用） =====
+        // 目的: 「お客様の発話がブラウザ側から見て実質的に終わったタイミング」
+        // と、OpenAI semantic_vadが実際にinput_audio_buffer.speech_stoppedを
+        // 送ってくるタイミングの差（local_to_server_gap）を実測するための、
+        // 純粋な観測機能。
+        //
+        // 最重要（絶対に守ること）: このPoCはinput_audio_buffer.commit /
+        // response.create / response.cancel / input_audio_buffer.clear /
+        // conversation.item.truncate を含む、いかなるRealtime会話制御イベントも
+        // 一切送信しない。既存のNAME/Takeover/Short Choice/PHONE/SHORT_ANSWER
+        // Forced Commit群とも接続しない（完全に独立）。既存のsemantic_vad・
+        // eagerness・Forced Commit・Conversation Takeoverの動作には一切介入
+        // せず、通話結果（予約成立の可否・AIの応答内容）は現在の本番と
+        // 完全に同一のまま変わらない。
+        //
+        // 安全条件（NAME/Takeover PoCと全く同じ・両方満たす場合のみ有効化）:
+        // PoC専用テスト店舗「RECEPTRA Realtime PoC Test」のshop_id + debug=1。
+        // 一般店舗・Public AI Call（call.html。CSSで#debugPanels自体を
+        // !importantで常時非表示にしているため、そもそもdebugMode関連の
+        // 見た目は一切出ない）には一切影響しない。新しいdebug UI（パネル・
+        // ボタン等）も追加しない。既存のlogEvent/pushTimelineEventにログ行が
+        // 増えるだけで、これらは既存の#debugPanels（debug=1時のみ表示）配下の
+        // 既存表示にそのまま乗るため、一般のお客様向け画面には何も表示されない。
+        //
+        // 使用する音声パイプライン: 新しいAudioContext/AnalyserNodeは作らず、
+        // 既存のsetupMicLevelMeter()が既に毎フレーム計算しているマイク音量
+        // （pct値・後述のtick()内）をそのまま再利用する。MediaStreamの複製も
+        // 行わない。
+        //
+        // fail-open設計: 以下のロジックはすべてtry/catchで包み、万一例外が
+        // 発生しても通話・音声・予約処理には一切影響しない（観測専用機能の
+        // 失敗で通話が止まることは絶対に無いようにする）。
+        const LOCAL_SILENCE_POC_SHOP_ID = NAME_COMMIT_POC_SHOP_ID; // 既存PoC専用テスト店舗をそのまま流用
+        const localSilenceObservationEnabled = debugMode && shopId === LOCAL_SILENCE_POC_SHOP_ID;
+        // 観測上の「無音候補」を作るためだけの暫定閾値・下限。今回はcommit判断に
+        // 一切使用しない（FAST TURN 4.1で実測データを見てから閾値を検討する）。
+        const LOCAL_SILENCE_CANDIDATE_THRESHOLD_PCT = 8;
+        const LOCAL_SILENCE_MIN_PAUSE_MS = 150; // これより短い無音候補はログのノイズとして記録しない
+        // 「発話開始後まだ一度も音を検知していない」世代をまたいだ誤相関を防ぐための
+        // 世代カウンタ（既存Answer Window/Forced Commit群と同じ設計）。
+        let localSilenceGeneration = 0;
+        let localSilenceActive = false; // 現在のターンを観測中かどうか
+        let localSilenceFirstSpeechDetectedAt = null; // このターンで最初に閾値を超えた時刻
+        let localSilenceCandidateStartedAt = null; // 現在継続中の無音候補の開始時刻（無ければnull）
+        let localSilencePauseCandidates = []; // このターン中、声が戻ってきて終わった無音候補(ms)の一覧
+        let localSilencePeakPct = null;
+        let localSilenceSumPct = 0;
+        let localSilenceSampleCount = 0;
+        // 発話ターン外（非アクティブ時）のマイク音量から緩やかに更新する、
+        // 観測用の参考値（簡易的な背景ノイズレベル。会話制御には使用しない）。
+        let localSilenceBackgroundFloorPct = null;
+
         document.getElementById('backLink').href = shopId ? ('/shop.html?id=' + encodeURIComponent(shopId)) : '/';
 
         const loadingEl = document.getElementById('loading');
@@ -3459,6 +3511,9 @@
                 // Silence Timeout: 有効なユーザー発話を検知したため即リセット
                 // （'warned'中であればここで終話をキャンセルし通常会話へ復帰する）。
                 resetSilenceTimer('user_speech_started');
+                // LOCAL SILENCE ASSIST — OBSERVATION PoC（観測専用。PoC店舗+debug=1
+                // のみ有効。Realtime APIへは何も送信しない）。
+                startLocalSilenceTurn();
             } else if (type === 'input_audio_buffer.speech_stopped') {
                 userVadState = 'idle';
                 lastSpeechStoppedAt = performance.now();
@@ -3502,6 +3557,11 @@
                         + '（speech_started時点でAI音声出力中だった=' + speechStartedDuringAiOutput + '）');
                 }
                 pushTimelineEvent('USER_SPEECH_STOPPED (継続=' + (speechDurationMsForTimeline === null ? '?' : speechDurationMsForTimeline + 'ms') + ')');
+                // LOCAL SILENCE ASSIST — OBSERVATION PoC（観測専用。PoC店舗+debug=1
+                // のみ有効。Realtime APIへは何も送信しない。既存TURN LATENCY計測
+                // より前に呼んでも後に呼んでも計算結果に影響しない独立処理だが、
+                // ログの読みやすさのためUSER_SPEECH_STOPPEDの直後に置く）。
+                finishLocalSilenceTurn(speechDurationMsForTimeline);
                 // FAST TURN 2（Section3/20）: 今回のターンの(A)発話継続時間と、
                 // その時点のexpectedAnswerType（＝どのFast Turnカテゴリの
                 // 対象だったか。第一声直後で対象外だった場合は'NONE'のまま）を
@@ -3698,6 +3758,111 @@
         // 変数。表示用のDOM更新（micLevelFillEl）とは別に、speech_startedログが
         // 参照できるようにする。音声そのものやスペクトルの詳細は保持しない。
         let lastMicLevelPct = null;
+        // LOCAL SILENCE ASSIST — OBSERVATION PoC: 既存のマイクレベルtick()から
+        // 毎フレーム呼ばれる観測専用フック。Realtime APIへは何も送信しない。
+        // 例外はここで必ず握りつぶし、通話そのものには一切影響させない
+        // （fail-open。呼び出し元のtick()自体を壊さないことが最優先）。
+        function observeLocalSilenceTick(pct) {
+            if (!localSilenceObservationEnabled) return;
+            try {
+                const now = performance.now();
+                if (!localSilenceActive) {
+                    // ターン外: 背景ノイズの参考値としてゆるやかなEMAを更新するだけ
+                    // （観測目的のみ。会話制御には一切使用しない）。
+                    localSilenceBackgroundFloorPct = localSilenceBackgroundFloorPct === null
+                        ? pct
+                        : (localSilenceBackgroundFloorPct * 0.95 + pct * 0.05);
+                    return;
+                }
+                localSilenceSampleCount += 1;
+                localSilenceSumPct += pct;
+                if (localSilencePeakPct === null || pct > localSilencePeakPct) localSilencePeakPct = pct;
+
+                if (pct >= LOCAL_SILENCE_CANDIDATE_THRESHOLD_PCT) {
+                    // 「音がある」と判定
+                    if (localSilenceFirstSpeechDetectedAt === null) {
+                        localSilenceFirstSpeechDetectedAt = now;
+                        pushTimelineEvent('LOCAL_SILENCE speech_detected (mic=' + pct + '%)');
+                    }
+                    if (localSilenceCandidateStartedAt !== null) {
+                        // 継続中だった無音候補が、声の復帰で終了した
+                        // ＝本当の発話終了ではなく自然な言い淀み（pause candidate）
+                        const pauseMs = Math.round(now - localSilenceCandidateStartedAt);
+                        if (pauseMs >= LOCAL_SILENCE_MIN_PAUSE_MS) {
+                            localSilencePauseCandidates.push(pauseMs);
+                            pushTimelineEvent('LOCAL_SILENCE pause_candidate=' + pauseMs + 'ms');
+                        }
+                        localSilenceCandidateStartedAt = null;
+                    }
+                } else if (localSilenceFirstSpeechDetectedAt !== null && localSilenceCandidateStartedAt === null) {
+                    // 話し始めた後で初めて無音状態に入った瞬間だけ候補を開始する
+                    localSilenceCandidateStartedAt = now;
+                    pushTimelineEvent('LOCAL_SILENCE silence_started (mic=' + pct + '%)');
+                }
+            } catch (e) {
+                // 観測機能自体の失敗で通話に影響が出ないよう、ここで握りつぶす。
+                try { logEvent('[LOCAL_SILENCE] 観測中に例外（無視して継続）: ' + e.message); } catch (e2) { /* no-op */ }
+            }
+        }
+
+        // LOCAL SILENCE ASSIST — OBSERVATION PoC: OpenAI側のspeech_startedを
+        // 起点に、今回のターンの観測状態をリセットする。Realtime APIへは
+        // 何も送信しない（fail-open）。
+        function startLocalSilenceTurn() {
+            if (!localSilenceObservationEnabled) return;
+            try {
+                localSilenceGeneration += 1;
+                localSilenceActive = true;
+                localSilenceFirstSpeechDetectedAt = null;
+                localSilenceCandidateStartedAt = null;
+                localSilencePauseCandidates = [];
+                localSilencePeakPct = null;
+                localSilenceSumPct = 0;
+                localSilenceSampleCount = 0;
+            } catch (e) {
+                try { logEvent('[LOCAL_SILENCE] ターン開始処理で例外（無視して継続）: ' + e.message); } catch (e2) { /* no-op */ }
+            }
+        }
+
+        // LOCAL SILENCE ASSIST — OBSERVATION PoC: OpenAI側のspeech_stoppedを
+        // 起点に、「ローカルで無音候補が始まった時点」からの経過時間
+        // （local_to_server_gap）を計算してログへ記録するだけ。Realtime APIへは
+        // 何も送信せず、既存のsemantic_vad・Forced Commit・TURN LATENCY計測にも
+        // 一切干渉しない（fail-open）。speechDurationMs（既存のspeech_stopped
+        // ハンドラが既に計算済みの発話継続時間。無ければnull）はSUMMARYログの
+        // speech=フィールドとして、既存TURN LATENCYと突き合わせやすいよう
+        // そのまま流用する。
+        function finishLocalSilenceTurn(speechDurationMs) {
+            if (!localSilenceObservationEnabled) return;
+            try {
+                if (!localSilenceActive) return;
+                const now = performance.now();
+                const fmt = (v) => (v === null || v === undefined ? '?' : v + 'ms');
+                let localToServerGapMs = null;
+                let localSilenceStartedOffsetMs = null;
+                if (localSilenceCandidateStartedAt !== null) {
+                    localToServerGapMs = Math.round(now - localSilenceCandidateStartedAt);
+                    if (lastSpeechStartedAt !== null) {
+                        localSilenceStartedOffsetMs = Math.round(localSilenceCandidateStartedAt - lastSpeechStartedAt);
+                    }
+                    pushTimelineEvent('LOCAL_SILENCE silence_duration=' + localToServerGapMs + 'ms');
+                }
+                pushTimelineEvent('LOCAL_SILENCE server_speech_stopped (local_to_server_gap=' + fmt(localToServerGapMs) + ')');
+                const avgPct = localSilenceSampleCount > 0 ? Math.round(localSilenceSumPct / localSilenceSampleCount) : null;
+                logEvent('LOCAL SILENCE SUMMARY speech=' + fmt(speechDurationMs)
+                    + ' local_silence_started=' + fmt(localSilenceStartedOffsetMs)
+                    + ' server_speech_stopped=' + fmt(speechDurationMs)
+                    + ' local_to_server_gap=' + fmt(localToServerGapMs)
+                    + ' pause_candidates=' + JSON.stringify(localSilencePauseCandidates)
+                    + ' peak_mic=' + (localSilencePeakPct === null ? '?' : localSilencePeakPct + '%')
+                    + ' avg_mic=' + (avgPct === null ? '?' : avgPct + '%')
+                    + ' background_mic=' + (localSilenceBackgroundFloorPct === null ? '?' : Math.round(localSilenceBackgroundFloorPct) + '%'));
+                localSilenceActive = false;
+            } catch (e) {
+                try { logEvent('[LOCAL_SILENCE] ターン終了処理で例外（無視して継続）: ' + e.message); } catch (e2) { /* no-op */ }
+            }
+        }
+
         function setupMicLevelMeter(stream) {
             let audioCtx;
             try {
@@ -3724,6 +3889,7 @@
                 const pct = Math.min(100, Math.round((avg / 80) * 100));
                 micLevelFillEl.style.width = pct + '%';
                 lastMicLevelPct = pct;
+                observeLocalSilenceTick(pct);
                 if (localStream) micLevelRafId = requestAnimationFrame(tick);
             }
             tick();
