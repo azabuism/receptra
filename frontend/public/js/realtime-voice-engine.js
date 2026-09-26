@@ -277,6 +277,60 @@
         let toolContinuationTraceT0 = null;
         let toolContinuationTraceActive = false;
 
+        // ===== FAST TURN HOTFIX 4（今回追加）: TOOL CONTINUATION RESPONSE
+        // WATCHDOG（診断専用・観測のみ） =====
+        // 背景: 実機で「明日、二人で12時に予約したいです」に対しAIが
+        // 「承知しました。12時のお時間ですね」まで発話した直後に完全に
+        // 無応答で停止した事例が報告された。check_availabilityはdate/time/
+        // party_sizeの3つだけで呼び出し可能（既存のTool定義で確認済み）で、
+        // かつそのTool説明文自体が「確認を待たず必ずこの関数を呼び出して
+        // ください」と明記しているため、この発話だけで（お名前・電話番号を
+        // 待たずに）check_availabilityが呼ばれた可能性がある。もしそうなら、
+        // 「承知しました。12時のお時間ですね」はsystem prompt既存の
+        // 「Tool呼び出しの直前にできるだけ一言添える」に沿った一言であり、
+        // 続く空き状況案内＋次の質問は本来Tool結果を受けた2回目の
+        // response.created（T7）で発話されるはずだったが、それが一度も
+        // 届かなかった可能性がある。
+        // 監査の結果、T6（response.create送信成功）からT7（response.created
+        // 受信）までの間には、現在いかなるタイムアウト・フォールバックも
+        // 存在しないことを確認した（sendResponseCreateはdc.send()の成功可否
+        // しか見ておらず、OpenAI側が実際にresponse.createdを返すかどうかは
+        // 一切追跡していない）。これは前フェーズで発見した「commit後に
+        // response.createdが一切届かない」構造的リスクの、Tool継続チェーン版
+        // にあたる。
+        // 今回はこの空白を埋める挙動変更（新しいresponse.create再送信や
+        // タイムアウト後の代替発話等）は一切行わない（証拠不十分なため）。
+        // 代わりに、この空白が実際に発生しているかどうかを次の実機テストで
+        // 確実に可視化するため、T6送信後、一定時間T7が届かなければ
+        // 「観測専用」の1行をタイムラインへ記録するだけのwatchdogを追加する。
+        // 何もsend/再試行はしない。既存のtoolContinuationTraceActive/
+        // toolContinuationTraceCallIdの値をreadするだけで、書き換えない。
+        const TOOL_CONTINUATION_RESPONSE_WATCHDOG_MS = 8000; // 8秒: 通常のTool往復+モデル生成時間に対し十分な余裕を見た診断用の目安値（挙動には無関係）
+        let toolContinuationWatchdogTimerId = null;
+        let toolContinuationWatchdogForCallId = null;
+
+        function armToolContinuationResponseWatchdog(forCallId) {
+            cancelToolContinuationResponseWatchdog('rearm');
+            toolContinuationWatchdogForCallId = forCallId;
+            toolContinuationWatchdogTimerId = setTimeout(() => {
+                toolContinuationWatchdogTimerId = null;
+                // 診断専用: ここでは絶対に何も送信しない（response.create再送信
+                // 等は一切行わない）。同じcall_idのトレースがまだアクティブな
+                // ままT7に到達していない場合にのみ、観測用の1行を記録する。
+                if (toolContinuationTraceActive && toolContinuationTraceCallId === forCallId) {
+                    pushToolContinuationTrace('TOOL_CONTINUATION_WATCHDOG_NO_RESPONSE_CREATED_AFTER_T6 (waitedMs='
+                        + TOOL_CONTINUATION_RESPONSE_WATCHDOG_MS + ', diagnostic_only_no_action_taken=true)');
+                }
+            }, TOOL_CONTINUATION_RESPONSE_WATCHDOG_MS);
+        }
+
+        function cancelToolContinuationResponseWatchdog(reason) {
+            if (toolContinuationWatchdogTimerId === null) return;
+            clearTimeout(toolContinuationWatchdogTimerId);
+            toolContinuationWatchdogTimerId = null;
+            toolContinuationWatchdogForCallId = null;
+        }
+
         function recordLatencySample(ms) {
             latencySamples.push(ms);
             latestLatencyEl.textContent = Math.round(ms) + ' ms';
@@ -1133,6 +1187,9 @@
             turnLatencyTraceT0 = null;
             turnLatencyTraceLastAt = null;
             turnLatencyTraceMarkersSeen = {};
+            // FAST TURN HOTFIX 4（今回追加・観測専用・安全網）: このターン用の
+            // watchdogが残っていれば破棄する（次のターンへ誤って持ち越さない）。
+            cancelPlainTurnResponseWatchdog('turn_latency_trace_reset');
         }
 
         function pushTurnLatencyTrace(marker, extraNote) {
@@ -1158,6 +1215,8 @@
             turnLatencyTraceT0 = null;
             turnLatencyTraceLastAt = null;
             turnLatencyTraceMarkersSeen = {};
+            // FAST TURN HOTFIX 4（今回追加・観測専用・安全網）
+            cancelPlainTurnResponseWatchdog('turn_latency_trace_ended');
         }
 
         function startTurnLatencyTrace(myCallGeneration) {
@@ -1174,6 +1233,41 @@
             turnLatencyTraceLastAt = turnLatencyTraceT0;
             turnLatencyTraceMarkersSeen = {};
             pushTurnLatencyTrace('TURN_INPUT_START');
+        }
+
+        // ===== FAST TURN HOTFIX 4（今回追加）: PLAIN TURN RESPONSE WATCHDOG
+        // （診断専用・観測のみ） =====
+        // 背景: FAST TURN HOTFIX 3の監査で、「committed/item_createdは正常に
+        // 届いたのに、その後response.createdが一度も届かない」という窓には
+        // 現状フォールバックが存在しないことが判明していた（証拠不十分のため
+        // 修正は見送り、観測を追加する方針だった）。今回のTOOL CONTINUATION
+        // RESPONSE WATCHDOGと対になる、Tool呼び出しを伴わない通常ターン側の
+        // 同じ窓を可視化するための追加。何も送信しない・何も再試行しない。
+        const PLAIN_TURN_RESPONSE_WATCHDOG_MS = 8000; // Tool継続側と同じ目安値（挙動には無関係）
+        let plainTurnResponseWatchdogTimerId = null;
+        let plainTurnResponseWatchdogForTurnId = null;
+
+        function armPlainTurnResponseWatchdog(forTurnId) {
+            cancelPlainTurnResponseWatchdog('rearm');
+            plainTurnResponseWatchdogForTurnId = forTurnId;
+            plainTurnResponseWatchdogTimerId = setTimeout(() => {
+                plainTurnResponseWatchdogTimerId = null;
+                // 診断専用: 同じturnIdのトレースがまだ有効で、かつ
+                // TURN_RESPONSE_CREATEDが一度も記録されていない場合にのみ
+                // 観測用の1行を記録する（何もsendしない）。
+                if (turnLatencyTraceId === forTurnId && turnLatencyTraceId !== null
+                    && !turnLatencyTraceMarkersSeen['TURN_RESPONSE_CREATED']) {
+                    pushTimelineEvent('PLAIN_TURN_WATCHDOG_NO_RESPONSE_CREATED_AFTER_COMMIT (turnId=' + forTurnId
+                        + ', waitedMs=' + PLAIN_TURN_RESPONSE_WATCHDOG_MS + ', diagnostic_only_no_action_taken=true)');
+                }
+            }, PLAIN_TURN_RESPONSE_WATCHDOG_MS);
+        }
+
+        function cancelPlainTurnResponseWatchdog(reason) {
+            if (plainTurnResponseWatchdogTimerId === null) return;
+            clearTimeout(plainTurnResponseWatchdogTimerId);
+            plainTurnResponseWatchdogTimerId = null;
+            plainTurnResponseWatchdogForTurnId = null;
         }
 
         // CRITICAL INCIDENT調査（音声ブツブツ/ノイズ→応答停止、iPhone実機再現）:
@@ -4345,6 +4439,7 @@
                 // （「証明できていないことを証明済みと誤表示しない」ため）。
                 pushToolContinuationTrace('T4_FUNCTION_CALL_OUTPUT_SEND_FAILED (tool=' + (item.name || '(不明)') + ')');
                 toolContinuationTraceActive = false;
+                cancelToolContinuationResponseWatchdog('t4_send_failed');
             }
             // function_call_output自体の送信に失敗した場合でも、sendResponseCreate()
             // 自体は既存どおりdc.readyStateを確認して安全にno-opするため
@@ -4370,6 +4465,12 @@
                 // ケース。以降のT7〜T10は発生し得ないため、ここでトレースを
                 // 終了する。
                 toolContinuationTraceActive = false;
+            } else {
+                // FAST TURN HOTFIX 4（今回追加・観測専用）: dc.send()自体は
+                // 成功したが、OpenAI側がresponse.createdを一度も返さない
+                // ケースがないかを次の実機テストで可視化するため、watchdogを
+                // arm する（何も送信しない、記録のみ）。
+                armToolContinuationResponseWatchdog(toolContinuationTraceCallId);
             }
             lastToolLabel = (item.name || '(不明)') + ': continuation_requested';
             updateAudioDiagnosticsPanel();
@@ -4548,6 +4649,10 @@
                 // 時点」として記録する（新しい送信を追加するものではない）。
                 pushTurnLatencyTrace('TURN_COMMITTED');
                 pushTurnLatencyTrace('TURN_RESPONSE_REQUESTED', 'source=server_auto_create_response_on_commit');
+                // FAST TURN HOTFIX 4（今回追加・観測専用）: この時点でarmし、
+                // TURN_RESPONSE_CREATEDが一定時間届かない場合のみ記録する
+                // watchdog（何も送信しない）。
+                if (turnLatencyTraceId !== null) armPlainTurnResponseWatchdog(turnLatencyTraceId);
                 // FAST TURN 2（Section3/20）: (B) speech_stopped→committedの
                 // 差分（VADテール、意味的判定が「発話継続中」と見なしていた
                 // 追加の待ち時間）を記録する。lastSpeechStoppedAtは、AIが実際に
@@ -4857,7 +4962,14 @@
                 // 記録されない＝既存のturnLatencyCommitToResponseMsと同じ
                 // 「初回のみ」計測になる。
                 pushTurnLatencyTrace('TURN_RESPONSE_CREATED');
+                // FAST TURN HOTFIX 4（今回追加・観測専用）: TURN_RESPONSE_CREATEDに
+                // 到達した＝この窓は今回は発生しなかったことが確定したため解除。
+                cancelPlainTurnResponseWatchdog('turn_response_created_arrived');
                 pushToolContinuationTrace('T7_CONTINUATION_RESPONSE_CREATED');
+                // FAST TURN HOTFIX 4（今回追加・観測専用）: T7に到達した＝
+                // T6→T7の空白は今回は発生しなかったことが確定したため、
+                // watchdogを解除する（何もsendしない、ただのclearTimeout）。
+                cancelToolContinuationResponseWatchdog('t7_response_created_arrived');
                 // PHASE O5.6診断（response.create correlation）: 直近に明示的に
                 // 送信したsendResponseCreate()のreasonを、この時点で一度だけ
                 // 消費してカテゴリ化する。これにより「silenceState='warned'の
@@ -4974,6 +5086,7 @@
                     toolContinuationTraceActive = false;
                     toolContinuationTraceCallId = null;
                     toolContinuationTraceT0 = null;
+                    cancelToolContinuationResponseWatchdog('t10_response_done');
                 }
                 // FAST TURN HOTFIX 3（今回追加・観測専用）: function_callを含まない
                 // 最終応答が完了した時点で、このターンのFULL TURN LATENCY TRACEを
@@ -5047,6 +5160,7 @@
                 pushToolContinuationTrace('T_ERROR_REALTIME_ERROR (type=' + ((msg.error && msg.error.type) || '不明')
                     + ', code=' + ((msg.error && msg.error.code) || '不明') + ')');
                 toolContinuationTraceActive = false;
+                cancelToolContinuationResponseWatchdog('realtime_error');
                 // NAME Forced Commit Observation PoC（PHASE8/10）: 手動commit
                 // 送信後に発生したerrorは、このPoCが観測したい重要な結果の
                 // 一つ（例: "buffer is empty"等）であるため、専用のタイムライン
@@ -5367,6 +5481,10 @@
             // FAST TURN HOTFIX 3（今回追加）: 新しい通話の開始時に、前の通話から
             // 残留したFULL TURN LATENCY TRACE状態が万一あれば破棄する（安全網）。
             resetTurnLatencyTrace('new_call_setup');
+            // FAST TURN HOTFIX 4（今回追加・観測専用・安全網）: 前の通話から
+            // 残留したTOOL CONTINUATION RESPONSE WATCHDOGタイマーが万一あれば
+            // 破棄する（次の通話の別のcall_idに対して誤発火しないように）。
+            cancelToolContinuationResponseWatchdog('new_call_setup');
             updatePlaybackRecoveryButton();
 
             // Mobile Real-Call Failure Investigation: 新しい通話開始のたびに
@@ -6165,6 +6283,9 @@
             // FAST TURN HOTFIX 3（今回追加）: 通話終了時に進行中のFULL TURN
             // LATENCY TRACEがあれば、理由付きで明示的に終了させる。
             resetTurnLatencyTrace('cleanup_connection');
+            // FAST TURN HOTFIX 4（今回追加・観測専用・安全網）: 通話終了時に
+            // TOOL CONTINUATION RESPONSE WATCHDOGが動いていれば破棄する。
+            cancelToolContinuationResponseWatchdog('cleanup_connection');
             updatePlaybackRecoveryButton();
             setStatus(stMicTrackEl, 'なし', null);
             setStatus(stWebrtcEl, 'closed', null);

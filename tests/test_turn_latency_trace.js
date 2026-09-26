@@ -140,6 +140,13 @@ function buildSandbox() {
         turnLatencyTraceMarkersSeen: {},
         responseState: 'idle',
 
+        // FAST TURN HOTFIX 4（今回追加）: resetTurnLatencyTrace/
+        // endTurnLatencyTraceの実ソースがcancelPlainTurnResponseWatchdogを
+        // 呼ぶようになったため、このテスト（FULL TURN LATENCY TRACE本体の
+        // marker順序等の検証）には無関係な軽量スタブを与える（watchdog本体は
+        // tests/test_response_watchdogs.jsで別途検証済み）。
+        cancelPlainTurnResponseWatchdog: () => {},
+
         pushTimelineEvent: (msg) => { events.push({ type: 'timeline', msg }); },
         performance: { now: () => clockMs },
         setTimeout: (cb, ms) => {

@@ -103,6 +103,12 @@ function buildSandbox(overrides) {
             traceEvents.push(text);
             events.push('TOOL_TRACE ' + text);
         },
+        // FAST TURN HOTFIX 4（今回追加）: handleFunctionCallItemの実ソースが
+        // arm/cancelを呼ぶようになったため、このテストの目的（Tool継続の
+        // 耐障害性）には無関係な診断専用watchdogをここでは軽量スタブとして
+        // 与える（実装本体はtests/test_response_watchdogs.jsで別途検証済み）。
+        armToolContinuationResponseWatchdog: () => {},
+        cancelToolContinuationResponseWatchdog: () => {},
         console: console,
         JSON: JSON,
     };
@@ -284,12 +290,13 @@ await test('N: FAST TURN 3.6B) T7(CONTINUATION_RESPONSE_CREATED)がresponse.crea
     assert.notStrictEqual(rcIdx, -1, 'RESPONSE_CREATED timeline log not found');
     assert.notStrictEqual(t7Idx, -1, 'T7 not found');
     assert.ok(rcIdx < t7Idx, 'RESPONSE_CREATED must be logged before T7');
-    // FAST TURN HOTFIX 3（今回追加）が間にTURN_RESPONSE_CREATEDという新しい
-    // 診断専用呼び出し（＋4行の説明コメント）を挿入したため、直接隣接
-    // （改行のみ）という厳密なregexではなく、間に別の分岐・不要なロジックが
-    // 入っていないことを「短い距離（400文字以内）」で確認する方式に変更する。
-    // 実測: RESPONSE_CREATEDからT7まで337文字（コメント+診断呼び出し1行分）。
-    assert.ok(t7Idx - rcIdx < 400,
+    // FAST TURN HOTFIX 3/4（今回まで累計で追加）が間にTURN_RESPONSE_CREATEDと
+    // cancelPlainTurnResponseWatchdogという新しい診断専用呼び出し（＋説明
+    // コメント）を挿入したため、直接隣接（改行のみ）という厳密なregexでは
+    // なく、間に別の分岐・不要なロジックが入っていないことを「短い距離
+    // （700文字以内）」で確認する方式に変更する。実測: RESPONSE_CREATEDから
+    // T7まで543文字（診断専用のコメント+呼び出し2行分）。
+    assert.ok(t7Idx - rcIdx < 700,
         'T7 must fire right when response.created arrives, with nothing but diagnostic-only additions (no branching/business logic) between RESPONSE_CREATED and T7');
 });
 
