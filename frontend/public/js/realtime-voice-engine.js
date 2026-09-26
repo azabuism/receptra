@@ -1282,6 +1282,15 @@
         // 自体（実際にinput_audio_buffer.commitを送る部分）は変更しない
         // （ユーザー指示9: Forced Commitの意味自体は変えない。timer起点のみ
         // 修正する）。
+        //
+        // PHASE O5.10 追記（重要）: O5.9.2 Auditの結果、SHORT_ANSWERの通常
+        // 経路では本関数（armQuickAnswerFinalizeTimer）はもうどこからも
+        // 呼ばれない（唯一の呼び出し元だったspeech_stoppedハンドラ内の
+        // 呼び出しを削除した。理由は同ハンドラのコメント参照）。関数自体は
+        // 削除せず、将来的に本当に異常なケース（サーバーが長時間何も
+        // 反応しない場合等）専用のfallback候補として温存しているだけの、
+        // 現時点でdead/unused状態のコードである。通常のSHORT_ANSWER会話
+        // フローには一切影響しない。
 
         // speech_stoppedのたびに呼ぶ。expectedAnswerType==='SHORT_ANSWER'の
         // 場合のみ、既存のFinalization Grace timerがあれば安全にcancelしてから
@@ -1289,6 +1298,9 @@
         // 新たに1.2秒のgrace timerをarmする。それ以外のtypeでは何もしない
         // （NAME/PHONE/YES_NO/SHORT_CHOICE/VISIT_REASONは既存のAnswer Window
         // 機構をそのまま使い続けるため、本関数はSHORT_ANSWER専用）。
+        //
+        // PHASE O5.10: 上記の通り現在どこからも呼ばれていない
+        // （dead/unused。fallback候補として温存）。
         function armQuickAnswerFinalizeTimer(myGeneration) {
             if (expectedAnswerType !== 'SHORT_ANSWER') return;
             cancelQuickAnswerFinalizeTimer('rearm_on_speech_stopped');
@@ -1323,6 +1335,13 @@
         // (d) function_callへ正常に進んだ時（ユーザー指示14）
         // armされていなければ何もしない（no-op。既存のcancelAnswerWindow()と
         // 同じ形の安全設計）。
+        //
+        // PHASE O5.10 追記: armQuickAnswerFinalizeTimer()がSHORT_ANSWERの通常
+        // 経路から呼ばれなくなったため（下記(b)の呼び出し元は既にdead）、
+        // quickAnswerFinalizeTimerIdは通常フローでは常にnullのままとなり、
+        // (a)(c)(d)からの呼び出しは全て無害なno-opになる。あえてこれらの
+        // 呼び出し自体は削除していない（fallback timerを将来復活させた際に
+        // そのまま機能する安全網として残し、変更差分も最小化するため）。
         function cancelQuickAnswerFinalizeTimer(reason) {
             if (quickAnswerFinalizeTimerId === null) return;
             const timerAgeMs = quickAnswerFinalizeArmedAt === null ? null : msSince(quickAnswerFinalizeArmedAt);
@@ -1359,6 +1378,14 @@
         // 側で新たなspeech_startedがあれば必ずcancelされる設計により、その
         // ケースは既にカバーされている）、この限界は既に本番で稼働している
         // Short Choice等と同一のものである。
+        //
+        // PHASE O5.10 追記（重要）: O5.9.2 Auditの結果、SHORT_ANSWERの通常
+        // 経路からは、この関数を呼んでいた唯一の経路（armQuickAnswerFinalizeTimer
+        // のgrace timer満了）自体が呼ばれなくなったため、本関数も現時点では
+        // どこからも呼ばれないdead/unused状態である。関数自体・その中身
+        // （実際にinput_audio_buffer.commitを送るロジック自体）はユーザー
+        // 指示3により削除せず、将来的に本当に異常なケース専用のfallback
+        // 候補としてそのまま温存している。
         function maybeSendQuickAnswerCommit(answerType, myGeneration) {
             if (answerType !== 'SHORT_ANSWER') return; // TIME/DATE/PARTY_SIZEのみが対象
             if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない（保険）
@@ -4200,18 +4227,35 @@
                 // キャンセル済み（PHONE/NAME/YES_NO/SHORT_CHOICEで共有している
                 // 同一のanswerWindowTimerIdのため、専用のキャンセル関数は不要）。
                 phoneTurnNormalCompletionSeen = true;
-                // PHASE O5.8: SHORT_ANSWER（TIME/DATE/PARTY_SIZE）はここが
-                // 新方式の起点そのもの。旧設計（このspeech_stoppedを「正常終了」
-                // として扱いForced Commitを完全に諦める）とは意味が逆転した点に
-                // 注意（O5.7 Auditの結論）。expectedAnswerType==='SHORT_ANSWER'の
-                // 場合のみ、ここでFinalization Grace（1.2秒）をarmする
-                // （armQuickAnswerFinalizeTimer内部で、既存timerがあれば安全に
-                // cancelしてから取り直す。ユーザー指示5）。それ以外のtypeでは
-                // 内部で何もせずに戻る。quickAnswerTurnNormalCompletionSeen
-                // （＝「サーバーが自律的にこのターンを処理した」フラグ）は、
-                // もうここでは立てない。committed/item_created/response.created/
-                // function_callの各イベントでのみ立てる（下記参照）。
-                armQuickAnswerFinalizeTimer(callGeneration);
+                // PHASE O5.10（SHORT_ANSWER — SEMANTIC VAD PRIMARY TURN
+                // COMPLETION。O5.9.2 Auditの結論を採用）: O5.8では、ここで
+                // Finalization Grace（1.2秒）をarmし、猶予後にmanual
+                // input_audio_buffer.commitを送る設計にしていた
+                // （armQuickAnswerFinalizeTimer参照）。しかしO5.9.2の監査で、
+                // (a) VISIT_REASON等の他の自由回答は手動commitを一切経由せず
+                // semantic_vadの自然完了だけで正常に進んでいること、
+                // (b) OpenAI公式ドキュメント・Developer Communityの実例でも、
+                // server-side VAD（semantic_vad）有効時はサーバーが自動で
+                // commit・response生成まで行う設計であり、手動commitは
+                // 不要・むしろ競合の原因になり得ると確認されたこと、
+                // (c) 実機で「1回目は進まず同じ回答を2回言うと進む」現象が
+                // 「1回目はmanual commitがsemantic_vadの自然完了とrace/干渉し、
+                // 2回目はquickAnswerCommitSentGenerationガードによりmanual
+                // commitが送られずsemantic_vad単体で成功する」という構造と
+                // 整合すること、の3点が判明した。そのためSHORT_ANSWERの通常
+                // 経路からは、このFinalization Grace timerを起動する呼び出し
+                // 自体を外し、speech_stopped後は他の自由回答（VISIT_REASON等）
+                // と同じく、semantic_vadの自然なターン完了
+                // （committed/item_created/response.created/function_call）を
+                // primaryの経路として待つ。armQuickAnswerFinalizeTimer()/
+                // maybeSendQuickAnswerCommit()の関数自体は削除せず、将来的に
+                // 本当に異常なケース（サーバーが長時間何も反応しない場合等）の
+                // fallback候補として残す（現時点ではどこからも呼ばれない
+                // dead/unused状態。下記の関数定義のコメントを参照）。
+                // quickAnswerTurnNormalCompletionSeen（＝「サーバーが自律的に
+                // このターンを処理した」フラグ）は、既存どおりcommitted/
+                // item_created/response.created/function_callの各イベントで
+                // 立てる（下記参照。この検知ロジック自体は無変更）。
                 // PHASE6相関用（PIIなし）: 対応するspeech_startedからの経過時間
                 // （＝サーバーがユーザー発話と判定していた継続時間）を記録する。
                 // 短時間の相槌（「はい」「違います」等）も本物の短い発話として

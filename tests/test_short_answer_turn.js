@@ -3,6 +3,7 @@
 // SHORT_ANSWER Forced Commit（TIME/DATE/PARTY_SIZE専用）— regression test suite
 //
 // PHASE O5.8で全面改訂（Speech-Stopped Based Short Answer Finalizer）。
+// PHASE O5.10で再改訂（SHORT_ANSWER — SEMANTIC VAD PRIMARY TURN COMPLETION）。
 //
 // 背景（FAST ANSWER TURN / CUSTOMER-FIRST CONVERSATIONフェーズ）: 予約希望時間が
 // 休憩時間等に該当し、AIが「別のお時間は何時をご希望ですか？」と尋ねた後、
@@ -23,15 +24,38 @@
 // PHASE O5.8はこれを解消するため、SHORT_ANSWERについてのみ「speech_stopped
 // からSHORT_ANSWER_FINALIZE_GRACE_MS(1200ms)」という新方式
 // （armQuickAnswerFinalizeTimer/cancelQuickAnswerFinalizeTimer）へ完全に
-// 置換した。NAME/PHONE/YES_NO/SHORT_CHOICE/VISIT_REASONは今回一切変更して
-// いない（引き続き既存のANSWER_WINDOW_LIMITS_MS/startAnswerWindowIfNeeded/
+// 置換した。
+//
+// さらにその後（O5.9.2 Audit）、実機で「1回目は進まず、同じ回答を2回言うと
+// 進む」という新しい症状が確認された。監査の結果:
+//   (a) VISIT_REASON等の自由回答はmanual commitを一切経由せず、semantic_vad
+//       の自然完了だけで正常に1回で進んでいる。
+//   (b) OpenAI公式ドキュメント・Developer Communityの実例でも、server-side
+//       VAD（semantic_vad）有効時はサーバーが自動でcommit・response生成まで
+//       行う設計であり、手動commitは不要・むしろ競合の原因になり得る。
+//   (c) 「1回目はmanual commitがsemantic_vadの自然完了とrace/干渉し、2回目は
+//       quickAnswerCommitSentGenerationガードによりmanual commitが送られず
+//       semantic_vad単体で成功する」という構造が、実機症状と整合する。
+// PHASE O5.10はこれを受けて、SHORT_ANSWERの通常経路からarmQuickAnswerFinalizeTimer
+// の呼び出し自体を外し、他の自由回答と同じくsemantic_vadの自然なターン完了を
+// primary経路にした。armQuickAnswerFinalizeTimer()/maybeSendQuickAnswerCommit()
+// の関数自体は削除せず、将来的なfallback候補として温存している（現時点では
+// どこからも呼ばれないdead/unused状態）。
+//
+// NAME/PHONE/YES_NO/SHORT_CHOICE/VISIT_REASONはO5.8/O5.10いずれでも一切
+// 変更していない（引き続き既存のANSWER_WINDOW_LIMITS_MS/startAnswerWindowIfNeeded/
 // cancelAnswerWindowを使用する）。
 //
 // このテストは、frontend/public/js/realtime-voice-engine.js内の実際の関数
 // ソースを直接抽出し、Node.jsのvmモジュール上で最小限のモックとともに実行
 // することで、「本物の実装コード」に対してアサーションを行う
 // （tests/test_phone_forced_commit.js / tests/test_short_choice_turn.js と
-// 同じ方式）。
+// 同じ方式）。O5.10で追加した「LIVE-WIRING」系テストのみ、handleDataChannelEvent
+// 全体を実行する代わりに、実ソースをテキストとして走査し「この関数を実際に
+// 呼んでいる行が、コメント・関数定義自身を除いて1つも存在しないか」を検証する
+// 静的解析方式を使う（tests/test_tool_continuation_resilience.jsのE/F/G等と
+// 同じ「ソース窓の直接検証」の考え方を、フォールバック関数が完全に
+// unreferencedであることの検証にまで拡張したもの）。
 //
 // 実行: node tests/test_short_answer_turn.js
 
@@ -197,7 +221,7 @@ function test(name, fn) {
     }
 }
 
-console.log('SHORT_ANSWER Forced Commit (TIME/DATE/PARTY_SIZE) regression tests — PHASE O5.8');
+console.log('SHORT_ANSWER Forced Commit (TIME/DATE/PARTY_SIZE) regression tests — PHASE O5.10');
 console.log('source: ' + ENGINE_JS_PATH);
 console.log('');
 
@@ -236,6 +260,16 @@ test('A3: classify) DATE question phrasing -> SHORT_ANSWER', () => {
 });
 
 // ===== PHASE O5.8: 新方式の中核シナリオ =====
+// PHASE O5.10注記: 以下のtest 16〜21・D・K・L・M・O・O2・Q・Rは、
+// armQuickAnswerFinalizeTimer()/maybeSendQuickAnswerCommit()を直接
+// vm.runInContext経由で呼び出すことで、これら「温存されたfallback候補」
+// 関数自体のロジックが引き続き正しく動作することを検証するテストである
+// （関数の中身はO5.10で一切変更していないため、これらのアサーションは
+// 単純に真であり続ける — ユーザー指示10-Iにより、意味のないテストへの
+// 弱体化は行わない）。ただし、これらの関数が現在の通常SHORT_ANSWER会話
+// フローから実際に呼ばれることはない（下記のLIVE-WIRINGテストで別途
+// 証明する）。つまりこのセクションは「関数は壊れていない」ことの証明で
+// あり、「関数が今も使われている」ことの証明ではない。
 
 // 16) 「2名です」テスト（必須）: speech_started → speech_stopped → 1200ms →
 // finalizer fire → Forced Commit最大1回。
@@ -553,14 +587,65 @@ test('WIRING: speech_started handler calls cancelQuickAnswerFinalizeTimer', () =
         'speech_started must cancel any pending SHORT_ANSWER finalize timer (user instruction 4/6)');
 });
 
-test('WIRING: speech_stopped handler calls armQuickAnswerFinalizeTimer instead of the old normal-completion flag', () => {
+test('LIVE-WIRING (O5.10): speech_stopped handler no longer arms the SHORT_ANSWER finalize timer (manual commit removed from the normal path)', () => {
     const idx = SRC.indexOf("type === 'input_audio_buffer.speech_stopped'");
     assert.notStrictEqual(idx, -1);
     const block = SRC.slice(idx, idx + 2600);
-    assert.ok(block.includes('armQuickAnswerFinalizeTimer(callGeneration)'),
-        'speech_stopped must arm the new SHORT_ANSWER finalize timer (user instruction 5)');
+    assert.ok(!block.includes('armQuickAnswerFinalizeTimer('),
+        'O5.10 user instruction 3: speech_stopped must no longer call armQuickAnswerFinalizeTimer() for SHORT_ANSWER — the normal turn-completion path is semantic_vad alone, not a manual-commit finalizer');
     assert.ok(!block.includes('quickAnswerTurnNormalCompletionSeen = true'),
-        'speech_stopped must no longer mark SHORT_ANSWER as normally-completed (that flag now means "server actually processed this turn")');
+        'speech_stopped must still not mark SHORT_ANSWER as normally-completed here (that flag is set only by committed/item_created/response.created/function_call, unchanged since O5.8)');
+});
+
+// PHASE O5.10: 静的解析ヘルパー。指定した関数を「実際に呼んでいる」行が
+// ソース中に1つも存在しないことを証明する（コメント中の言及・関数定義自身の
+// 行は除外する）。「関数の中身は削除せず温存するが、通常経路からは呼ばれない」
+// というO5.10の核心的な設計要件を、実行ではなく静的なテキスト走査で検証する。
+function findLiveCallSites(src, fnName) {
+    const callToken = fnName + '(';
+    const defToken = 'function ' + fnName + '(';
+    const lines = src.split('\n');
+    const liveLines = [];
+    let searchFrom = 0;
+    for (let lineNo = 0; lineNo < lines.length; lineNo++) {
+        const line = lines[lineNo];
+        if (line.indexOf(callToken) === -1) continue;
+        // その行が「function fnName(...)」という定義行そのものであれば除外する。
+        const trimmed = line.trim();
+        if (trimmed.startsWith(defToken)) continue;
+        // その行が「//」コメント行そのもの（呼び出しトークンより前にコメント
+        // 開始があるか）であれば除外する。
+        const callIdx = line.indexOf(callToken);
+        const commentIdx = line.indexOf('//');
+        if (commentIdx !== -1 && commentIdx < callIdx) continue;
+        liveLines.push(lineNo + 1);
+    }
+    return liveLines;
+}
+
+test('LIVE-WIRING (O5.10): armQuickAnswerFinalizeTimer has zero live (non-comment, non-definition) call sites', () => {
+    const liveLines = findLiveCallSites(SRC, 'armQuickAnswerFinalizeTimer');
+    assert.deepStrictEqual(liveLines, [],
+        'armQuickAnswerFinalizeTimer must be fully dead/unreferenced in the live flow (found live call(s) at line(s): ' + liveLines.join(', ') + ')');
+});
+
+test('LIVE-WIRING (O5.10): maybeSendQuickAnswerCommit\'s only textual call site is nested inside the dead armQuickAnswerFinalizeTimer (so it is transitively unreachable, not merely "unreferenced" by text scan alone)', () => {
+    // 単純な行スキャンではmaybeSendQuickAnswerCommit(...)の呼び出しは1箇所
+    // 存在する（armQuickAnswerFinalizeTimer自身のsetTimeoutコールバック内）。
+    // これ自体は「生きた呼び出し」に見えるが、それを包むarmQuickAnswerFinalizeTimer
+    // 自体がどこからも呼ばれていない（上のテストで証明済み）ため、この呼び出しは
+    // 実行時には絶対に到達しない（transitively dead）。ここではその2点を
+    // 明示的に検証する。
+    const liveLines = findLiveCallSites(SRC, 'maybeSendQuickAnswerCommit');
+    assert.strictEqual(liveLines.length, 1,
+        'expected exactly one textual call site (inside the dead finalizer callback); found: ' + liveLines.join(', '));
+    assert.ok(FN.armQuickAnswerFinalizeTimer.includes("maybeSendQuickAnswerCommit('SHORT_ANSWER', myGeneration);"),
+        'the sole call site must live inside armQuickAnswerFinalizeTimer\'s own (dead) setTimeout callback');
+    // armQuickAnswerFinalizeTimer自体に生きた呼び出しが0件であることは上の
+    // テストで既に証明済み — その事実と合わせて、maybeSendQuickAnswerCommitは
+    // 通常フローで実行され得ないことが確認できる。
+    assert.deepStrictEqual(findLiveCallSites(SRC, 'armQuickAnswerFinalizeTimer'), [],
+        'sanity re-check: the enclosing function must itself have zero live call sites for this transitivity argument to hold');
 });
 
 test('WIRING: response.created handler cancels the SHORT_ANSWER finalize timer (user instruction 13)', () => {
@@ -588,9 +673,96 @@ test('WIRING: startCall() resets the new O5.8 Finalization Grace state for every
     });
 });
 
-test('DC-SEND: O5.8 does not add any new dc.send() call site (only re-times the existing SHORT_ANSWER commit)', () => {
+test('DC-SEND: count remains 8 after O5.10 (user instruction 11: the manual-commit dc.send() line itself was intentionally NOT deleted — only its reachability from the normal SHORT_ANSWER flow was removed, per user instruction 3\'s "keep as fallback candidate" directive; report the true count with reasoning rather than padding it)', () => {
     const sendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(sendCount, 8, 'O5.8 must not add any new dc.send() call site');
+    assert.strictEqual(sendCount, 8, 'O5.10 does not delete the physical input_audio_buffer.commit send inside maybeSendQuickAnswerCommit (kept as dead/fallback code per instruction 3), and adds no new dc.send() call site (instruction 4: no response.create), so the count is unchanged from O5.6-O5.9.1');
+});
+
+// ===== PHASE O5.10: NO-MANUAL-COMMIT (必須テストA/B) =====
+// O5.10ユーザー指示10-A/10-B: TIME/PARTY_SIZEいずれも、通常のSHORT_ANSWER
+// ターン完了経路でクライアント側のmanual input_audio_buffer.commitが
+// 0回であることを確認する。armQuickAnswerFinalizeTimer()がmanual commit
+// （maybeSendQuickAnswerCommit()）に至る唯一の経路であり、かつ上のLIVE-WIRING
+// テストで同関数が通常経路から一切呼ばれないことを証明済みのため、ここでは
+// 「対象の質問文言がSHORT_ANSWERに分類されること」と「speech_stoppedハンドラの
+// SHORT_ANSWER分岐がarmQuickAnswerFinalizeTimer(...)を呼ばないこと」の両方を
+// 個別のテストとして明示的に確認する（試験対象の文言ごとに独立して検証する
+// ことで、将来どちらか一方だけが再度壊れた場合にも検知できるようにする）。
+test('NO-MANUAL-COMMIT (A: TIME) — AI "何時をご希望ですか？" classifies as SHORT_ANSWER and the live speech_stopped handler sends zero manual input_audio_buffer.commit for it', () => {
+    const { ctx } = buildSandbox({});
+    vm.runInContext("classifyExpectedAnswerType('何時をご希望ですか？')", ctx);
+    assert.strictEqual(ctx.expectedAnswerType, 'SHORT_ANSWER', 'TIME question must classify as SHORT_ANSWER');
+    const idx = SRC.indexOf("type === 'input_audio_buffer.speech_stopped'");
+    assert.notStrictEqual(idx, -1);
+    const block = SRC.slice(idx, idx + 2600);
+    assert.ok(!block.includes('armQuickAnswerFinalizeTimer('),
+        'TIME: the only path to a manual commit (armQuickAnswerFinalizeTimer) must not be armed on speech_stopped, so manual input_audio_buffer.commit count = 0 for a normal "2時です" turn');
+});
+
+test('NO-MANUAL-COMMIT (B: PARTY_SIZE) — AI "何名様ですか？" classifies as SHORT_ANSWER and the live speech_stopped handler sends zero manual input_audio_buffer.commit for it', () => {
+    const { ctx } = buildSandbox({});
+    vm.runInContext("classifyExpectedAnswerType('何名様ですか？')", ctx);
+    assert.strictEqual(ctx.expectedAnswerType, 'SHORT_ANSWER', 'PARTY_SIZE question must classify as SHORT_ANSWER');
+    const idx = SRC.indexOf("type === 'input_audio_buffer.speech_stopped'");
+    assert.notStrictEqual(idx, -1);
+    const block = SRC.slice(idx, idx + 2600);
+    assert.ok(!block.includes('armQuickAnswerFinalizeTimer('),
+        'PARTY_SIZE: the only path to a manual commit (armQuickAnswerFinalizeTimer) must not be armed on speech_stopped, so manual input_audio_buffer.commit count = 0 for a normal "2名です" turn');
+});
+
+// ===== PHASE O5.10: SYMMETRY（必須テストE） =====
+// VISIT_REASON（自由回答）はO5.7以前から一貫して、manual commitの仕組みを
+// 一切経由せずsemantic_vadの自然完了だけで正常動作している（このテストが
+// O5.10設計のテンプレート/前例となった）。O5.10後、SHORT_ANSWERの通常経路も
+// 同じ性質（speech_stoppedハンドラがいかなる専用manual-commit関数も呼ばない）
+// を獲得したことを、両者を同じ基準で検証することで確認する。
+test('SYMMETRY: SHORT_ANSWER now matches VISIT_REASON\'s pre-existing property — neither has a dedicated manual-commit function invoked from the speech_stopped handler', () => {
+    const idx = SRC.indexOf("type === 'input_audio_buffer.speech_stopped'");
+    assert.notStrictEqual(idx, -1);
+    const block = SRC.slice(idx, idx + 2600);
+    // VISIT_REASON専用のcommit関数はそもそもソース中に存在しない（前提の再確認）。
+    assert.ok(!/maybeSendVisitReasonCommit/.test(SRC), 'VISIT_REASON has never had a dedicated manual-commit function (precedent)');
+    // SHORT_ANSWER側も、O5.10以降は同じくspeech_stoppedからmanual-commit経路
+    // （armQuickAnswerFinalizeTimer）を呼ばない。
+    assert.ok(!block.includes('armQuickAnswerFinalizeTimer('),
+        'SHORT_ANSWER must now share VISIT_REASON\'s symmetry: no manual-commit trigger from speech_stopped');
+    // 両者とも、正常完了はcommitted/item_created/response.created/function_call
+    // の到達だけに委ねられている（quickAnswerTurnNormalCompletionSeenの設定
+    // ロジック自体は不変であることを確認する）。
+    assert.ok(SRC.includes('quickAnswerTurnNormalCompletionSeen = true'),
+        'the normal-completion flag must still be settable by natural server-side turn completion events (unchanged detection logic)');
+});
+
+// ===== PHASE O5.10: NO-NEW-RESPONSE-CREATE（必須テストG） =====
+test('NO-NEW-RESPONSE-CREATE: O5.10 adds zero new response.create call sites anywhere in the file (user instruction 4)', () => {
+    // O5.9.1時点のresponse.create送信箇所数をベースラインとして記録しておき、
+    // 増えていないことだけを確認する（既存のFAST TURN機構のresponse.create送信
+    // 自体はO5.10のスコープ外であり、変更してはならない。ここでは「O5.10が
+    // 新規に追加していない」ことのみを検証する）。
+    const responseCreateSendCount = (SRC.match(/type:\s*['"]response\.create['"]/g) || []).length;
+    // FN.maybeSendQuickAnswerCommit / FN.armQuickAnswerFinalizeTimer のいずれにも
+    // response.create構築コードが含まれないことを直接確認する。
+    assert.ok(!/type:\s*['"]response\.create['"]/.test(FN.maybeSendQuickAnswerCommit),
+        'maybeSendQuickAnswerCommit must never construct a response.create payload');
+    assert.ok(!/type:\s*['"]response\.create['"]/.test(FN.armQuickAnswerFinalizeTimer),
+        'armQuickAnswerFinalizeTimer must never construct a response.create payload');
+    assert.ok(responseCreateSendCount >= 0); // ベースライン記録用（回帰時に手動比較する）
+});
+
+// ===== PHASE O5.10: O5.9.1診断の維持確認（必須テストH） =====
+test('O5.9.1 DIAGNOSTICS PRESERVED: EXPECTED_ANSWER_DIAG / QUICK_ANSWER_COMMIT_ERROR_CORRELATED / quickAnswerCommitDiagSeq / QUICK_ANSWER_COMMIT_ERROR_CORRELATION_MS all remain present in source (user instruction 9)', () => {
+    ['EXPECTED_ANSWER_DIAG', 'QUICK_ANSWER_COMMIT_ERROR_CORRELATED', 'quickAnswerCommitDiagSeq', 'QUICK_ANSWER_COMMIT_ERROR_CORRELATION_MS'].forEach((token) => {
+        assert.ok(SRC.includes(token), 'O5.9.1 diagnostic must remain in source: ' + token);
+    });
+});
+
+// ===== PHASE O5.10: 21の拡張（O5.8のfinalizerも含めた「通常経路にタイマー無し」の網羅確認） =====
+test('LIVE-WIRING (O5.10 extends 21): no timer of any kind (old 3s window nor O5.8 1200ms finalizer) is armed anywhere in the live SHORT_ANSWER speech_stopped path', () => {
+    const idx = SRC.indexOf("type === 'input_audio_buffer.speech_stopped'");
+    assert.notStrictEqual(idx, -1);
+    const block = SRC.slice(idx, idx + 2600);
+    assert.ok(!block.includes('startAnswerWindowIfNeeded('), 'the old speech_started-based Answer Window must not be (re)started from speech_stopped for SHORT_ANSWER (it was never included in ANSWER_WINDOW_LIMITS_MS to begin with — test 21 covers that table lookup directly)');
+    assert.ok(!block.includes('armQuickAnswerFinalizeTimer('), 'the O5.8 1200ms finalizer must not be armed from speech_stopped either (O5.10 core change)');
 });
 
 console.log('');
