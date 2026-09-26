@@ -866,6 +866,15 @@
         const AI_SPEAKING_PROTECTION_MAX_MS = 20000;
         let aiSpeakingProtected = false;
         let aiSpeakingProtectionSafetyTimerId = null;
+        // FAST TURN HOTFIX（FIRST ANSWER MUST COUNT・今回追加）:
+        // 「人数・時間を2回言わないと反応しない」実機不具合の監査用。
+        // AIの発話保護（マイクミュート）が実際にいつ解除されたか
+        // （＝ユーザーが物理的に発話を送信できるようになった時刻）を
+        // 記録しておき、次にspeech_startedが来た瞬間との差分を
+        // 実機ログから直接読めるようにする（挙動は一切変更しない、
+        // 純粋な観測専用の追加）。値はperformance.now()のみで、
+        // 音声内容・PIIは一切含まない。
+        let lastAiSpeakingEndAt = null;
 
         function engageAiSpeakingProtection(reason) {
             if (aiSpeakingProtected) return; // 既に保護中なら何もしない（多重engage防止）
@@ -903,6 +912,10 @@
                 try { track.enabled = true; } catch (e) {}
             }
             aiSpeakingProtected = false;
+            // FAST TURN HOTFIX（FIRST ANSWER MUST COUNT・今回追加）: マイクが
+            // 実際に再度使用可能になった時刻を記録する（次のspeech_startedとの
+            // 差分計算専用。観測のみ）。
+            lastAiSpeakingEndAt = performance.now();
             pushTimelineEvent('AI_SPEAKING_END (reason=' + reason + ')');
         }
 
@@ -4431,6 +4444,23 @@
                 logEvent('speech_started時点のマイク入力レベル: ' + (lastMicLevelPct === null ? '(未取得)' : lastMicLevelPct + '%')
                     + ' / AI音声出力中(aiAudioOutputActive)=' + aiAudioOutputActive);
                 pushTimelineEvent('USER_SPEECH_STARTED (AI音声出力中=' + aiAudioOutputActive + ', mic=' + (lastMicLevelPct === null ? '?' : lastMicLevelPct + '%') + ')');
+                // FAST TURN HOTFIX（FIRST ANSWER MUST COUNT・今回追加）:
+                // 「人数・時間を2回言わないと反応しない」実機不具合の監査用。
+                // このspeech_startedが発生した瞬間、(1)AI SPEAKING PROTECTIONが
+                // まだ保護中（aiSpeakingProtected===true）のままではないか、
+                // (2)直前にマイクが再度使用可能になってから何ms後にこの発話が
+                // 検知されたか、の2点を毎回・全てのexpectedAnswerType（NAME/
+                // PHONE/TIME/PARTY_SIZE等すべて）について記録する。挙動は
+                // 一切変更しない、純粋な観測専用ログ（PIIなし）。
+                // もしこのログでaiSpeakingProtected=trueの状態でspeech_startedが
+                // 記録された場合、マイクミュートが仕様どおりに機能していない
+                // （＝雑音対策自体に別の問題がある）ことの直接証拠になる。
+                // 一方、aiSpeakingProtected=falseかつmsSinceMicReadyが非常に
+                // 小さい場合は、ミュート解除直後の発話の冒頭が失われている
+                // 可能性を疑う材料になる（ただし断定はしない）。
+                pushTimelineEvent('USER_SPEECH_STARTED_MIC_STATE (expectedAnswerType=' + expectedAnswerType
+                    + ', aiSpeakingProtected=' + aiSpeakingProtected
+                    + ', msSinceMicReady=' + (lastAiSpeakingEndAt === null ? 'null' : Math.round(performance.now() - lastAiSpeakingEndAt)) + ')');
                 if (aiAudioOutputActive) {
                     // 無言化調査用（最優先A）: AIがまだ話している最中に
                     // speech_startedが発生した＝割り込み（バージイン）として
@@ -5242,6 +5272,9 @@
             // するため、ここでは状態変数のみリセットすれば十分）。
             if (aiSpeakingProtectionSafetyTimerId !== null) { clearTimeout(aiSpeakingProtectionSafetyTimerId); aiSpeakingProtectionSafetyTimerId = null; }
             aiSpeakingProtected = false;
+            // FAST TURN HOTFIX（FIRST ANSWER MUST COUNT・今回追加）: 前回通話の
+            // ミュート解除タイムスタンプを持ち越さない（診断専用値のリセット）。
+            lastAiSpeakingEndAt = null;
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。

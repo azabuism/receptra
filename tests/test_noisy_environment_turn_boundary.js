@@ -499,7 +499,10 @@ test('L: LIVE-WIRING) input_audio_buffer.speech_stopped ハンドラが armUserT
 test('L2: LIVE-WIRING) input_audio_buffer.speech_started ハンドラが cancelUserTurnFallbackTimer を呼び、かつUSER_TURN_STARTを記録している', () => {
     const idx = SRC.indexOf("} else if (type === 'input_audio_buffer.speech_started') {");
     assert.notStrictEqual(idx, -1);
-    const block = SRC.slice(idx, idx + 4600);
+    // FAST TURN HOTFIX（FIRST ANSWER MUST COUNT）フェーズで、speech_startedハンドラ
+    // 冒頭付近にUSER_SPEECH_STARTED_MIC_STATE診断ログ（実機DEBUG要件）が追加され、
+    // 実測オフセットが5249文字まで伸びたため、ウィンドウを4600→5800へ拡張。
+    const block = SRC.slice(idx, idx + 5800);
     assert.ok(block.includes("cancelUserTurnFallbackTimer('speech_started_again')"));
     assert.ok(block.includes("if (expectedAnswerType === 'NONE')") && block.includes("USER_TURN_START"));
 });

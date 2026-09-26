@@ -584,9 +584,11 @@ test('WIRING: speech_started handler calls cancelQuickAnswerFinalizeTimer', () =
     assert.notStrictEqual(idx, -1);
     // FAST TURN (NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY) フェーズで
     // speech_startedハンドラ冒頭付近にBARGE_IN_ACCEPTED診断ログ（実機DEBUG
-    // 要件）が追加され、実測オフセットが3702文字まで伸びたため、
-    // ウィンドウを3200→4200へ拡張。
-    const block = SRC.slice(idx, idx + 4200);
+    // 要件）が追加され、実測オフセットが3702文字まで伸びた。さらにFAST TURN
+    // HOTFIX（FIRST ANSWER MUST COUNT）フェーズでUSER_SPEECH_STARTED_MIC_STATE
+    // 診断ログが追加され、実測オフセットが4818文字まで伸びたため、
+    // ウィンドウを4200→5800へ再拡張。
+    const block = SRC.slice(idx, idx + 5800);
     assert.ok(block.includes("cancelQuickAnswerFinalizeTimer('speech_started_again')"),
         'speech_started must cancel any pending SHORT_ANSWER finalize timer (user instruction 4/6)');
 });
