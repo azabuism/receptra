@@ -59,7 +59,7 @@ from datetime import datetime
 import uuid
 import enum
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Index, Text, Integer
+from sqlalchemy import Column, String, DateTime, ForeignKey, Index, Text, Integer, Boolean
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -210,4 +210,81 @@ class PreOrderItem(Base):
         return (
             f"<PreOrderItem(id={self.id}, pre_order_id={self.pre_order_id}, "
             f"product_name={self.product_name}, quantity={self.quantity})>"
+        )
+
+
+# ============================================================
+# PHASE O4: Pre-Order Owner Settings & Product Rules
+# ============================================================
+
+class PreOrderProduct(Base):
+    """事前注文の商品マスター（PHASE O4で新規追加）。
+
+    ★設計判断（Section1/2の監査結果）: 既存MenuItem（app/models/shop.py）は
+    「閲覧用メニュー」であり、数量・注文概念を一切持たない
+    （price以外はcategory/description/image/is_available/display_orderのみ）。
+    数量上限・準備時間という注文受付ルールをMenuItemへ後付けすると、
+    「メニューに表示するかどうか」と「事前注文をいくつまで自動受付するか」
+    という別々の関心事が1テーブルに混在してしまう。よってMenuItemを流用せず、
+    事前注文専用の新規テーブルとしてPreOrderProductを追加する
+    （Section2の判断: 汎用化は安全ではないため専用モデルを作る）。
+
+    ★PreOrderItemとの関係（Section10/11）: PreOrderItemは本テーブルへのFKを
+    持たない。Public Create APIのitemはこれまで通りproduct_name（文字列）で
+    届き、create_public_pre_order()が受取時にshopの有効なPreOrderProductと
+    「trim済み完全一致のみ」で照合する（曖昧な部分一致・あいまい検索は行わない。
+    Section10）。一致しない場合は「未知の商品」として扱い、reject せず
+    owner_confirmation_requiredにする（Section31）。この設計により、
+    商品削除・商品名変更は過去のPreOrderItem行（snapshot）に一切影響しない
+    （Section22の削除安全性は、そもそもFK参照が無いことで構造的に満たされる）。
+
+    ★name一意性: 同一shop内で同名商品が複数存在すると、Public Create APIからの
+    商品名照合が曖昧になり得る（例: 同名で条件の異なる2商品があると、どちらの
+    ルールを適用すべきか一意に決まらない）。Section10の「曖昧な商品名matching
+    禁止」を安全側で徹底するため、(shop_id, name)にDB一意インデックスを設ける。
+
+    ★auto_confirm_max_quantity / minimum_lead_time_minutes がNULLの意味
+    （Section6/7）: 「無制限」ではなく「自動確定しない」（安全側のデフォルト）。
+    determine_pre_order_confirmation()はどちらかがNULLの商品を含む注文を
+    必ずowner_confirmation_requiredにする。
+    """
+
+    __tablename__ = "pre_order_products"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    shop_id = Column(String(36), ForeignKey("shops.id"), nullable=False, index=True)
+
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    # 価格（円）。MenuItem.price / PreOrderItem.unit_priceと同じInteger・
+    # nullable（Section4）。floatは使わない。
+    price = Column(Integer, nullable=True)
+
+    # MenuItem.is_available / ShopTable.is_activeと同じBoolean規約に合わせる
+    # （Service.is_activeのString("active"/"inactive")規約は採用しない。
+    # 本テーブルはMenuItemに構造が近いため、より一般的な既存パターンを踏襲）。
+    is_active = Column(Boolean, default=True, nullable=False)
+    display_order = Column(Integer, default=0, nullable=False)
+
+    # Section5/6: 自動確定できる最大数量。NULL = 自動確定しない（安全側）。
+    auto_confirm_max_quantity = Column(Integer, nullable=True)
+    # Section7: 受取時刻の何分前までの注文なら自動確定してよいか。
+    # NULL = 自動確定しない（安全側）。
+    minimum_lead_time_minutes = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    shop = relationship("Shop", back_populates="pre_order_products")
+
+    __table_args__ = (
+        Index("ix_pre_order_products_shop", "shop_id"),
+        Index("ix_pre_order_products_shop_active", "shop_id", "is_active"),
+        Index("ux_pre_order_products_shop_name", "shop_id", "name", unique=True),
+    )
+
+    def __repr__(self):
+        return (
+            f"<PreOrderProduct(id={self.id}, shop_id={self.shop_id}, "
+            f"name={self.name}, is_active={self.is_active})>"
         )

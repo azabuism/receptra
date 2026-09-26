@@ -10,6 +10,11 @@ PHASE O3: create_public_pre_order() — Public PreOrder Create APIの共通入�
 validate → determine confirmation requirement → create → items → commit →
 notification、という一本の流れを1箇所に集約する（router内には書かない）。
 
+PHASE O4: determine_pre_order_confirmation()をO3の「常にowner_confirmation_
+required」から、店舗オーナーが設定したPreOrderProduct（商品ごとの自動確定
+上限数量・最低リードタイム）に基づく実ルールへ拡張。判断はこのモジュール
+だけに集約し、routerやAI側では一切行わない（O3から続く安全原則）。
+
 ★重要: Reservation作成ロジック（create_reservation, app/routers/
 reservations.py）には一切触れない・呼び出さない。PreOrder作成は
 Reservationの作成を一切トリガーしない（Section2の「人数」と「商品数量」の
@@ -17,7 +22,7 @@ Reservationの作成を一切トリガーしない（Section2の「人数」と�
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -25,9 +30,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.pre_order import PreOrder, PreOrderItem, PreOrderConfirmationStatus, PreOrderStatus
+from app.models.pre_order import (
+    PreOrder, PreOrderItem, PreOrderConfirmationStatus, PreOrderStatus, PreOrderProduct,
+)
 from app.models.shop import Shop
-from app.schemas.pre_order import PreOrderCreate, PreOrderPublicCreateRequest
+from app.schemas.pre_order import PreOrderCreate, PreOrderPublicCreateRequest, PreOrderItemPublicCreate
 from app.services.owner_notifications import notify_pre_order_created
 
 
@@ -89,19 +96,71 @@ def _http_error(status_code: int, detail: str, reason_code: Optional[str] = None
     return exc
 
 
-def determine_pre_order_confirmation(data: PreOrderPublicCreateRequest) -> str:
-    """PreOrderが自動確定(confirmed)できるか、店舗確認が必要
-    (owner_confirmation_required)かを決定する、唯一の判定箇所（Section12）。
+async def _get_active_products_by_name(db: AsyncSession, shop_id: str) -> Dict[str, PreOrderProduct]:
+    """指定shopの有効なPreOrderProductを、name（trim済み・完全一致キー）で
+    引けるdictとして返す。PreOrderProduct.nameは(shop_id, name)の一意
+    インデックスを持つため、有効な商品同士でキーが衝突することはない
+    （Section10: 曖昧な商品名matchingを避けるための前提）。"""
+    result = await db.execute(
+        select(PreOrderProduct).filter(
+            PreOrderProduct.shop_id == shop_id, PreOrderProduct.is_active.is_(True)
+        )
+    )
+    return {p.name: p for p in result.scalars().all()}
 
-    ★★★ Section2/13/32の安全原則: Product master・quantity threshold・
-    lead time・inventory・shop settingsのいずれもまだ存在しない（O3時点）ため、
-    根拠のない自動確定は絶対に行わない。常にOWNER_CONFIRMATION_REQUIREDを
-    返す。将来O4以降でこれらの根拠が揃った場合にのみ、この関数の中身を
-    拡張してCONFIRMEDを返す分岐を追加すること。routerやAI側でこの判断を
-    行ってはならない（この関数を経由しない限りconfirmedにはならない、という
-    構造そのものが安全装置）。
+
+def _minutes_until(pickup_at: datetime, basis_now: datetime) -> float:
+    return (pickup_at - basis_now).total_seconds() / 60.0
+
+
+async def determine_pre_order_confirmation(
+    db: AsyncSession, shop_id: str, data: PreOrderPublicCreateRequest
+) -> str:
+    """PreOrderが自動確定(confirmed)できるか、店舗確認が必要
+    (owner_confirmation_required)かを決定する、唯一の判定箇所（Section12/23）。
+
+    ★★★ PHASE O4での拡張: 店舗オーナーが設定したPreOrderProductの
+    auto_confirm_max_quantity / minimum_lead_time_minutesを根拠として
+    初めて自動確定を許可する（Section8）。判定はPreOrder単位のAND条件で、
+    全itemsが以下をすべて満たした場合のみconfirmedを返す（Section9: 一部の
+    商品だけconfirmedという状態は作らない）:
+
+    1. 商品名がその店舗の有効な(is_active=True)PreOrderProductと完全一致する
+       （未知の商品はreject せず owner_confirmation_required。Section31）
+    2. quantity <= product.auto_confirm_max_quantity
+       （NULLは「自動確定しない」を意味する。Section6）
+    3. 受取までのリードタイム(分) >= product.minimum_lead_time_minutes
+       （NULLは「自動確定しない」を意味する。Section7）
+
+    一つでも満たさないitemがあれば、注文全体をowner_confirmation_requiredに
+    する（大口注文・条件外注文もrejectしない。Section20/28: 「大きな注文だから
+    断る」のではなく「店舗確認へ回す」）。
+
+    routerやAI側でこの判断を行ってはならない（この関数を経由しない限り
+    confirmedにはならない、という構造そのものが安全装置）。
     """
-    return PreOrderConfirmationStatus.OWNER_CONFIRMATION_REQUIRED.value
+    products = await _get_active_products_by_name(db, shop_id)
+    basis_now = _pickup_basis_now()
+    lead_minutes = _minutes_until(data.pickup_at, basis_now)
+
+    item: PreOrderItemPublicCreate
+    for item in data.items:
+        product = products.get(item.product_name)
+        if product is None:
+            # Section31: 商品マスターに無い商品名（AI/自由発話経由の未知商品を
+            # 含む）はrejectせず、常にowner_confirmation_requiredにする。
+            return PreOrderConfirmationStatus.OWNER_CONFIRMATION_REQUIRED.value
+        if product.auto_confirm_max_quantity is None:
+            return PreOrderConfirmationStatus.OWNER_CONFIRMATION_REQUIRED.value
+        if item.quantity > product.auto_confirm_max_quantity:
+            # Section20/28: 上限超過はrejectしない。店舗確認へ回すだけ。
+            return PreOrderConfirmationStatus.OWNER_CONFIRMATION_REQUIRED.value
+        if product.minimum_lead_time_minutes is None:
+            return PreOrderConfirmationStatus.OWNER_CONFIRMATION_REQUIRED.value
+        if lead_minutes < product.minimum_lead_time_minutes:
+            return PreOrderConfirmationStatus.OWNER_CONFIRMATION_REQUIRED.value
+
+    return PreOrderConfirmationStatus.CONFIRMED.value
 
 
 async def get_pre_order_by_idempotency_key(db: AsyncSession, idempotency_key: str) -> Optional[PreOrder]:
@@ -147,12 +206,20 @@ async def create_public_pre_order(db: AsyncSession, data: PreOrderPublicCreateRe
     if not shop or not shop.is_active:
         raise _http_error(404, "指定された店舗が見つかりません", reason_code="temporarily_unavailable")
 
-    # Section14: 過去日時は明確に拒否する。Section15の指示により、営業時間内
-    # かどうかはO3では検証しない（pickup hoursはO4で設計予定）。
+    # PHASE O4 Section12/13: 店舗単位のpre_order_enabled。グローバルfeature gate
+    # (settings.PRE_ORDER_PUBLIC_CREATE_ENABLED、router層でチェック済み)とは別軸で、
+    # 店舗オーナー自身が事前注文を受け付けていない場合は拒否する
+    # （create_reservation()のreservations_enabledチェックと同じ設計）。
+    if not shop.pre_order_enabled:
+        raise _http_error(400, "この店舗は現在事前注文を受け付けていません", reason_code="pre_order_not_enabled")
+
+    # Section14: 過去日時は明確に拒否する。Section15/25の指示により、営業時間内
+    # かどうか・専用pickup hoursはO4でも検証しない（次フェーズへ分離。監査結果は
+    # 最終報告のSection25参照）。
     if data.pickup_at <= _pickup_basis_now():
         raise _http_error(400, "過去の日時で受取予約をすることはできません", reason_code="time_in_past")
 
-    confirmation_status = determine_pre_order_confirmation(data)
+    confirmation_status = await determine_pre_order_confirmation(db, shop.id, data)
 
     pre_order = PreOrder(
         shop_id=data.shop_id,

@@ -50,6 +50,7 @@ from app.routers.outbound_calls import router as outbound_calls_router
 from app.routers.callback_requests import router as callback_requests_router
 from app.routers.owner_notifications import router as owner_notifications_router
 from app.routers.pre_orders import router as pre_orders_router, shop_pre_orders_router
+from app.routers.pre_order_products import router as pre_order_products_router
 from app.routers.line_integration import (
     line_connection_router,
     line_shop_settings_router,
@@ -417,6 +418,18 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ pre_orders.idempotency_key カラム/一意インデックスの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # PHASE O4: 店舗単位の事前注文受付フラグ。既存店舗で突然ONにならない
+            # よう、reservations_enabledとは異なりDEFAULT falseにする
+            # （app/models/shop.pyのpre_order_enabledコメント参照）。
+            # pre_order_productsテーブル自体は新規テーブルのため、この直前の
+            # Base.metadata.create_all()で既に作成済み（ALTER不要）。
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE shops ADD COLUMN IF NOT EXISTS pre_order_enabled BOOLEAN NOT NULL DEFAULT false"
+                ))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ shops.pre_order_enabled カラムの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 
@@ -525,6 +538,7 @@ def create_app() -> FastAPI:
     app.include_router(owner_notifications_router)
     app.include_router(pre_orders_router)
     app.include_router(shop_pre_orders_router)
+    app.include_router(pre_order_products_router)
     app.include_router(line_connection_router)
     app.include_router(line_shop_settings_router)
     app.include_router(line_webhook_router)

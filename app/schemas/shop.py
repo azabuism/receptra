@@ -196,6 +196,9 @@ class ShopUpdateRequest(BaseModel):
     staff_schedule_enabled: Optional[bool] = Field(
         None, description="Phase3E-2: スタッフシフト（週次シフト・日付調整）による予約可否判定をON/OFFする"
     )
+    pre_order_enabled: Optional[bool] = Field(
+        None, description="PHASE O4: 事前注文・店頭受取の受付をON/OFFする"
+    )
     ai_supported_languages: Optional[List[str]] = Field(
         None, description="AI受付が対応してよい言語コードのリスト（例：[\"ja\", \"en\"]）。日本語は除外しても常に有効"
     )
@@ -422,6 +425,7 @@ class ShopResponse(BaseModel):
     is_featured: bool
     reservations_enabled: bool = False
     staff_schedule_enabled: bool = False
+    pre_order_enabled: bool = False
     total_reservations: Optional[int]
     total_reviews: Optional[int]
     average_rating: Optional[float]
@@ -499,6 +503,7 @@ class ShopPublicResponse(BaseModel):
     is_featured: bool
     reservations_enabled: bool = False
     staff_schedule_enabled: bool = False
+    pre_order_enabled: bool = False
     total_reservations: Optional[int]
     total_reviews: Optional[int]
     average_rating: Optional[float]

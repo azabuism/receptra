@@ -90,7 +90,9 @@ from app.models.line_notification import (
 # Phase3系モデルと同様、alembicは使わずBase.metadata.create_all()で自動
 # 作成される。既存Reservation/Resource/ShopTable/CustomerMemory/
 # OwnerNotification/CallbackRequest/Outboundには一切変更を加えていない）。
-from app.models.pre_order import PreOrder, PreOrderItem, PreOrderStatus, PreOrderConfirmationStatus
+from app.models.pre_order import (
+    PreOrder, PreOrderItem, PreOrderStatus, PreOrderConfirmationStatus, PreOrderProduct,
+)
 
 __all__ = [
     # User/Tenant
@@ -180,4 +182,5 @@ __all__ = [
     "PreOrderItem",
     "PreOrderStatus",
     "PreOrderConfirmationStatus",
+    "PreOrderProduct",
 ]

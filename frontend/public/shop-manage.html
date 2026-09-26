@@ -461,11 +461,11 @@
         .image-slot-actions .btn-outline { font-size: 11px; padding: 5px 10px; }
         .closure-item { display: flex; justify-content: space-between; align-items: center;
             padding: 12px 14px; border: var(--border); border-radius: 10px; margin-bottom: 8px; gap: 12px; flex-wrap: wrap; }
-        .service-item, .staff-item, .resource-item { padding: 12px 14px; border: var(--border); border-radius: 10px; margin-bottom: 10px; }
-        .service-item .row-top, .staff-item .row-top, .resource-item .row-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
-        .service-item .name, .staff-item .name, .resource-item .name { font-weight: 700; }
-        .service-item .meta, .staff-item .meta, .resource-item .meta { color: #888; font-size: 13px; margin-top: 2px; }
-        .service-item .actions, .staff-item .actions, .resource-item .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+        .service-item, .staff-item, .resource-item, .preorder-product-item { padding: 12px 14px; border: var(--border); border-radius: 10px; margin-bottom: 10px; }
+        .service-item .row-top, .staff-item .row-top, .resource-item .row-top, .preorder-product-item .row-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .service-item .name, .staff-item .name, .resource-item .name, .preorder-product-item .name { font-weight: 700; }
+        .service-item .meta, .staff-item .meta, .resource-item .meta, .preorder-product-item .meta { color: #888; font-size: 13px; margin-top: 2px; }
+        .service-item .actions, .staff-item .actions, .resource-item .actions, .preorder-product-item .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
         .inactive-badge { font-size: 11px; background: #f3f4f6; color: #999; padding: 2px 8px; border-radius: 10px; font-weight: 700; }
         .staff-services-row { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
         .service-chip {
@@ -867,6 +867,81 @@
                 <div class="msg" id="menu-msg"></div>
             </form>
             <div id="menu-list" style="margin-top: 18px;"></div>
+        </div>
+
+        <!-- PHASE O4: 事前注文・店頭受取。飲食店に限らず、弁当・パン・ドーナツ・
+             ケーキ・花屋・クリーニング・レンタルなど幅広い業種で使えるため、
+             table-card/service-staff-card等と違いINDUSTRY_UI_CONFIGによる
+             業種別の表示/非表示は行わない（Section33/34）。ON/OFFはオーナー
+             自身の判断に委ねる。 -->
+        <div class="card" id="pre-order-card">
+            <h2>事前注文・店頭受取</h2>
+            <p class="hint">
+                お客様から「〇〇を△個、□時に取りに行きたい」という事前注文を受け付けられるようにします。
+                受け付ける商品や、自動で確定してよい条件はこの下で設定できます。
+            </p>
+
+            <div class="field checkbox-field" style="margin-bottom: 16px;">
+                <label>
+                    <input type="checkbox" id="pre-order-enabled-toggle">
+                    事前注文の受付をONにする
+                </label>
+                <p class="hint" style="margin-top: 4px;">
+                    <strong>ON:</strong> 下で設定した商品・条件（個数・受取までの時間）を満たす注文は自動的に「確定」になります。
+                    条件を満たさない注文や、下に登録していない商品の注文も<strong>お断りにはならず</strong>、店舗オーナーの確認待ち（要確認）として受け付けられます。
+                    <br>
+                    <strong>OFF（既定）:</strong> 事前注文は一切受け付けません。
+                </p>
+                <div class="msg" id="pre-order-enabled-msg"></div>
+            </div>
+
+            <div id="pre-order-products-section" style="display: none;">
+                <h3 class="subsection-title">受け付ける商品</h3>
+                <p class="hint">
+                    商品ごとに「何個までなら自動確定してよいか」「受取の何時間前までの注文が必要か」を設定できます。
+                    どちらも空欄のままにすると、その商品の注文は常に店舗オーナーの確認が必要になります（安全のための初期設定です）。
+                </p>
+                <form id="pre-order-product-form">
+                    <div class="row-2">
+                        <div class="field">
+                            <label for="pop-name">商品名 *</label>
+                            <input type="text" id="pop-name" placeholder="例：チョコドーナツ" required>
+                        </div>
+                        <div class="field">
+                            <label for="pop-price">価格（円・任意）</label>
+                            <input type="number" id="pop-price" min="0" placeholder="未設定にできます">
+                        </div>
+                    </div>
+                    <div class="row-2">
+                        <div class="field">
+                            <label for="pop-max-quantity">何個までなら自動で確定しますか？（任意）</label>
+                            <input type="number" id="pop-max-quantity" min="1" placeholder="例：12（空欄なら常に要確認）">
+                        </div>
+                        <div class="field">
+                            <label for="pop-lead-preset">受取の何時間前までに注文が必要ですか？（任意）</label>
+                            <select id="pop-lead-preset">
+                                <option value="">未設定（常に要確認）</option>
+                                <option value="30">30分前まで</option>
+                                <option value="60">1時間前まで</option>
+                                <option value="120">2時間前まで</option>
+                                <option value="180">3時間前まで</option>
+                                <option value="360">6時間前まで</option>
+                                <option value="1440">前日まで（24時間前）</option>
+                                <option value="2880">2日前まで（48時間前）</option>
+                                <option value="4320">3日前まで（72時間前）</option>
+                                <option value="custom">カスタム（時間を指定）</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="field" id="pop-lead-custom-field" style="display: none;">
+                        <label for="pop-lead-custom-hours">何時間前まで？（カスタム）</label>
+                        <input type="number" id="pop-lead-custom-hours" min="0" step="0.5" placeholder="例：5">
+                    </div>
+                    <button type="submit" class="btn" id="pre-order-product-add-btn">商品を追加</button>
+                    <div class="msg" id="pre-order-product-msg"></div>
+                </form>
+                <div id="pre-order-product-list" style="margin-top: 18px;"></div>
+            </div>
         </div>
 
         <div class="card" id="table-card">
@@ -2326,11 +2401,14 @@
                     document.getElementById('reservation-duration').value = shop.reservation_duration_minutes || 90;
                     renderHoursForm(shop.shop_hours || []);
                     document.getElementById('staff-schedule-enabled-toggle').checked = !!shop.staff_schedule_enabled;
+                    document.getElementById('pre-order-enabled-toggle').checked = !!shop.pre_order_enabled;
+                    updatePreOrderProductsVisibility(!!shop.pre_order_enabled);
                 }
             } catch (e) {}
             initImagePreviews();
             loadPhotos();
             loadMenu();
+            if (document.getElementById('pre-order-enabled-toggle').checked) loadPreOrderProducts();
             loadTables();
             loadResources();
             await loadServices();
@@ -3678,6 +3756,172 @@
                 showMsg(msg, typeof err.message === 'string' ? err.message : '設定の保存に失敗しました', 'error');
             } finally {
                 checkbox.disabled = false;
+            }
+        });
+
+        // ---------- PHASE O4: 事前注文・店頭受取 ----------
+        // staff-schedule-enabled-toggleと全く同じ設計（bulk PATCH /api/v1/shops/{id}、
+        // 失敗時はcheckbox状態をロールバック）。ON/OFFに応じて商品設定セクションの
+        // 表示/非表示を切り替える（Section14: OFF時は商品設定を隠す）。
+        function updatePreOrderProductsVisibility(enabled) {
+            const section = document.getElementById('pre-order-products-section');
+            if (section) section.style.display = enabled ? 'block' : 'none';
+        }
+
+        document.getElementById('pre-order-enabled-toggle').addEventListener('change', async function (event) {
+            const checkbox = event.target;
+            const msg = document.getElementById('pre-order-enabled-msg');
+            const nextValue = checkbox.checked;
+            checkbox.disabled = true;
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId), {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pre_order_enabled: nextValue })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '設定の保存に失敗しました');
+                }
+                showMsg(msg, nextValue ? '事前注文の受付を有効にしました' : '事前注文の受付を無効にしました', 'success');
+                updatePreOrderProductsVisibility(nextValue);
+                if (nextValue) loadPreOrderProducts();
+            } catch (err) {
+                checkbox.checked = !nextValue;
+                showMsg(msg, typeof err.message === 'string' ? err.message : '設定の保存に失敗しました', 'error');
+            } finally {
+                checkbox.disabled = false;
+            }
+        });
+
+        // カスタムのリードタイム入力は「カスタム」選択時のみ表示する
+        document.getElementById('pop-lead-preset').addEventListener('change', function () {
+            const customField = document.getElementById('pop-lead-custom-field');
+            customField.style.display = this.value === 'custom' ? 'block' : 'none';
+        });
+
+        function formatPreOrderProductMeta(p) {
+            const parts = [];
+            parts.push(p.price != null ? '¥' + Number(p.price).toLocaleString() : '価格未設定');
+            if (p.auto_confirm_max_quantity != null && p.minimum_lead_time_minutes != null) {
+                const hours = p.minimum_lead_time_minutes / 60;
+                const leadText = Number.isInteger(hours) ? hours + '時間前まで' : p.minimum_lead_time_minutes + '分前まで';
+                parts.push(p.auto_confirm_max_quantity + '個まで自動確定（' + leadText + 'の注文で）');
+            } else {
+                parts.push('常に店舗確認（自動確定の条件が未設定）');
+            }
+            return parts.join(' ・ ');
+        }
+
+        async function loadPreOrderProducts() {
+            const container = document.getElementById('pre-order-product-list');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/pre-order-products');
+                if (!res.ok) throw new Error('読み込みに失敗しました');
+                const items = await res.json();
+                if (!items.length) {
+                    container.innerHTML = '<div class="empty-state">まだ商品が登録されていません</div>';
+                    return;
+                }
+                items.sort(function (a, b) { return a.display_order - b.display_order; });
+                container.innerHTML = items.map(function (p) {
+                    return '<div class="preorder-product-item">' +
+                        '<div class="row-top">' +
+                            '<div>' +
+                                '<div class="name">' + escapeHtml(p.name) + (p.is_active ? '' : ' <span class="inactive-badge">無効</span>') + '</div>' +
+                                '<div class="meta">' + formatPreOrderProductMeta(p) + '</div>' +
+                            '</div>' +
+                            '<div class="actions">' +
+                                '<button type="button" class="btn-outline preorder-product-toggle-btn" data-id="' + p.id + '" data-active="' + p.is_active + '">' +
+                                    (p.is_active ? '無効化する' : '有効化する') + '</button>' +
+                                '<button type="button" class="btn-outline btn-danger preorder-product-delete-btn" data-id="' + p.id + '">削除</button>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>';
+                }).join('');
+                container.querySelectorAll('.preorder-product-toggle-btn').forEach(function (btn) {
+                    btn.addEventListener('click', function () {
+                        togglePreOrderProductActive(btn.dataset.id, btn.dataset.active !== 'true');
+                    });
+                });
+                container.querySelectorAll('.preorder-product-delete-btn').forEach(function (btn) {
+                    btn.addEventListener('click', function () { deletePreOrderProduct(btn.dataset.id); });
+                });
+            } catch (e) {
+                container.innerHTML = '<div class="empty-state">読み込みに失敗しました</div>';
+            }
+        }
+
+        async function togglePreOrderProductActive(productId, nextActive) {
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/pre-order-products/' + encodeURIComponent(productId), {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ is_active: nextActive })
+                });
+                if (!res.ok) throw new Error('変更に失敗しました');
+                loadPreOrderProducts();
+            } catch (e) {
+                showMsg(document.getElementById('pre-order-product-msg'), '変更を保存できませんでした。もう一度お試しください。', 'error');
+            }
+        }
+
+        async function deletePreOrderProduct(productId) {
+            if (!confirm('この商品を削除しますか？過去の注文履歴には影響しません。')) return;
+            const msg = document.getElementById('pre-order-product-msg');
+            try {
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/pre-order-products/' + encodeURIComponent(productId), { method: 'DELETE' });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '削除に失敗しました');
+                }
+                loadPreOrderProducts();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '削除に失敗しました', 'error');
+            }
+        }
+
+        document.getElementById('pre-order-product-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const btn = document.getElementById('pre-order-product-add-btn');
+            const msg = document.getElementById('pre-order-product-msg');
+            msg.style.display = 'none';
+            btn.disabled = true;
+            try {
+                const presetVal = document.getElementById('pop-lead-preset').value;
+                let leadMinutes = null;
+                if (presetVal === 'custom') {
+                    const customHours = document.getElementById('pop-lead-custom-hours').value;
+                    leadMinutes = customHours ? Math.round(parseFloat(customHours) * 60) : null;
+                } else if (presetVal) {
+                    leadMinutes = parseInt(presetVal, 10);
+                }
+                const priceVal = document.getElementById('pop-price').value;
+                const maxQtyVal = document.getElementById('pop-max-quantity').value;
+
+                const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/pre-order-products', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        shop_id: shopId,
+                        name: document.getElementById('pop-name').value.trim(),
+                        price: priceVal ? parseInt(priceVal, 10) : null,
+                        auto_confirm_max_quantity: maxQtyVal ? parseInt(maxQtyVal, 10) : null,
+                        minimum_lead_time_minutes: leadMinutes
+                    })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(function () { return {}; });
+                    throw new Error(errData.detail || '追加に失敗しました');
+                }
+                showMsg(msg, '商品を追加しました', 'success');
+                document.getElementById('pre-order-product-form').reset();
+                document.getElementById('pop-lead-custom-field').style.display = 'none';
+                loadPreOrderProducts();
+            } catch (err) {
+                showMsg(msg, typeof err.message === 'string' ? err.message : '追加に失敗しました', 'error');
+            } finally {
+                btn.disabled = false;
             }
         });
 

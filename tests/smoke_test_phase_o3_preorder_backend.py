@@ -116,6 +116,14 @@ async def main():
             assert r.status_code in (200, 201), f"create shop_a failed: {r.status_code} {r.text}"
             shop_a = r.json()["shop_id"]
 
+            # PHASE O4で追加されたShop.pre_order_enabled（デフォルトFalse）を有効化する。
+            # このテストファイルはO3時点のPublic Create API自体の挙動検証が目的であり、
+            # O4で新設された店舗単位ゲートは前提条件として満たしておく
+            # （reservations_enabledと同じ既存の慣習: 新しいgateを知らない古いテストが
+            # 検証したい対象と無関係な理由で失敗しないよう、setup側で明示的に有効化する）。
+            r = await client.patch(f"/api/v1/shops/{shop_a}", json={"pre_order_enabled": True}, headers=owner_a)
+            assert r.status_code == 200, f"pre_order_enabled有効化に失敗: {r.status_code} {r.text}"
+
             # ===== セットアップ: Tenant B（tenant分離テスト用の別店舗）=====
             r = await client.post("/api/v1/auth/register", json={
                 "email": "owner-o3-b@example.com", "password": "password123",

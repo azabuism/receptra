@@ -167,6 +167,13 @@ class Shop(Base):
     # 本フェーズではAvailability判定・管理画面UIのどこからも参照しない（列の追加のみ）。
     staff_schedule_enabled = Column(Boolean, default=False, nullable=False)
 
+    # PHASE O4: 事前注文・店頭受取をこの店舗で受け付けるかどうか（Section12）。
+    # PRE_ORDER_PUBLIC_CREATE_ENABLED（app/config.py、グローバルfeature gate）とは
+    # 別軸。両方が揃わないとPublic Create APIは実際には使えない（Section13）。
+    # 既存店舗で突然ONにならないよう、reservations_enabledと異なりTrueへの
+    # 移行ロジックは持たせず、常にFalseで開始する（既存店舗はデフォルトのまま）。
+    pre_order_enabled = Column(Boolean, default=False, nullable=False)
+
     # 統計情報
     total_reservations = Column(Integer, default=0)
     total_reviews = Column(Integer, default=0)
@@ -230,6 +237,12 @@ class Shop(Base):
     # Reservationとは完全に独立したテーブルであり、Reservationのrelationship
     # には一切変更を加えていない。
     pre_orders = relationship("PreOrder", back_populates="shop", cascade="all, delete-orphan")
+
+    # PHASE O4: 事前注文の商品マスター（PreOrderProduct）。pre_orders/menu_itemsと
+    # 同じ理由でcascade="all, delete-orphan"とする。PreOrderItemはこのテーブルへの
+    # FKを持たない（product_nameのsnapshotのみ。Section11）ため、商品削除は
+    # 過去のPreOrderItem行に一切影響しない。
+    pre_order_products = relationship("PreOrderProduct", back_populates="shop", cascade="all, delete-orphan")
 
     # インデックス
     __table_args__ = (
