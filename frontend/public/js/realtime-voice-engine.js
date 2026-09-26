@@ -917,6 +917,14 @@
             // 差分計算専用。観測のみ）。
             lastAiSpeakingEndAt = performance.now();
             pushTimelineEvent('AI_SPEAKING_END (reason=' + reason + ')');
+            // FAST TURN HOTFIX 2（FIRST ANSWER MUST COUNT・今回追加、STEP12/22）:
+            // マイクが実際に使用可能へ戻った唯一の地点（この関数はサーバー
+            // イベント経路・ローカル音声レベル経路の両方から呼ばれる、
+            // release処理の集約点）で、ユーザー入力を受け付け可能になった
+            // ことを表す明示的なマーカーを1つだけ記録する。新しいstate変数は
+            // 追加しない（既存のaiSpeakingProtected===falseがそのまま
+            // 「ready」を意味するため、二重管理を避ける）。
+            pushTimelineEvent('USER_LISTENING_READY (reason=' + reason + ')');
         }
 
         // ===== Conversation Takeover Observation PoC: 追加の最小状態（今回追加） =====
@@ -2741,6 +2749,33 @@
                 const nowSpeaking = avg > THRESHOLD;
                 if (nowSpeaking && !aiSpeakingNow) {
                     aiSpeakingNow = true;
+                    // FAST TURN HOTFIX 2（FIRST ANSWER MUST COUNT・今回追加）:
+                    // AI SPEAKING PROTECTIONのengage/releaseを、これまでの
+                    // output_audio_buffer.started/stopped/cleared/response.done
+                    // （サーバー側イベント）だけに依存させず、ここで既に稼働中の
+                    // リモート音声（AIの実際の発話音声そのもの）のローカル
+                    // AnalyserNode計測（aiSpeakingNow、上のUIバッジと同じ既存
+                    // シグナル）にも連動させる。
+                    // 根拠（推測ではなく公式情報・実例で確認済み）: OpenAI
+                    // Realtime APIのoutput_audio_buffer.started/stoppedは、
+                    // OpenAI公式コミュニティで「実際の音声終了から6〜10秒遅延
+                    // する」「started/stoppedイベント自体が届かないことがある」
+                    // とOpenAIサポート自身が調査中の既知事象として報告されて
+                    // いる(community.openai.com、Case #09291741として受理)。
+                    // このイベント遅延・欠落が起きた場合、track.enabled=falseの
+                    // ままユーザーの1回目の正常回答が始まってしまう
+                    // （ROOT CAUSE TREEの分類A: 話した時点でmic無効）ことが、
+                    // 「2回言わないと反応しない」症状の最有力候補である。
+                    // ここでのAnalyserNode計測はAIの既知の音声ストリームのみを
+                    // 見ており、周囲の雑音（ローカルmic入力）は一切含まれない
+                    // ため、「雑音と人間発話を音量で分類する」ことには当たらない
+                    // （STEP9の禁止事項には抵触しない。あくまで「AI自身の音声が
+                    // 実際に鳴っているか」という既知信号の直接計測）。
+                    // engage/release自体は完全に冪等（既にprotected/releaseの
+                    // 状態なら即return）なので、既存のサーバーイベント経路と
+                    // 純粋に「早い方が勝つ」レースになるだけで、既存経路を
+                    // 破壊・変更しない。
+                    engageAiSpeakingProtection('ai_audio_level_active');
                     bigMic.classList.add('ai-speaking');
                     setStatus(stAiSpeakEl, '発話中', 'ok');
                     if (greetingTiming.firstAiAudioPlaybackStarted === null) {
@@ -2784,6 +2819,20 @@
                     }
                 } else if (!nowSpeaking && aiSpeakingNow) {
                     aiSpeakingNow = false;
+                    // FAST TURN HOTFIX 2（FIRST ANSWER MUST COUNT・今回追加）:
+                    // 上のengage側コメント参照。AIの実際の音声が（サーバー側
+                    // イベントを待たず）ローカルで無音になったと分かった瞬間に
+                    // 保護解除する。output_audio_buffer.stopped/cleared/
+                    // response.doneが遅延・欠落しても、ここが独立した経路として
+                    // ミュート解除を保証する。1文中の短いポーズ等で瞬間的に
+                    // nowSpeaking=falseへ振れても、releaseAiSpeakingProtection
+                    // 自体は「track.enabledをtrueに戻すだけ」で即座に有害な
+                    // 副作用は起こさず、直後にAIが発話を再開すればengage側が
+                    // 次のtickで即座に再度保護をかけ直す（毎フレーム評価される
+                    // ため露出時間は最大で1フレーム分に収まる）。この設計上の
+                    // トレードオフは実機テストのAI_SPEAKING_START/ENDログで
+                    // 検証すること（STEP30）。
+                    releaseAiSpeakingProtection('ai_audio_level_silent');
                     bigMic.classList.remove('ai-speaking');
                     setStatus(stAiSpeakEl, '待機', null);
                 }
