@@ -199,6 +199,18 @@
         let turnLatencyVadTailMs = null;
         let turnLatencyCommitToResponseMs = null;
         let turnLatencyFastTurnLabel = null;
+        // FAST TURN 3.1（実機レイテンシ診断）: Tool Call（check_availability等）
+        // 自体の所要時間を計測するための一時変数。既存のTOOL_FETCH_STARTED/
+        // TOOL_FETCH_SUCCESS(ERROR)イベントはタイムスタンプ付きでタイムライン
+        // には既に記録されているが、TURN LATENCY 1行ログには含まれていなかった。
+        // また、下のresponse.created側の修正と対で、Tool呼び出しの往復時間が
+        // commit_to_responseへ誤って合算されるのを防ぐ（詳細は該当箇所）。
+        // 値はミリ秒の数値・Tool名（PIIなし。check_availability等の固定文字列
+        // のみ）のみで、動作（VAD/Tool呼び出し自体）は一切変更しない。
+        let toolCallStartedAtForLatency = null;
+        let turnLatencyToolOccurred = false;
+        let turnLatencyToolName = null;
+        let turnLatencyToolDurationMs = null;
 
         function recordLatencySample(ms) {
             latencySamples.push(ms);
@@ -1996,16 +2008,25 @@
                                 ? Math.round(performance.now() - lastResponseCreatedAtForLatency)
                                 : null;
                             const fmt = (v) => (v === null || v === undefined ? '?' : v + 'ms');
+                            // FAST TURN 3.1（実機レイテンシ診断・計測のみ）: tool=フィールドを
+                            // 追加。Tool Callが無いターンは'NONE'、あったターンは
+                            // '<tool名>:<所要ms>'。既存フィールドの意味・並び順は変更しない
+                            // （末尾に追記するのみ）。
+                            const toolField = turnLatencyToolOccurred
+                                ? (turnLatencyToolName || '?') + ':' + fmt(turnLatencyToolDurationMs)
+                                : 'NONE';
                             logEvent('TURN LATENCY speech=' + fmt(turnLatencySpeechDurationMs)
                                 + ' vad_tail=' + fmt(turnLatencyVadTailMs)
                                 + ' commit_to_response=' + fmt(turnLatencyCommitToResponseMs)
                                 + ' response_to_audio=' + fmt(responseToAudioMs)
                                 + ' total_after_speech=' + Math.round(totalAfterSpeechMs) + 'ms'
-                                + ' fast_turn=' + (turnLatencyFastTurnLabel || 'NONE'));
+                                + ' fast_turn=' + (turnLatencyFastTurnLabel || 'NONE')
+                                + ' tool=' + toolField);
                         }
                         lastSpeechStoppedAt = null;
                         lastCommittedAtForLatency = null;
                         lastResponseCreatedAtForLatency = null;
+                        toolCallStartedAtForLatency = null;
                     }
                 } else if (!nowSpeaking && aiSpeakingNow) {
                     aiSpeakingNow = false;
@@ -3142,6 +3163,11 @@
             lastToolLabel = (item.name || '(不明)') + ': fetching';
             updateAudioDiagnosticsPanel();
             pushTimelineEvent('TOOL_FETCH_STARTED (tool=' + (item.name || '(不明)') + ')');
+            // FAST TURN 3.1（実機レイテンシ診断・計測のみ）: Tool呼び出し開始
+            // 時刻とTool名を記録する。動作（呼び出し自体）は変更しない。
+            toolCallStartedAtForLatency = performance.now();
+            turnLatencyToolOccurred = true;
+            turnLatencyToolName = item.name || '(不明)';
 
             let output;
             if (item.name === 'check_availability') {
@@ -3189,6 +3215,11 @@
             const toolResultState = lastToolFetchOutcome
                 ? lastToolFetchOutcome
                 : (isToolOutputFailure(output) ? 'error' : 'success');
+            // FAST TURN 3.1（実機レイテンシ診断・計測のみ）: Tool呼び出し所要時間
+            // （fetch開始→完了）を確定する。
+            if (toolCallStartedAtForLatency !== null) {
+                turnLatencyToolDurationMs = Math.round(performance.now() - toolCallStartedAtForLatency);
+            }
             lastToolLabel = (item.name || '(不明)') + ': ' + toolResultState;
             updateAudioDiagnosticsPanel();
             pushTimelineEvent((toolResultState === 'success' ? 'TOOL_FETCH_SUCCESS' : 'TOOL_FETCH_ERROR')
@@ -3482,6 +3513,12 @@
                 turnLatencyCommitToResponseMs = null;
                 lastCommittedAtForLatency = null;
                 lastResponseCreatedAtForLatency = null;
+                // FAST TURN 3.1（実機レイテンシ診断・計測のみ）: 次のターンの
+                // Tool呼び出し計測用に、前のターンの値をリセットする。
+                toolCallStartedAtForLatency = null;
+                turnLatencyToolOccurred = false;
+                turnLatencyToolName = null;
+                turnLatencyToolDurationMs = null;
                 subStatusText.textContent = 'AIが応答を準備しています…';
                 setStatus(stUserSpeakEl, '待機', null);
                 updateAudioDiagnosticsPanel();
@@ -3493,7 +3530,19 @@
                 // 差分を記録する。lastCommittedAtForLatencyが無い場合（PHONE/NAME等の
                 // 強制commit直前にOpenAI側が自発的に応答を作った等）はnullのままにし、
                 // 無理に数値を作らない。
-                if (lastCommittedAtForLatency !== null) {
+                // FAST TURN 3.1（実機レイテンシ診断・計測のみ、修正）: Tool Callを
+                // 含むターンではresponse.createdが1ターン中に2回発生する
+                // （1回目=function_callのみの中間応答、2回目=Tool結果を踏まえた
+                // 音声応答）。従来は毎回上書きしていたため、2回目のresponse.created
+                // 時刻を使ってcommit_to_responseを計算してしまい、その差分に
+                // Tool呼び出しの往復時間（fetch等）まで丸ごと合算されてしまい、
+                // 「OpenAIの応答生成が遅い(C)」なのか「Tool/API呼び出しが遅い(E)」
+                // なのかを区別できなくなっていた。turnLatencyCommitToResponseMsが
+                // まだnull（＝このターンで初めてのresponse.created）の場合のみ
+                // 記録するよう変更し、常に「commit→最初の応答開始」という本来の
+                // (C)区間だけを表すようにする（Tool呼び出し時間は上で追加した
+                // turnLatencyToolDurationMsとして別途ログに出す）。
+                if (lastCommittedAtForLatency !== null && turnLatencyCommitToResponseMs === null) {
                     turnLatencyCommitToResponseMs = Math.round(performance.now() - lastCommittedAtForLatency);
                 }
                 lastResponseCreatedAtForLatency = performance.now();
