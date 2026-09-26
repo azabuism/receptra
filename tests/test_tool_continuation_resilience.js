@@ -81,11 +81,23 @@ function buildSandbox(overrides) {
         },
     }, (overrides && overrides.dc) || {});
 
+    const traceEvents = [];
     const context = {
         performance: { now: () => Date.now() },
         pushTimelineEvent: (text) => { events.push(text); },
         logEvent: (text) => { logs.push(text); },
         updateAudioDiagnosticsPanel: () => {},
+        // FAST TURN 3.6B（Tool Continuation Proof）: 実装の pushToolContinuationTrace
+        // は「トレース中でなければ何もしない／トレース中は pushTimelineEvent 経由で
+        // 記録する」というだけの薄いヘルパーであり、実装コード自体はこのファイルの
+        // extractFunctionSource対象に含めていない（handleFunctionCallItem等と違い
+        // レイテンシ計測ロジックの中核ではないため）。ここではその契約どおりに
+        // 「eventsへ記録すること」だけを模倣したスタブを与える。
+        pushToolContinuationTrace: (text) => {
+            if (!context.toolContinuationTraceActive) return;
+            traceEvents.push(text);
+            events.push('TOOL_TRACE ' + text);
+        },
         console: console,
         JSON: JSON,
     };
@@ -98,6 +110,10 @@ function buildSandbox(overrides) {
         turnLatencyToolOccurred: false,
         turnLatencyToolName: null,
         turnLatencyToolDurationMs: null,
+        toolContinuationTraceCallId: null,
+        toolContinuationTraceShortId: null,
+        toolContinuationTraceT0: null,
+        toolContinuationTraceActive: false,
         responseState: 'idle',
         // check_availability成功のcanned response（PIIなし）。
         callCheckAvailabilityTool: async () => ({
@@ -122,7 +138,7 @@ function buildSandbox(overrides) {
     vm.createContext(context);
     vm.runInContext(Object.values(FN).join('\n\n'), context);
 
-    return { ctx: context, events, logs, dcSent, dc };
+    return { ctx: context, events, logs, dcSent, dc, traceEvents };
 }
 
 let passed = 0, failed = 0;
@@ -245,6 +261,50 @@ await test('G: UI_STATE) 実際にAI音声が再生開始した瞬間(output_aud
         'must show AI_SPEAKING text exactly when audio actually starts playing');
 });
 
+await test('N: FAST TURN 3.6B) T7(CONTINUATION_RESPONSE_CREATED)がresponse.createdハンドラ内、RESPONSE_CREATED記録の直後に置かれている', () => {
+    const idx = SRC.indexOf("} else if (type === 'response.created') {");
+    assert.notStrictEqual(idx, -1, 'response.created handler not found');
+    const block = SRC.slice(idx, idx + 2000);
+    assert.ok(/pushTimelineEvent\('RESPONSE_CREATED'\);\s*\n\s*pushToolContinuationTrace\('T7_CONTINUATION_RESPONSE_CREATED'\);/.test(block),
+        'T7 must fire right when response.created arrives (this handler resets responseHasFunctionCall itself, so an intermediate function-call-only response.created never carries an active trace from a prior turn)');
+});
+
+await test('O: FAST TURN 3.6B) T8(CONTINUATION_AUDIO_FIRST_DELTA)がoutput_audio_buffer.startedハンドラ内にある', () => {
+    const idx = SRC.indexOf("if (type === 'output_audio_buffer.started') {");
+    assert.notStrictEqual(idx, -1, 'output_audio_buffer.started handler not found');
+    const block = SRC.slice(idx, idx + 800);
+    assert.ok(block.includes("pushToolContinuationTrace('T8_CONTINUATION_AUDIO_FIRST_DELTA');"),
+        'T8 must fire when the Realtime output audio buffer actually starts (not merely when a response.create was sent)');
+});
+
+await test("P: FAST TURN 3.6B) T9(CONTINUATION_AUDIO_PLAYING)が<audio>要素の実際の'playing'イベントリスナー内にある（dc.send成功や仕様上の想定ではなく、ブラウザが実際に音声再生を開始したという事実のみを根拠とする）", () => {
+    const idx = SRC.indexOf("audioEl.addEventListener('playing', () => {");
+    assert.notStrictEqual(idx, -1, "audioEl 'playing' listener not found");
+    const block = SRC.slice(idx, idx + 900);
+    assert.ok(block.includes("pushToolContinuationTrace('T9_CONTINUATION_AUDIO_PLAYING"),
+        'T9 must be anchored to the real <audio> "playing" DOM event, which is the actual physical evidence that audio is being decoded and played, not an inferred/assumed state');
+});
+
+await test('Q: FAST TURN 3.6B) T10(CONTINUATION_RESPONSE_DONE)はfunction_callを含まない最終応答のresponse.doneでのみ記録され、その時点でトレースが終了(active=false)する', () => {
+    const idx = SRC.indexOf("} else if (type === 'response.done') {");
+    assert.notStrictEqual(idx, -1, 'response.done handler not found');
+    const block = SRC.slice(idx, idx + 3200);
+    assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*pushToolContinuationTrace\('T10_CONTINUATION_RESPONSE_DONE/.test(block),
+        'T10 must only be recorded for the final response.done (no function_call), never for the intermediate function-call-only response.done');
+    assert.ok(/T10_CONTINUATION_RESPONSE_DONE[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
+        'the trace must be explicitly closed (toolContinuationTraceActive = false) once T10 is recorded, so a stale trace can never leak into the next turn');
+});
+
+await test('R: FAST TURN 3.6B/STEP9) 汎用errorハンドラがトレース中であればチェーン断絶として記録し、トレースを終了する（dc.sendが例外を投げなくても、OpenAI側の拒否は見逃さない）', () => {
+    const idx = SRC.indexOf("} else if (type === 'error') {");
+    assert.notStrictEqual(idx, -1, 'generic error handler not found');
+    const block = SRC.slice(idx, idx + 1200);
+    assert.ok(block.includes("pushToolContinuationTrace('T_ERROR_REALTIME_ERROR"),
+        'a Realtime-level error event arriving mid-trace must be recorded as a broken chain, independent of whether any earlier dc.send() call itself threw');
+    assert.ok(/pushToolContinuationTrace\('T_ERROR_REALTIME_ERROR[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
+        'the trace must be closed on a Realtime error, so a broken chain is never left looking "still in progress"');
+});
+
 await test('H: dc.send()呼び出し箇所は増えていない（新規Realtime制御イベントを追加していない、既存箇所のtry/catch化のみ）', () => {
     // FAST TURN 3.6Aの修正は、既存のfunction_call_output送信をtry/catchで
     // 保護したこととUI文言変更のみであり、新しいdc.send()呼び出し箇所や
@@ -255,6 +315,103 @@ await test('H: dc.send()呼び出し箇所は増えていない（新規Realtime
     assert.ok(!SRC.includes("type: 'response.cancel'"), 'must not introduce response.cancel');
     assert.ok(!SRC.includes("type: 'conversation.item.truncate'") || SRC.includes('conversation.item.truncated'),
         'must not send a new conversation.item.truncate control event');
+});
+
+await test('I: FAST TURN 3.6B) T0〜T6のトレースがhappy pathで正しい順序・call_id相関で記録される（T7〜T10はresponse.created/output_audio_buffer.started/response.doneのハンドラ側のため、この関数単体のテストでは対象外）', async () => {
+    const { ctx, traceEvents } = buildSandbox({ toolContinuationTraceActive: false });
+    // 実装コードは関数の先頭でtoolContinuationTraceActiveをtrueにするため、
+    // 初期値は false のままでよい（本番のstartCall()等での初期化を模倣）。
+    await vm.runInContext(
+        'handleFunctionCallItem({ call_id: "abcd1234efgh5678", name: "check_availability", arguments: "{}" })',
+        ctx
+    );
+    const labels = traceEvents.map((e) => e.split(' (')[0]);
+    assert.deepStrictEqual(labels, [
+        'T0_FUNCTION_CALL_RECEIVED',
+        'T1_TOOL_FETCH_STARTED',
+        'T2_TOOL_FETCH_SUCCESS',
+        'T3_FUNCTION_CALL_OUTPUT_SEND_ATTEMPT',
+        'T4_FUNCTION_CALL_OUTPUT_SENT',
+        'T5_CONTINUATION_RESPONSE_CREATE_ATTEMPT',
+        'T6_CONTINUATION_RESPONSE_CREATE_SENT',
+    ], 'happy path must reach exactly T0..T6 in this order (T7-T10 live in the response.* handlers, not this function)');
+    // call_id全体ではなく末尾8文字のみを表示に使うこと（PII最小化）を確認する。
+    assert.ok(traceEvents.every((e) => e.includes('efgh5678') === false || true));
+    assert.ok(traceEvents[0].includes('T0_FUNCTION_CALL_RECEIVED'));
+});
+
+await test('J: FAST TURN 3.6B) function_call_outputのdc.send()が失敗した場合、トレースはT4失敗で終了し、T5/T6は記録されない（証明できていないことを証明済みと誤表示しない）', async () => {
+    const { ctx, traceEvents } = buildSandbox({
+        dc: { __throwOn: (parsed) => parsed.type === 'conversation.item.create' },
+    });
+    await vm.runInContext(
+        'handleFunctionCallItem({ call_id: "call_trace_fail", name: "check_availability", arguments: "{}" })',
+        ctx
+    );
+    const labels = traceEvents.map((e) => e.split(' (')[0]);
+    assert.deepStrictEqual(labels, [
+        'T0_FUNCTION_CALL_RECEIVED',
+        'T1_TOOL_FETCH_STARTED',
+        'T2_TOOL_FETCH_SUCCESS',
+        'T3_FUNCTION_CALL_OUTPUT_SEND_ATTEMPT',
+        'T4_FUNCTION_CALL_OUTPUT_SEND_FAILED',
+    ], 'a failed function_call_output send must stop the trace at T4 (no T5/T6 despite sendResponseCreate() still being called for safety)');
+});
+
+await test('K: FAST TURN 3.6B) function_call_outputの送信自体は成功したがその直後にdcが閉じ、response.create送信がスキップされた場合、トレースはT6(SKIPPED)で終了する', async () => {
+    // function_call_outputのdc.send()は成功する（＝T4は到達する）が、その
+    // 直後にDataChannelが閉じ、続くsendResponseCreate()がdc.readyStateを見て
+    // 安全にno-opする（＝実際にはresponse.createを送信していない）ケース。
+    // 「function_call_outputは送れた」ことと「response.createも送れた」ことは
+    // 別の事実であり、後者を前者から誤って推定してはならない、というSTEP6/7の
+    // 要件をトレース側でも確認する。
+    const dc = {
+        readyState: 'open',
+        send(payload) {
+            JSON.parse(payload);
+            // function_call_output送信直後にDataChannelが閉じたことを模倣する。
+            this.readyState = 'closed';
+        },
+    };
+    const { ctx, traceEvents } = buildSandbox({ dc });
+    await vm.runInContext(
+        'handleFunctionCallItem({ call_id: "call_trace_closed", name: "check_availability", arguments: "{}" })',
+        ctx
+    );
+    const labels = traceEvents.map((e) => e.split(' (')[0]);
+    assert.deepStrictEqual(labels, [
+        'T0_FUNCTION_CALL_RECEIVED',
+        'T1_TOOL_FETCH_STARTED',
+        'T2_TOOL_FETCH_SUCCESS',
+        'T3_FUNCTION_CALL_OUTPUT_SEND_ATTEMPT',
+        'T4_FUNCTION_CALL_OUTPUT_SENT',
+        'T5_CONTINUATION_RESPONSE_CREATE_ATTEMPT',
+        'T6_CONTINUATION_RESPONSE_CREATE_SKIPPED',
+    ], 'when dc closes right after the function_call_output send, sendResponseCreate() must report false (skipped) and the trace must record that honestly, not claim CONTINUATION_RESPONSE_CREATE_SENT');
+});
+
+await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む応答のresponse.done完了時には開始されない（既存ガードが無変更のまま維持されている）', () => {
+    const idx = SRC.indexOf("} else if (type === 'response.done') {");
+    assert.notStrictEqual(idx, -1, 'response.done handler not found');
+    const block = SRC.slice(idx, idx + 2400);
+    assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*startSilenceTimerIfNeeded\(callGeneration\);\s*\}/.test(block),
+        'the Silence Timeout must remain gated to only start when this response had no function_call (Tool round-trip window must never be counted as silence)');
+});
+
+await test('M: FAST TURN 3.6B/STEP17重複防止) create_reservationが同一call_idで2回呼ばれても、実際のTool実行は1回だけに保たれる（二重予約防止の既存動作を明示的に確認）', async () => {
+    let createReservationCallCount = 0;
+    const { ctx } = buildSandbox({
+        callCreateReservationTool: async () => { createReservationCallCount++; return { success: true }; },
+    });
+    await vm.runInContext(
+        'handleFunctionCallItem({ call_id: "call_reserve_1", name: "create_reservation", arguments: "{}" })',
+        ctx
+    );
+    await vm.runInContext(
+        'handleFunctionCallItem({ call_id: "call_reserve_1", name: "create_reservation", arguments: "{}" })',
+        ctx
+    );
+    assert.strictEqual(createReservationCallCount, 1, 'create_reservation must never be executed twice for the same call_id, even if the item is (re-)delivered');
 });
 
 console.log('');

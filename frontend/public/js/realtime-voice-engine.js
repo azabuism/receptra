@@ -264,6 +264,19 @@
         let turnLatencyToolName = null;
         let turnLatencyToolDurationMs = null;
 
+        // FAST TURN 3.6B（Tool Continuation Proof）: function_call_output送信
+        // からAI音声再生開始までの一連のイベント（T0〜T10）を、debugMode限定で
+        // 相関追跡するための一時状態。call_idそのものはPIIではないが表示は
+        // 短縮形に留める（下のtoolContinuationTraceShortId参照）。この状態は
+        // 観測のみに使われ、Tool呼び出し・Realtime制御イベントの送信有無や
+        // 内容を一切変更しない（既存のsendResponseCreate等の判断ロジックは
+        // 無変更）。1ターンにつき1つのTool継続トレースのみを保持する単純な
+        // null管理（既存のlastCommittedAtForLatency等と同じパターン）。
+        let toolContinuationTraceCallId = null;
+        let toolContinuationTraceShortId = null;
+        let toolContinuationTraceT0 = null;
+        let toolContinuationTraceActive = false;
+
         function recordLatencySample(ms) {
             latencySamples.push(ms);
             latestLatencyEl.textContent = Math.round(ms) + ' ms';
@@ -680,6 +693,20 @@
                 const el = document.getElementById('diagTimeline');
                 if (el) el.textContent = recentEvents.join('\n');
             }
+        }
+
+        // FAST TURN 3.6B（Tool Continuation Proof）: function_call_output送信〜
+        // AI音声再生開始までの一連のイベント（T0〜T10）を、既存のpushTimelineEvent
+        // （Copy Debug Logに常時記録・#diagTimelineの可視表示はdebugMode限定という
+        // 既存パターンをそのまま踏襲）に「T+経過ms・call_idの末尾8文字のみ」を
+        // 付加して記録するだけの観測用ヘルパー。Realtime制御イベントの送信有無・
+        // 内容・タイミングには一切影響しない（呼び出し側のロジックを変更しない）。
+        // toolContinuationTraceActiveがfalseの間（Tool呼び出しが発生していない
+        // 通常ターン中）は何も記録しない。
+        function pushToolContinuationTrace(label) {
+            if (!toolContinuationTraceActive || toolContinuationTraceT0 === null) return;
+            const elapsedMs = Math.round(performance.now() - toolContinuationTraceT0);
+            pushTimelineEvent('TOOL_TRACE ' + label + ' (call=' + toolContinuationTraceShortId + ', t+' + elapsedMs + 'ms)');
         }
 
         // CRITICAL INCIDENT調査（音声ブツブツ/ノイズ→応答停止、iPhone実機再現）:
@@ -3225,6 +3252,17 @@
             }
             processedToolCallIds.add(callId);
 
+            // FAST TURN 3.6B（Tool Continuation Proof）: このTool呼び出し1件分の
+            // T0〜T10相関トレースを開始する。call_id全体ではなく末尾8文字のみを
+            // 表示・記録に使う（call_id自体はUUID相当でPIIではないが、表示は
+            // 最小限に留める）。1呼び出しにつき1トレース（既存のlastToolLabel等と
+            // 同じ単純なnull/上書き管理）。
+            toolContinuationTraceCallId = callId;
+            toolContinuationTraceShortId = String(callId).slice(-8);
+            toolContinuationTraceT0 = performance.now();
+            toolContinuationTraceActive = true;
+            pushToolContinuationTrace('T0_FUNCTION_CALL_RECEIVED (tool=' + (item.name || '(不明)') + ')');
+
             // PHASE14/PHASE8（会話停止調査）: Tool Timeline。Tool名+状態のみを
             // 記録し、引数・結果内容（電話番号・氏名・予約内容等）は一切
             // 含めない（PII厳禁）。TOOL_CALL_RECEIVED/TOOL_FETCH_STARTED/
@@ -3249,6 +3287,7 @@
             lastToolLabel = (item.name || '(不明)') + ': fetching';
             updateAudioDiagnosticsPanel();
             pushTimelineEvent('TOOL_FETCH_STARTED (tool=' + (item.name || '(不明)') + ')');
+            pushToolContinuationTrace('T1_TOOL_FETCH_STARTED (tool=' + (item.name || '(不明)') + ')');
             // FAST TURN 3.1（実機レイテンシ診断・計測のみ）: Tool呼び出し開始
             // 時刻とTool名を記録する。動作（呼び出し自体）は変更しない。
             toolCallStartedAtForLatency = performance.now();
@@ -3310,6 +3349,8 @@
             updateAudioDiagnosticsPanel();
             pushTimelineEvent((toolResultState === 'success' ? 'TOOL_FETCH_SUCCESS' : 'TOOL_FETCH_ERROR')
                 + ' (tool=' + (item.name || '(不明)') + (toolResultState === 'success' ? '' : ', outcome=' + toolResultState) + ')');
+            pushToolContinuationTrace('T2_' + (toolResultState === 'success' ? 'TOOL_FETCH_SUCCESS' : 'TOOL_FETCH_ERROR')
+                + ' (tool=' + (item.name || '(不明)') + ')');
 
             logEvent('Tool結果送信: ' + JSON.stringify(output));
             // FAST TURN 3.6A（会話継続停止の修正・最重要）: このdc.send()だけが、
@@ -3327,6 +3368,7 @@
             // された症状と一致する）。他のdc.send()と同じtry/catchパターンに
             // 揃え、失敗時は非fatal（通話は継続）としてログに残す。
             let functionCallOutputSendFailed = false;
+            pushToolContinuationTrace('T3_FUNCTION_CALL_OUTPUT_SEND_ATTEMPT (tool=' + (item.name || '(不明)') + ')');
             try {
                 dc.send(JSON.stringify({
                     type: 'conversation.item.create',
@@ -3339,12 +3381,20 @@
                 lastToolLabel = (item.name || '(不明)') + ': output_sent';
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('TOOL_OUTPUT_SENT (tool=' + (item.name || '(不明)') + ')');
+                pushToolContinuationTrace('T4_FUNCTION_CALL_OUTPUT_SENT (tool=' + (item.name || '(不明)') + ')');
             } catch (e) {
                 functionCallOutputSendFailed = true;
                 lastToolLabel = (item.name || '(不明)') + ': output_send_failed';
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('TOOL_OUTPUT_SEND_FAILED (tool=' + (item.name || '(不明)') + '): ' + (e && e.message));
                 logEvent('Tool結果送信(dc.send)に失敗しました（tool=' + (item.name || '(不明)') + '）: ' + (e && e.message));
+                // このdc.send自体が例外を投げた時点で、function_call_outputは
+                // OpenAI側へ到達し得ない＝Tool継続チェーンはここで確定的に
+                // 途切れている。以降のT5〜T10は（sendResponseCreateが安全に
+                // no-opするため）到達しないので、トレースをここで終了する
+                // （「証明できていないことを証明済みと誤表示しない」ため）。
+                pushToolContinuationTrace('T4_FUNCTION_CALL_OUTPUT_SEND_FAILED (tool=' + (item.name || '(不明)') + ')');
+                toolContinuationTraceActive = false;
             }
             // function_call_output自体の送信に失敗した場合でも、sendResponseCreate()
             // 自体は既存どおりdc.readyStateを確認して安全にno-opするため
@@ -3354,8 +3404,23 @@
             // AIが（Tool結果無しの状態にはなるが）完全に無応答のまま停止する
             // ことだけは避けられる。dc自体が閉じている場合はsendResponseCreate()
             // 側のRESPONSE_CREATE_SKIPPEDが記録され、挙動は変化しない。
-            sendResponseCreate('tool_result:' + (item.name || 'unknown') + (functionCallOutputSendFailed ? ':output_send_failed' : ''));
+            pushToolContinuationTrace('T5_CONTINUATION_RESPONSE_CREATE_ATTEMPT (tool=' + (item.name || '(不明)') + ')');
+            const toolContinuationResponseCreateSent = sendResponseCreate('tool_result:' + (item.name || 'unknown') + (functionCallOutputSendFailed ? ':output_send_failed' : ''));
             pushTimelineEvent('TOOL_CONTINUATION_REQUESTED (tool=' + (item.name || '(不明)') + ')');
+            // sendResponseCreate()の戻り値（dc.readyState === 'open'だった場合のみ
+            // trueで、実際にresponse.createを送信したことを意味する。false＝
+            // dc未接続によりRESPONSE_CREATE_SKIPPEDで既にログ済み、送信していない）
+            // をそのままT6として記録する。「呼び出したこと」と「実際に送ったこと」
+            // を混同しない（STEP: dc.send成功≠OpenAI処理成功、と同様の理由で
+            // sendResponseCreate呼び出し≠送信成功も区別する）。
+            pushToolContinuationTrace('T6_' + (toolContinuationResponseCreateSent ? 'CONTINUATION_RESPONSE_CREATE_SENT' : 'CONTINUATION_RESPONSE_CREATE_SKIPPED')
+                + ' (tool=' + (item.name || '(不明)') + ')');
+            if (!toolContinuationResponseCreateSent) {
+                // dcが開いていないためresponse.createそのものを送れなかった
+                // ケース。以降のT7〜T10は発生し得ないため、ここでトレースを
+                // 終了する。
+                toolContinuationTraceActive = false;
+            }
             lastToolLabel = (item.name || '(不明)') + ': continuation_requested';
             updateAudioDiagnosticsPanel();
         }
@@ -3408,6 +3473,7 @@
                 // 表示されているはずで、ここで初めて「応答中」に切り替わる。
                 subStatusText.textContent = 'AIスタッフが応答中';
                 pushTimelineEvent('AI_AUDIO_STARTED');
+                pushToolContinuationTrace('T8_CONTINUATION_AUDIO_FIRST_DELTA');
                 // NAME Forced Commit Observation PoC（PHASE9）
                 maybeLogPocReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
                 // Conversation Takeover Observation PoC（NAME PoCとは独立）
@@ -3681,6 +3747,7 @@
                 responseState = 'active';
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('RESPONSE_CREATED');
+                pushToolContinuationTrace('T7_CONTINUATION_RESPONSE_CREATED');
                 // NAME Forced Commit Observation PoC（PHASE9/12）: 手動commit後に
                 // OpenAI側が自発的にresponse.createdを送ってきた場合、観測する
                 // だけで、こちらから追加のresponse.createは絶対に送らない。
@@ -3744,6 +3811,17 @@
                 if (!responseHasFunctionCall) {
                     startSilenceTimerIfNeeded(callGeneration);
                 }
+                // FAST TURN 3.6B（Tool Continuation Proof）: function_callを含まない
+                // 最終応答が完了した時点で初めてT10を記録し、Tool継続チェーン
+                // （T0〜T10）を完了とみなしてトレースを終了する。中間応答
+                // （responseHasFunctionCall===true）ではT10を記録しない
+                // （まだ継続が完了していないため）。
+                if (!responseHasFunctionCall) {
+                    pushToolContinuationTrace('T10_CONTINUATION_RESPONSE_DONE (status=' + (respStatus || '不明') + ')');
+                    toolContinuationTraceActive = false;
+                    toolContinuationTraceCallId = null;
+                    toolContinuationTraceT0 = null;
+                }
                 // Silence Timeout: 終話案内アナウンスの再生完了検知の安全網
                 // （通常はoutput_audio_buffer.stoppedで既に処理済みのはず）。
                 maybeHangUpAfterSilenceGoodbye(callGeneration, 'response_done_fallback');
@@ -3776,6 +3854,17 @@
                 responseState = 'error';
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('サーバーerrorイベント受信 (type=' + ((msg.error && msg.error.type) || '不明') + ')');
+                // FAST TURN 3.6B（Tool Continuation Proof・STEP9）: Tool継続
+                // チェーンのトレース中にRealtime側からerrorイベントが届いた場合、
+                // dc.send()が例外を投げていなくても、OpenAI側がfunction_call_output
+                // またはresponse.createを何らかの理由で拒否/失敗させた可能性が
+                // ある。これを見逃さないよう、トレース中であればT_ERRORとして
+                // 記録し、以降のT7〜T10（未達成のまま）を待たずにトレースを
+                // 終了する（code/typeのみ・PIIなし。既存のerrorハンドラ本体の
+                // 挙動＝showErrorBanner/responseState='error'は一切変更しない）。
+                pushToolContinuationTrace('T_ERROR_REALTIME_ERROR (type=' + ((msg.error && msg.error.type) || '不明')
+                    + ', code=' + ((msg.error && msg.error.code) || '不明') + ')');
+                toolContinuationTraceActive = false;
                 // NAME Forced Commit Observation PoC（PHASE8/10）: 手動commit
                 // 送信後に発生したerrorは、このPoCが観測したい重要な結果の
                 // 一つ（例: "buffer is empty"等）であるため、専用のタイムライン
@@ -4437,6 +4526,13 @@
                     audioEl.addEventListener('playing', () => {
                         remotePlayState = 'playing';
                         pushTimelineEvent('REALTIME_AUDIO: playing (currentTime=' + (audioEl.currentTime || 0).toFixed(2) + 's)');
+                        // FAST TURN 3.6B（Tool Continuation Proof）: dc.send()が
+                        // 例外を投げなかったことではなく、実際に<audio>要素が
+                        // 'playing'（＝ブラウザが実際に音声デコード・再生を
+                        // 開始したこと）に到達したことをもってT9とする。これが
+                        // Tool継続チェーンの「実際に音声が再生された」という
+                        // 最終的な物的証拠にあたる。
+                        pushToolContinuationTrace('T9_CONTINUATION_AUDIO_PLAYING (currentTime=' + (audioEl.currentTime || 0).toFixed(2) + 's)');
                         updateAudioDiagnosticsPanel();
                         updatePlaybackRecoveryButton();
                     });
