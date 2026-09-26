@@ -12,7 +12,7 @@ RUN npm ci
 # engine.js）が反映されない事象を確認したため、ARGでこのステージのキャッシュを
 # 強制的に無効化する。値を変えるたびに以降のレイヤーがキャッシュされなくなる
 # （Dockerの標準的なcache-bustパターン）。アプリの動作には一切影響しない。
-ARG FRONTEND_CACHE_BUST=fastturn3_1_20260926
+ARG FRONTEND_CACHE_BUST=fastturn4_20260926
 COPY frontend ./
 RUN npm run build
 
