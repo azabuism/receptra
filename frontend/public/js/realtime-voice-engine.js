@@ -320,6 +320,17 @@
                 if (toolContinuationTraceActive && toolContinuationTraceCallId === forCallId) {
                     pushToolContinuationTrace('TOOL_CONTINUATION_WATCHDOG_NO_RESPONSE_CREATED_AFTER_T6 (waitedMs='
                         + TOOL_CONTINUATION_RESPONSE_WATCHDOG_MS + ', diagnostic_only_no_action_taken=true)');
+                    // FAST TURN HOTFIX 5（今回追加）: pushToolContinuationTrace/
+                    // pushTimelineEventはDOM（#diagTimeline・Copy Debug Log用の
+                    // recentEvents配列）にしか書き込まず、ブラウザの開発者
+                    // Consoleには一切出力していなかったことが監査で判明した
+                    // （実機でこのWATCHDOGを"Console"で検索しても見つからない
+                    // のは、発火していないからではなく、そもそもConsoleに
+                    // 出していなかったことが原因の可能性がある）。この事実を
+                    // 次回の実機テストで正しく確認できるよう、console.logへも
+                    // 明示的に出す（送信・再試行等の動作は一切追加しない）。
+                    console.log('[TOOL_CONTINUATION_WATCHDOG_NO_RESPONSE_CREATED_AFTER_T6] callIdTail='
+                        + String(forCallId || '').slice(-8) + ' waitedMs=' + TOOL_CONTINUATION_RESPONSE_WATCHDOG_MS);
                 }
             }, TOOL_CONTINUATION_RESPONSE_WATCHDOG_MS);
         }
@@ -1259,6 +1270,11 @@
                     && !turnLatencyTraceMarkersSeen['TURN_RESPONSE_CREATED']) {
                     pushTimelineEvent('PLAIN_TURN_WATCHDOG_NO_RESPONSE_CREATED_AFTER_COMMIT (turnId=' + forTurnId
                         + ', waitedMs=' + PLAIN_TURN_RESPONSE_WATCHDOG_MS + ', diagnostic_only_no_action_taken=true)');
+                    // FAST TURN HOTFIX 5（今回追加）: TOOL CONTINUATION側と同じ理由
+                    // （pushTimelineEventはConsoleへ出力しないことが判明したため）、
+                    // Console検索でも見つけられるようconsole.logへも明示的に出す。
+                    console.log('[PLAIN_TURN_WATCHDOG_NO_RESPONSE_CREATED_AFTER_COMMIT] turnId=' + forTurnId
+                        + ' waitedMs=' + PLAIN_TURN_RESPONSE_WATCHDOG_MS);
                 }
             }, PLAIN_TURN_RESPONSE_WATCHDOG_MS);
         }
@@ -2401,6 +2417,14 @@
                 pushTimelineEvent('[要確認] RESPONSE_CREATE多重送信の可能性 (reason=' + reason + ')');
                 logEvent('[要確認] response.createを送信しますが、直前のresponseがまだ完了していません'
                     + '(responseState=active, reason=' + reason + ')。多重応答の可能性があります（観測のみ・送信は継続します）');
+                // FAST TURN HOTFIX 5（今回追加）: この条件（response.create while
+                // another response still active / conversation already has an
+                // active response）はOpenAI Realtime APIがresponse.doneを
+                // status=failedで返す既知の原因候補の一つ。従来はpushTimelineEvent/
+                // logEventのみでConsoleへは出ておらず、実機Console調査で見逃される
+                // 可能性があったため、console.logへも明示的に出す（送信自体は
+                // 従来どおり継続する＝挙動変更なし）。
+                console.log('[RESPONSE_CREATE_WHILE_ACTIVE] reason=' + reason);
             }
             try {
                 const payload = { type: 'response.create' };
@@ -5068,6 +5092,60 @@
                 responseState = (respStatus === 'failed') ? 'error' : 'done';
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('RESPONSE_DONE (status=' + (respStatus || '不明') + ')');
+                // FAST TURN HOTFIX 5（今回追加・観測専用）: 実機で
+                // 「[Phase2.6 usage] status: "failed"」が複数回観測されたが、
+                // recordUsageEvent()はresponse.statusの文字列しか記録しておらず、
+                // 実際の失敗理由（OpenAI Realtime API公式ドキュメントの
+                // response.done: status_details = { type, reason, error:
+                // { type, code, message } }）を完全に捨てていたことが監査で
+                // 判明した。ここではそのstatus_details/errorのうち、
+                // 実際にevent schemaに存在するフィールド（type/reason/
+                // error.type/error.code）のみを追加で記録する（推測でfield名を
+                // 作らない）。error.messageは要約や個人情報が含まれる可能性を
+                // 否定できないため、Copy Debug Log/#diagTimelineには一切含めず、
+                // debugMode（?debug=1）時のみconsole.logへ直接出す。
+                // response.create再送信・retry・timeout変更等の動作は一切
+                // 行わない（観測のみ）。
+                if (respStatus === 'failed' || respStatus === 'incomplete') {
+                    try {
+                        const sd = (msg.response && msg.response.status_details) || null;
+                        const sdType = sd ? (sd.type || null) : null;
+                        const sdReason = sd ? (sd.reason || null) : null;
+                        const sdErr = sd ? (sd.error || null) : null;
+                        const errType = sdErr ? (sdErr.type || null) : null;
+                        const errCode = sdErr ? (sdErr.code || null) : null;
+                        const respIdTail = (msg.response && msg.response.id) ? String(msg.response.id).slice(-8) : 'null';
+                        // 相関情報: 会話内容には一切触れず、既存の観測用変数
+                        // （toolContinuationTraceActive/toolContinuationTraceCallId/
+                        // turnLatencyTraceId/lastResponseReasonCategoryForDiag）を
+                        // 読み取るのみ（新規の状態追跡は追加しない）。
+                        const corrToolActive = toolContinuationTraceActive;
+                        const corrCallIdTail = toolContinuationTraceCallId ? String(toolContinuationTraceCallId).slice(-8) : 'null';
+                        const corrTurnId = (turnLatencyTraceId === null || turnLatencyTraceId === undefined) ? 'null' : turnLatencyTraceId;
+                        const corrCategory = lastResponseReasonCategoryForDiag || 'unknown';
+                        const failedLine = 'RESPONSE_DONE_FAILED (status=' + respStatus
+                            + ', response_id_tail=' + respIdTail
+                            + ', status_details_type=' + (sdType || 'null')
+                            + ', status_details_reason=' + (sdReason || 'null')
+                            + ', error_type=' + (errType || 'null')
+                            + ', error_code=' + (errCode || 'null')
+                            + ', toolContinuationActive=' + corrToolActive
+                            + ', toolCallIdTail=' + corrCallIdTail
+                            + ', turnLatencyTraceId=' + corrTurnId
+                            + ', responseCreateCategory=' + corrCategory
+                            + ')';
+                        pushTimelineEvent(failedLine);
+                        // pushTimelineEventはConsoleへ出力しないため（監査で判明）、
+                        // 実機Console検索（"FAILED"）で見つけられるよう
+                        // console.logへも明示的に出す（PIIを含まないフィールドのみ）。
+                        console.log('[' + failedLine + ']');
+                        if (debugMode && sdErr && sdErr.message) {
+                            console.log('[RESPONSE_DONE_FAILED_ERROR_MESSAGE_DEBUG_ONLY]', sdErr.message);
+                        }
+                    } catch (diagErr) {
+                        pushTimelineEvent('RESPONSE_DONE_FAILED_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
+                    }
+                }
                 recordUsageEvent(msg.response);
                 // Silence Timeout: この回にfunction_callが無かった場合のみ、
                 // 「AIがユーザーの回答を待っている」状態に入ったとみなし開始する

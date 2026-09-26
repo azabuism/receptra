@@ -325,7 +325,11 @@ await test("P: FAST TURN 3.6B) T9(CONTINUATION_AUDIO_PLAYING)が<audio>要素の
 await test('Q: FAST TURN 3.6B) T10(CONTINUATION_RESPONSE_DONE)はfunction_callを含まない最終応答のresponse.doneでのみ記録され、その時点でトレースが終了(active=false)する', () => {
     const idx = SRC.indexOf("} else if (type === 'response.done') {");
     assert.notStrictEqual(idx, -1, 'response.done handler not found');
-    const block = SRC.slice(idx, idx + 3200);
+    // FAST TURN HOTFIX 5で、response.doneハンドラ内・このT10ガードより前に
+    // RESPONSE_DONE_FAILED診断ブロック（status_details/error捕捉、約60行の
+    // コメント込み）が追加され、実測オフセットが6701文字まで伸びたため、
+    // ウィンドウを3200→7200へ拡張（測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 7200);
     assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*pushToolContinuationTrace\('T10_CONTINUATION_RESPONSE_DONE/.test(block),
         'T10 must only be recorded for the final response.done (no function_call), never for the intermediate function-call-only response.done');
     assert.ok(/T10_CONTINUATION_RESPONSE_DONE[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
@@ -438,7 +442,10 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     // response.doneハンドラ内、このガードより前に
     // releaseAiSpeakingProtection('response_done_fallback'); が追加され、
     // 実測オフセットが2552文字まで伸びたため、ウィンドウを2400→2800へ拡張。
-    const block = SRC.slice(idx, idx + 2800);
+    // さらにFAST TURN HOTFIX 5で、RESPONSE_DONE_FAILED診断ブロックが同じ
+    // ハンドラ内・このガードより前に追加され、実測オフセットが6256文字まで
+    // 伸びたため、ウィンドウを2800→6800へ再拡張（測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 6800);
     // PHASE O5.6診断: startSilenceTimerIfNeeded()に診断専用の第2引数
     // （armReasonForDiag、例: 'response_done_no_function_call'）が追加された。
     // ガード条件(!responseHasFunctionCall)自体・呼び出し自体（第1引数は
