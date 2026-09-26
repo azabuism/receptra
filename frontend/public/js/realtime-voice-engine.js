@@ -2377,6 +2377,126 @@
             }
         }
 
+        // ===== PHASE O5.5: Speak-Then-Work Acknowledgement Fallback Audio =====
+        //
+        // 設計方針（重要・必ず守ること）:
+        // - これはZero-Wait Greetingとは完全に独立した別機能。Zero-Waitの
+        //   変数・関数（zeroWait*）には一切触れず、専用の新しい変数・関数
+        //   （ackFallback*）のみを使う（Greeting関連コード変更禁止の指示を守る）。
+        // - Realtime APIのresponse.create/response.done/DataChannelには一切
+        //   関与しない、完全にローカルな<audio>要素の再生であり、FAST TURNの
+        //   response lifecycle・T0-T10計測・turn_detectionには一切影響しない。
+        // - 全店舗共通の固定文言（voiceだけが店舗ごとに異なる）のため、
+        //   Zero-Waitのような「対象店舗かどうか」の判定は不要で、ページ読み込み時に
+        //   常にプリロードする。
+        // - 実際に再生するかどうかの判定（AI自身が既に一言発話していたら鳴らさない
+        //   等）は、この関数ではなくhandleFunctionCallItem呼び出し直前の
+        // 　response.output_item.done(function_call)ハンドラ側で行う
+        //   （aiAudioOutputActiveを見て判定。下記参照）。
+        const ACK_FALLBACK_AUDIO_URL = '/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/ack-fallback-audio';
+        // 状態遷移: 'idle' -> 'preloading' -> 'ready' | 'preload_failed'
+        let ackFallbackState = 'idle';
+        let ackFallbackAudioEl = null;
+        let ackFallbackObjectUrl = null;
+        // PHASE O5.5 Speak-Then-Work計測（Section9）専用の観測変数。
+        // 直近のUSER_SPEECH_STOPPED発生時刻(performance.now())を保持するだけで、
+        // 既存T0-T10(toolContinuationTraceT0等)には一切触れない・参照もしない、
+        // 完全に独立した追加計測。Realtime制御イベントの送信判断には使わない。
+        let lastUserSpeechStoppedAt = null;
+        function formatElapsedSinceSpeechStopped() {
+            if (lastUserSpeechStoppedAt === null) return '?';
+            return Math.round(performance.now() - lastUserSpeechStoppedAt) + 'ms';
+        }
+        // Speak-Then-Work対象のTool名一覧（Section6の方針: 何でも復唱しない。
+        // Backend/DB確認で待ち時間が生じる場面、かつ副作用の無いToolのみを対象に
+        // 限定する。create_reservation等の副作用があるToolは対象外
+        // （barge-in時の二重実行リスクが質的に異なるため、O5.5では見送り、
+        // 完了報告で明示的にopen itemとして報告する）。
+        const SPEAK_THEN_WORK_ACK_TOOLS = new Set(['check_availability']);
+
+        async function preloadAckFallbackAudio() {
+            ackFallbackState = 'preloading';
+            const t0 = performance.now();
+            logEvent('[SpeakThenWork] ack fallback音声プリロード開始: ' + ACK_FALLBACK_AUDIO_URL);
+            try {
+                const res = await fetch(ACK_FALLBACK_AUDIO_URL);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const blob = await res.blob();
+                ackFallbackObjectUrl = URL.createObjectURL(blob);
+                ackFallbackAudioEl = new Audio();
+                ackFallbackAudioEl.preload = 'auto';
+                ackFallbackAudioEl.src = ackFallbackObjectUrl;
+                // PHASE O5.5 Speak-Then-Work計測（Section9）: play()呼び出し
+                // （リクエスト時刻）だけでなく、実際にブラウザが再生を開始した
+                // 瞬間（'playing'イベント）を「安全網音声のfirst byte相当」として
+                // 記録する。既存のRealtime/T0-T10ロジックには一切影響しない、
+                // 読み取り専用のイベントリスナー追加のみ。
+                ackFallbackAudioEl.addEventListener('playing', () => {
+                    pushTimelineEvent('SPEAK_THEN_WORK_ACK_FALLBACK_AUDIO_PLAYING (speech_stopped以降='
+                        + formatElapsedSinceSpeechStopped() + ')');
+                });
+                ackFallbackAudioEl.load();
+                ackFallbackState = 'ready';
+                logEvent('[SpeakThenWork] ack fallbackプリロード完了 (' + Math.round(performance.now() - t0) + 'ms, '
+                    + blob.size + 'bytes)');
+            } catch (e) {
+                ackFallbackState = 'preload_failed';
+                // プリロード失敗時は、単に安全網が機能しないだけ（会話自体は
+                // 従来通り進む）。fatalにはしない。
+                logEvent('[SpeakThenWork] ack fallbackプリロード失敗（安全網が無効になりますが通話は継続します）: ' + e.message);
+            }
+        }
+
+        // 通話開始のたびに再生位置をリセットする（前回通話の再生位置を
+        // 持ち越さない）。Zero-WaitのresetZeroWaitCallState()とは独立した
+        // 別関数（Zero-Wait側のコードには一切触れない）。
+        function resetAckFallbackCallState() {
+            if (ackFallbackAudioEl) {
+                try { ackFallbackAudioEl.pause(); ackFallbackAudioEl.currentTime = 0; } catch (e) {}
+            }
+        }
+
+        // response.output_item.done(function_call)ハンドラから呼ばれる。
+        // 対象Toolかつ、このresponse内でAI自身がまだ一度も音声を発していない
+        // （aiAudioOutputActive===false）場合にのみ、固定文言の安全網音声を
+        // 再生する。Realtime側が既に一言話していた場合は絶対に重ねて再生しない
+        // （二重acknowledgement防止）。
+        function maybeSendSpeakThenWorkAckFallback(item, myGeneration) {
+            if (!item || !SPEAK_THEN_WORK_ACK_TOOLS.has(item.name)) return;
+            // 二重再生防止（Section5の「二重実行しない」方針の延長）: この
+            // call_idについてToolの実処理が既に完了扱い（processedToolCallIds
+            // 済み）の場合、同じfunction_callイベントが重複して届いたケースと
+            // 判断し、安全網音声を重ねて再生しない。既存Setを読み取るのみで
+            // 書き込みはこの関数からは行わない（書き込みはhandleFunctionCallItem
+            // 側の既存ロジックのまま）。
+            if (item.call_id && processedToolCallIds.has(item.call_id)) {
+                pushTimelineEvent('SPEAK_THEN_WORK_ACK_SKIPPED (tool=' + item.name + ', reason=duplicate_call_id)');
+                return;
+            }
+            if (aiAudioOutputActive) {
+                pushTimelineEvent('SPEAK_THEN_WORK_ACK_SKIPPED (tool=' + item.name + ', reason=ai_already_speaking)');
+                return;
+            }
+            if (ackFallbackState !== 'ready' || !ackFallbackAudioEl) {
+                pushTimelineEvent('SPEAK_THEN_WORK_ACK_SKIPPED (tool=' + item.name + ', reason=fallback_not_ready:' + ackFallbackState + ')');
+                return;
+            }
+            if (isStaleCallEvent(myGeneration)) return;
+            try {
+                ackFallbackAudioEl.currentTime = 0;
+                const playPromise = ackFallbackAudioEl.play();
+                pushTimelineEvent('SPEAK_THEN_WORK_ACK_FALLBACK_PLAY_REQUESTED (tool=' + item.name
+                    + ', speech_stopped以降=' + formatElapsedSinceSpeechStopped() + ')');
+                if (playPromise && typeof playPromise.catch === 'function') {
+                    playPromise.catch((e) => {
+                        pushTimelineEvent('SPEAK_THEN_WORK_ACK_FALLBACK_PLAY_FAILED (tool=' + item.name + '): ' + (e && e.message));
+                    });
+                }
+            } catch (e) {
+                pushTimelineEvent('SPEAK_THEN_WORK_ACK_FALLBACK_PLAY_FAILED (tool=' + item.name + '): ' + (e && e.message));
+            }
+        }
+
         // Phase3G: 第一声テキスト取得とZero-Wait対象可否判定(zero_wait_eligible)
         // を同じレスポンスから行う（ハードコードshop_id一覧の代わり）。
         // 常にこの店舗の第一声テキストは取得する（zeroWaitEnabledが後で
@@ -2406,6 +2526,10 @@
         }
 
         loadGreetingTextAndDetermineEligibility();
+        // PHASE O5.5: Speak-Then-Work安全網音声のプリロード。Zero-Waitの対象可否
+        // 判定とは無関係に、全店舗で常にページ読み込み時にプリロードする
+        // （固定文言のため、店舗ごとの対象判定が不要）。
+        preloadAckFallbackAudio();
 
         // startCall()の同期チェーン内（getUserMediaより前・awaitを挟まない）から
         // 呼び出すこと（section11相当: ユーザー操作由来のジェスチャーとして
@@ -3694,6 +3818,15 @@
                         + '（speech_started時点でAI音声出力中だった=' + speechStartedDuringAiOutput + '）');
                 }
                 pushTimelineEvent('USER_SPEECH_STOPPED (継続=' + (speechDurationMsForTimeline === null ? '?' : speechDurationMsForTimeline + 'ms') + ')');
+                // PHASE O5.5 Speak-Then-Work計測（Section9・T0-T10とは別名の
+                // 追加計測。既存T0-T10のtoolContinuationTraceT0/Active等には
+                // 一切触れず、独立した変数に「直近のユーザー発話終了時刻」を
+                // 記録するだけ。この値はmaybeSendSpeakThenWorkAckFallback内の
+                // 安全網音声再生時・実際の再生開始(playingイベント)時に、
+                // 「お客様の発話終了から何ms後に安全網音声が聞こえ始めたか」を
+                // 算出するためだけに参照される。Realtime制御イベントの送信判断
+                // には一切使わない（観測専用）。
+                lastUserSpeechStoppedAt = performance.now();
                 // LOCAL SILENCE ASSIST — OBSERVATION PoC（観測専用。PoC店舗+debug=1
                 // のみ有効。Realtime APIへは何も送信しない。既存TURN LATENCY計測
                 // より前に呼んでも後に呼んでも計算結果に影響しない独立処理だが、
@@ -3845,6 +3978,13 @@
                 // この時点で「確認しています」（PROCESSING）へ切り替える
                 // （続くresponse.doneのUI_STATE分岐がこの後も同じ文言を維持する）。
                 subStatusText.textContent = '確認しています';
+                // PHASE O5.5 Speak-Then-Work: Toolの実処理(handleFunctionCallItem)
+                // を待たず、function_callがこの時点で確定したその場で安全網
+                // acknowledgement音声の再生要否を判定する（最速で「無言」を
+                // 埋めるため）。callGenerationは本スコープの外側クロージャに
+                // 存在する既存の通話世代カウンタをそのまま利用し、新たな
+                // 状態を追加しない。
+                maybeSendSpeakThenWorkAckFallback(msg.item, callGeneration);
                 handleFunctionCallItem(msg.item).catch((e) => {
                     logEvent('Tool処理中にエラー: ' + e.message);
                 });
@@ -4264,6 +4404,10 @@
             if (elapsedTimerId) { clearInterval(elapsedTimerId); elapsedTimerId = null; }
             resetUsageObservation();
             resetToolCallState();
+            // PHASE O5.5: Speak-Then-Work安全網音声を前回通話の再生位置から
+            // 持ち越さない（Zero-Waitのresetとは独立。Greeting関連コードには
+            // 一切触れない）。
+            resetAckFallbackCallState();
             // Outbound AI Phase 4B: 新しい通話の開始にあたり、前回の通話の
             // session状態を必ずクリアする（別通話への流用を防ぐ）。
             // voiceSessionIdはこの直後のfetchSession()成功時に改めて設定する。

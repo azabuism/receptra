@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
+from app.config import get_settings
 from app.deps import get_db
 from app.models.ai_staff_settings import AIStaffSettings
 from app.models.shop import Shop
@@ -512,6 +513,77 @@ async def get_realtime_voice_greeting_audio(shop_id: str, db: AsyncSession = Dep
         content=result["audio_bytes"],
         media_type=result.get("content_type") or "audio/mpeg",
         headers={"Cache-Control": "no-store", "X-Greeting-Audio-Cache": result.get("cache", "unknown")},
+    )
+
+
+# PHASE O5.5 Speak-Then-Work: ack-fallback-audio用の別バケット。ページ読み込み時に
+# 1回だけプリロードされる想定の読み取り中心のリクエストのため、/greeting-audioと
+# 同程度の緩めの制限にする。
+_ACK_FALLBACK_AUDIO_RATE_LIMIT_WINDOW_SECONDS = 60
+_ACK_FALLBACK_AUDIO_RATE_LIMIT_MAX_REQUESTS = 20
+_recent_ack_fallback_audio_requests: dict[str, list] = {}
+
+
+def _check_ack_fallback_audio_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _recent_ack_fallback_audio_requests.setdefault(shop_id, [])
+    bucket[:] = [t for t in bucket if now - t < _ACK_FALLBACK_AUDIO_RATE_LIMIT_WINDOW_SECONDS]
+    if len(bucket) >= _ACK_FALLBACK_AUDIO_RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
+
+
+@router.get("/ack-fallback-audio")
+async def get_realtime_voice_ack_fallback_audio(shop_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    PHASE O5.5 Speak-Then-Work: Tool呼び出し確定時にAI自身がまだ何も発話して
+    いなかった場合にのみ再生する、固定文言の安全網音声(mp3)を返す
+    （会員登録不要・認証不要。/greeting-audioと同じ公開範囲の考え方）。
+
+    重要（Zero-Wait Greetingとの違い・必ず守ること）:
+    - これはZero-Wait Greetingとは完全に独立した別機能であり、
+      AIStaffSettings.greeting_audio_* カラム・
+      app.services.realtime_voice_ai.get_or_generate_greeting_audio()には
+      一切触れない（Greeting関連コード変更禁止の指示を守るため）。
+    - 文言は固定（app.services.realtime_voice_ai._ACK_FALLBACK_TEXT）。
+      店舗・会話内容によって変わらないため、キャッシュはDBではなくvoice単位の
+      プロセス内メモリのみで十分（get_or_generate_ack_fallback_audio()参照）。
+      新規のDBカラム・マイグレーションは一切追加していない。
+    - voiceは通話のRealtime voice設定と同じもの（AIStaffSettings.voice、
+      未設定ならOPENAI_REALTIME_VOICE）を使う。
+    - Cache-Control: no-store（/greeting-audioと同じ理由。ただし本エンドポイントの
+      内容自体はvoiceが変わらない限り不変なため実害は小さいが、念のため既存の
+      音声配信エンドポイントと方針を統一する）。
+    """
+    _check_ack_fallback_audio_rate_limit(shop_id)
+
+    shop = await db.get(Shop, shop_id)
+    if not shop or not shop.is_active:
+        raise HTTPException(status_code=404, detail="店舗が見つかりません")
+
+    settings = get_settings()
+    result = await db.execute(
+        select(AIStaffSettings.voice).filter(AIStaffSettings.shop_id == shop_id)
+    )
+    staff_voice = result.scalar_one_or_none()
+    voice = staff_voice or settings.OPENAI_REALTIME_VOICE
+
+    try:
+        audio_bytes = await realtime_voice_ai.get_or_generate_ack_fallback_audio(voice)
+    except RuntimeError as e:
+        logger.error("ack-fallback-audio生成に失敗（設定エラー） shop_id=%s: %s", shop_id, e)
+        raise HTTPException(status_code=502, detail="音声の準備に失敗しました。しばらくしてから再度お試しください。")
+    except Exception as e:
+        logger.error("ack-fallback-audio取得に失敗 shop_id=%s: %s", shop_id, e)
+        raise HTTPException(status_code=502, detail="音声の準備に失敗しました。しばらくしてから再度お試しください。")
+
+    return Response(
+        content=audio_bytes,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-store"},
     )
 
 

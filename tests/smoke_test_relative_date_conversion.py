@@ -65,14 +65,19 @@ _DAY_NAMES_JA = ["月", "火", "水", "木", "金", "土", "日"]
 
 
 def _expected_block(fixed_now: real_datetime) -> str:
-    today = fixed_now.astimezone(JST).date()
+    local_now = fixed_now.astimezone(JST)
+    today = local_now.date()
     tomorrow = today + timedelta(days=1)
     day_after = today + timedelta(days=2)
 
     def fmt(d):
         return f"{d.year}年{d.month}月{d.day}日（{_DAY_NAMES_JA[d.weekday()]}曜日）"
 
-    return f"今日: {fmt(today)}\n明日: {fmt(tomorrow)}\n明後日: {fmt(day_after)}"
+    # PHASE O5.5 Relative Time Hotfix: 日付3行に加え、現在時刻（時:分）の
+    # 4行目が追加されている（「今から30分後」のような相対時刻表現を
+    # サーバー側の現在時刻を基準にモデルが計算できるようにするため）。
+    now_str = f"{local_now.hour}時{local_now.minute:02d}分"
+    return f"今日: {fmt(today)}\n明日: {fmt(tomorrow)}\n明後日: {fmt(day_after)}\n現在時刻: {now_str}"
 
 
 def _test_relative_dates_block_computation():
@@ -136,6 +141,34 @@ def _test_template_wording():
     assert "日付を加算したり、曜日を推測したりすることは絶対にしないでください" in normalized
 
     print("2. Shop Info / Relative Dateテンプレートの文面: OK")
+
+
+def _test_o55_relative_time_hotfix_wording():
+    """RELATIVE-REG (PHASE O5.5 Section18): 現在時刻の追加とTime Ambiguity
+    テンプレートとの整合が壊れていないことを確認する。"""
+    from app.services.realtime_voice_ai import _SHOP_INFO_TEMPLATE, _TIME_AMBIGUITY_TEMPLATE
+
+    # Shop Info: 現在時刻が「日付」と並んで説明されていること
+    assert "現在時刻" in _SHOP_INFO_TEMPLATE
+    assert "{relative_dates_block}" in _SHOP_INFO_TEMPLATE
+
+    normalized_time_ambiguity = _TIME_AMBIGUITY_TEMPLATE.replace("\n", "")
+
+    # 旧来の「現在時刻は渡されていない」という、今回のHotfixで既に事実で
+    # なくなった記述が残っていないこと（残っていると自己矛盾する）。
+    assert "現在時刻はあなたには渡されていない" not in normalized_time_ambiguity, (
+        "Hotfix後も「現在時刻は渡されていない」という古い記述が残っています"
+    )
+
+    # 現在時刻は相対時刻の加算のためだけに使ってよく、AM/PM判定・過去判定を
+    # AI自身に行わせてはいけないという、既存のTool権威の原則が維持されて
+    # いること（PHASE O5.5で新たに追加した現在時刻を、既存のtime_in_past
+    # 判定の権威に対する抜け道にしないための回帰確認）。
+    assert "相対時刻の計算のためだけに使って" in normalized_time_ambiguity
+    assert "自分で判断し" in normalized_time_ambiguity and "絶対にしないでください" in normalized_time_ambiguity
+    assert "time_in_past" in normalized_time_ambiguity
+
+    print("2b. PHASE O5.5 Relative Time Hotfix（現在時刻の追加とTime Ambiguityとの整合）: OK")
 
 
 def _test_backend_unchanged():
@@ -221,6 +254,7 @@ async def _test_build_instructions_direct(shop_id):
 async def main():
     _test_relative_dates_block_computation()
     _test_template_wording()
+    _test_o55_relative_time_hotfix_wording()
     _test_backend_unchanged()
 
     from app.main import app, lifespan

@@ -902,14 +902,38 @@ def _relative_dates_block_jst() -> str:
     日本国内の店舗のみを対象としているため、この既存のJST固定基準を
     そのまま踏襲することが安全である（新たな依存やタイムゾーン推測を
     一切追加しない）。
+
+    ★PHASE O5.5 Relative Time Hotfix（重要な追記）: 従来この関数は「日付」
+    （今日/明日/明後日）のみを計算しており、「現在の時刻（時:分）」は
+    一切含まれていなかった。_TIME_AMBIGUITY_TEMPLATE内に「現在時刻は
+    あなたには渡されていないため、過去かどうかをあなた自身で判断しない
+    でください」と明記されていた通り、これは既知の設計上の制約だった。
+    しかし「今から30分後」「1時間後」のような、日付ではなく現在時刻
+    そのものを基準にした相対表現は、この制約下ではモデルが原理的に
+    計算不可能だった（実機調査で確認: 該当発話の後にAIが無言になる
+    症状の主要因と判断）。
+    このHotfixでは、_today_str_jst()と全く同じJST固定基準で「現在時刻
+    （時:分）」も計算し、以下の`now_str`として追加する。日付計算と同じ
+    理由（モデル自身に加算・推測させない）から、時刻の加算（30分後・
+    1時間後等）もサーバー側の値を基準にモデルが計算すること自体は
+    許容する（現在時刻さえ分かれば、30分後・1時間後という単純な加算は
+    モデルが誤りなく行える健全な計算であり、日付の跨ぎ判定・曜日判定
+    ほど誤りやすいものではないため、今日/明日/明後日ほど厳格にサーバー
+    側で確定済みの値だけを使わせる必要はないと判断した）。
+    この値は_TIME_AMBIGUITY_TEMPLATE側の「現在時刻は渡されていない」旨の
+    記述と矛盾するため、そちらのテンプレートも同時に更新する
+    （_TIME_AMBIGUITY_TEMPLATE参照）。
     """
-    today = datetime.now(JST).date()
+    now = datetime.now(JST)
+    today = now.date()
     tomorrow = today + timedelta(days=1)
     day_after_tomorrow = today + timedelta(days=2)
+    now_str = f"{now.hour}時{now.minute:02d}分"
     return (
         f"今日: {_date_str_jst(today)}\n"
         f"明日: {_date_str_jst(tomorrow)}\n"
-        f"明後日: {_date_str_jst(day_after_tomorrow)}"
+        f"明後日: {_date_str_jst(day_after_tomorrow)}\n"
+        f"現在時刻: {now_str}"
     )
 
 
@@ -1368,6 +1392,19 @@ AI:「ありがとうございます。お時間は何時をご希望ですか�
 Toolを呼び出してください（詳細はcheck_availabilityツールの説明文も
 参照してください）。
 
+## Tool呼び出しの直前にできるだけ一言添える（★PHASE O5.5追記）
+check_availabilityのようにBackend確認が必要なToolを呼び出す際、可能で
+あれば、Toolを呼び出すのと同じ応答の中で「はい、{{time}}ですね。空きを
+確認します。」のような短い一言を先に発話してから呼び出してください。
+ただし、実行環境の制約上、この一言が実際には音声として再生されず
+Tool呼び出しだけが先に届く場合があります。その場合はRECEPTRAのシステム
+側が「確認します。少々お待ちください。」という短い固定音声を自動的に
+代わりに再生し、お客様を無言のまま待たせないようにしています。
+そのため、あなたがこの一言を発話できたかどうかに関わらず、Tool結果を
+受け取った後の最終回答では「確認しました。」「お待たせしました。」を
+機械的に繰り返す必要はありません。Backend処理にかかった時間が短ければ
+（Section 8の方針どおり）そのまま結果を簡潔に案内してください。
+
 ## 人数の確認は業種に応じて調整する
 {party_size_guidance}
 
@@ -1424,13 +1461,24 @@ _SHOP_INFO_TEMPLATE = """\
 # 店舗の営業時間（曜日ごと）
 {hours_block}
 
-# 本日・明日・明後日の日付（RECEPTRA側で事前に計算済みの絶対日付です）
+# 本日・明日・明後日の日付と現在時刻（RECEPTRA側で事前に計算済みです）
 {relative_dates_block}
 お客様が「今日」「明日」「明後日」という言葉で来店希望日を伝えた場合は、
 必ず上記の一覧に記載された絶対日付（曜日付き）をそのまま使ってください。
 この変換をあなた自身の推測・暗算で行うことは絶対にしないでください。
 上記の3つ以外の相対的な日時表現（「今週の土曜」「来週」など）については、
-「今日」の日付を基準に、これまで通り解釈してください。\
+「今日」の日付を基準に、これまで通り解釈してください。
+
+上記の「現在時刻」は、この通話が始まった時点でRECEPTRA側が計算した値です
+（通話が長時間続いた場合、実際の時刻と数分程度ずれる可能性がありますが、
+「今から30分後」「1時間後」のような相対時刻の計算には十分な精度です）。
+お客様が「今から30分後」「1時間後」「30分後」のように、現在時刻からの
+相対的な時間経過で来店・予約希望時刻を伝えた場合は、この「現在時刻」に
+その経過時間を足し合わせて、具体的な時刻（時:分）を計算してください。
+日付を跨ぐ場合（例:23時50分の40分後）は、日付も「明日」に繰り上げてください。
+計算結果は黙って内部で確定させるだけで終わらせず、check_availabilityの
+結果を伝える発話、または「予約全体の最終確認」のいずれかで、必ず一度は
+自然にお客様へ伝えてください（例:「14時30分でお取りできます」）。\
 """
 
 # Phase3H Workstream A: 業種（Shop.business_type）に応じて、AIが会話の中で
@@ -1887,8 +1935,13 @@ _TIME_AMBIGUITY_TEMPLATE = """\
 
 ## 過去時刻との関係（重要）
 上記1〜4はあくまで「午前/午後のどちらか」の判定であり、「その時刻が既に
-過去かどうか」はこの判定に一切含まれていません（現在時刻はあなたには
-渡されていないため、過去かどうかをあなた自身で判断しないでください）。
+過去かどうか」はこの判定に一切含まれていません。
+★PHASE O5.5追記: 「本日・明日・明後日の日付」セクションに現在時刻（時:分）
+が追加されましたが、これは「今から30分後」のような相対時刻の計算のためだけ
+に使ってください。「指定された時刻が本日の中で既に過去かどうか」をこの
+現在時刻から自分で判断し、確認を省略したり時刻を書き換えたりすることは
+絶対にしないでください（日付を跨ぐ判定・営業時間との整合判定は誤りやすく、
+従来通りTool側の判定を唯一の正とします）。
 上記の判定で選んだ時刻であっても、check_availability・create_reservationの
 結果がreason_code=time_in_pastで返ってくることがあります。その場合は
 午前/午後の解釈をやり直すのではなく、各Toolの説明文にあるtime_in_pastの
@@ -2810,3 +2863,73 @@ async def get_or_generate_greeting_audio(db: AsyncSession, shop: Shop) -> dict:
         "voice": voice,
         "cache": "miss",
     }
+
+
+# ============================================================
+# PHASE O5.5: Speak-Then-Work Acknowledgement Fallback Audio
+# ============================================================
+#
+# 設計方針（重要・必ず守ること）:
+# - これはRealtime API本体のresponse lifecycle（response.create/response.done/
+#   turn_detection/T0-T10）には一切関与しない、完全に独立した音声再生である。
+#   Zero-Wait Greetingと同じ「事前生成した固定音声をローカル<audio>要素で
+#   再生する」というパターンだけを踏襲するが、Zero-Wait Greeting自身の
+#   関数・状態変数（zeroWaitState等）・AIStaffSettings.greeting_audio_*
+#   カラムには一切触れない、別個の新規実装である（Greeting関連コード変更禁止
+#   の指示を守るため）。
+# - 実機調査（FAST TURN 3.4）で、Tool Callを含むresponseは実際には
+#   function_callのみの中間応答としてresponse.doneが発火し、その時点まで
+#   AIは何も発話していないことが確認されている。つまり「Tool呼び出し直前に
+#   一言acknowledgementを話してから関数を呼ぶ」という指示（Fast Reservation
+#   Flowに既存）だけでは、実機で無言になるケースを構造的に防げない
+#   （実測に基づく判断。推測ではない）。
+# - この無言を確実に防ぐための安全網として、「Tool呼び出しが確定した
+#   （response.output_item.done, item.type==='function_call'）時点で、
+#   もしAI自身がこのresponse内で一度も音声を発していなければ
+#   （aiAudioOutputActive===false）、固定文言の事前生成音声をローカル再生する」
+#   という設計にする。Realtime側が実際に一言話していた場合
+#   （aiAudioOutputActive===true）は、この固定音声は絶対に重ねて再生しない
+#   （二重acknowledgement防止）。
+# - 文言はお客様が何と言ったかに関わらず常に同じ固定文言にする（動的な
+#   内容は持たせない）。理由: この音声はRealtime API外で完全に独立して
+#   ローカル再生されるため、実際の会話内容を反映した動的文言をここで
+#   生成しようとするとNPC分岐が必要になり複雑化する。あくまで「無言を防ぐ
+#   最後の安全網」であり、通常はRealtime自身のacknowledgement発話
+#   （指示強化により改善を試みる）が先に鳴っていることを期待し、この固定
+#   音声はそれが鳴らなかった場合のみ再生される想定。
+# - voiceは通話のRealtime voice設定（AIStaffSettings.voice、未設定なら
+#   OPENAI_REALTIME_VOICE）と同じものを使う。同じ音声モデル内で声色が
+#   変わらないようにするため。
+# - キャッシュはDBではなくプロセス内メモリのみ（固定文言×voice種別
+#   （10種類）の組み合わせしか存在しないため、新規のDBカラム・マイグレーション
+#   は一切不要。プロセス再起動でキャッシュが失われても、次回リクエスト時に
+#   再生成されるだけで安全側にフォールバックする）。
+_ACK_FALLBACK_TEXT = "確認します。少々お待ちください。"
+_ack_fallback_audio_cache: dict[str, bytes] = {}
+
+
+async def get_or_generate_ack_fallback_audio(voice: str) -> bytes:
+    """PHASE O5.5: Speak-Then-Work安全網用の固定acknowledgement音声を、
+    voiceごとにプロセス内メモリでキャッシュしつつ返す。"""
+    cached = _ack_fallback_audio_cache.get(voice)
+    if cached is not None:
+        return cached
+
+    settings = get_settings()
+    if not settings.OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY が設定されていません")
+
+    client = _get_client()
+    resp = await client.audio.speech.create(
+        model=settings.OPENAI_TTS_MODEL,
+        voice=voice,
+        input=_ACK_FALLBACK_TEXT,
+        response_format="mp3",
+    )
+    audio_bytes = await resp.aread()
+    _ack_fallback_audio_cache[voice] = audio_bytes
+    logger.info(
+        "Speak-Then-Work ack fallback音声を生成 voice=%s model=%s bytes=%d",
+        voice, settings.OPENAI_TTS_MODEL, len(audio_bytes),
+    )
+    return audio_bytes
