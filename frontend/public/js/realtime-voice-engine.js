@@ -2774,7 +2774,41 @@
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), TOOL_FETCH_TIMEOUT_MS);
             try {
-                return await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+                const res = await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+                // FAST TURN 3.4（iPhone vs Mac 実機差診断・観測専用。fetch自体の
+                // 呼び出し方・戻り値・タイムアウト挙動は一切変更しない）:
+                // 既存のturnLatencyToolDurationMs（Tool呼び出し全体の所要時間）
+                // だけでは、「ネットワーク経路（DNS/TCP/TLS/サーバー処理待ち）が
+                // 遅いのか」「レスポンス受信後のJSON処理等が遅いのか」を切り分け
+                // られない。debugMode時のみ、ブラウザが既に記録している
+                // Resource Timing API（このfetchが完了した後に読み取るだけで、
+                // 新しい計測・追加のリクエストは一切発生しない）から、この
+                // fetch自体のDNS/TCP/TLS/TTFB(サーバー処理待ち)/ダウンロードの
+                // 内訳を1回だけ記録する。取得できない場合
+                // （ブラウザ非対応・エントリ未検出・バッファ超過等）は
+                // 何もせず黙ってスキップする（fail-open。既存の計測・動作へは
+                // 一切影響させない）。
+                if (debugMode) {
+                    try {
+                        const entries = (performance.getEntriesByType && performance.getEntriesByType('resource')) || [];
+                        const matches = entries.filter((e) => typeof e.name === 'string' && e.name.indexOf(url) !== -1);
+                        const entry = matches.length ? matches[matches.length - 1] : null;
+                        if (entry) {
+                            const dns = Math.round(entry.domainLookupEnd - entry.domainLookupStart);
+                            const tcp = Math.round(entry.connectEnd - entry.connectStart);
+                            const tls = (entry.secureConnectionStart > 0)
+                                ? Math.round(entry.connectEnd - entry.secureConnectionStart) : 0;
+                            const ttfb = Math.round(entry.responseStart - entry.requestStart);
+                            const download = Math.round(entry.responseEnd - entry.responseStart);
+                            pushTimelineEvent('TOOL_FETCH_TIMING dns=' + dns + 'ms tcp=' + tcp + 'ms tls=' + tls
+                                + 'ms ttfb=' + ttfb + 'ms download=' + download + 'ms');
+                        }
+                    } catch (timingErr) {
+                        // 観測専用のため、取得に失敗しても既存の計測・動作には
+                        // 一切影響させない（意図的に握りつぶす）。
+                    }
+                }
+                return res;
             } finally {
                 clearTimeout(timeoutId);
             }
@@ -3635,6 +3669,20 @@
             } else if (type === 'response.done') {
                 lastAiAudioEventAt = performance.now();
                 subStatusText.textContent = '待機中（お話しください）';
+                // FAST TURN 3.4（iPhone vs Mac / 「時間確認以降」の遅さ診断・
+                // 観測専用。UI文言・挙動は一切変更しない）: Tool Callを含む
+                // ターンでは、Tool結果を踏まえた最終応答が来る前に、
+                // function_callのみの中間応答についてもこのresponse.doneが
+                // 1回発火する（既存のresponseHasFunctionCallフラグが、その
+                // 判定にそのまま使える）。その時点でも上のsubStatusTextは
+                // 無条件に「待機中（お話しください）」へ戻ってしまうため、
+                // 実際にはToolの往復処理中（＝AIはまだ何も答えていない）
+                // にもかかわらず、画面上は「待機中」に見える可能性がある。
+                // これが実機での「時間確認以降、待機中の表示のまま長く感じる」
+                // という報告の一因かどうかを実機ログで確認できるよう、
+                // このタイミングでのresponseHasFunctionCallの値だけを記録する
+                // （dc.send等は一切行わない。UIの表示は変更しない）。
+                pushTimelineEvent('UI_STATE: 待機中表示 (この応答のresponseHasFunctionCall=' + responseHasFunctionCall + ')');
                 // 安全網: 通常はoutput_audio_buffer.stopped/clearedで既にfalseに
                 // 戻っているはずだが、稀にそれらのイベントを取りこぼした場合でも
                 // aiAudioOutputActiveが誤ってtrueのまま残らないようにする。
