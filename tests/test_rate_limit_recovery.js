@@ -104,6 +104,14 @@ function makeSandbox(overrides) {
         toolContinuationTraceActive: false,
         toolContinuationTraceCallId: null,
         toolContinuationRateLimitRetryUsedForCallId: null,
+        // FAST TURN HOTFIX 7で追加された、rate limit残量に基づくretryスキップ
+        // 判定に使う状態。デフォルトはnull（未取得＝比較材料が無い）とし、
+        // HOTFIX 6時点の「無条件でretryを許可する」動作をテストのデフォルト
+        // として維持する（既存A〜Kのテストが引き続き無変更で通ることを保証する）。
+        // 個別テストでoverridesとして上書きし、insufficient budgetの場合の
+        // 挙動を検証する。
+        lastKnownRateLimitRemainingTokens: null,
+        lastObservedResponseInputTokens: null,
         turnLatencyTraceId: null,
         lastResponseReasonCategoryForDiag: 'unknown',
         debugMode: false,
@@ -334,15 +342,124 @@ test('K) dc.send()呼び出し箇所数は今回も増えていない（既存9�
 });
 
 // =======================================================================
-// 補足: rate_limits.updated診断ハンドラの健全性（新規追加・観測専用）
+// L〜O. FAST TURN HOTFIX 7: rate limit残量に基づくretryスキップ判定
 // =======================================================================
-test('補足) rate_limits.updatedハンドラは推測したfield名を決め打ちせず、msg.rate_limitsを汎用的に記録するだけである', () => {
+// 背景: HOTFIX 6のimmediate retryを実機検証したところ、rate_limits.updated
+// で観測されたremaining（14711）が、直前の正常responseが実際に消費した
+// input_tokens（24320）を下回っている状況で、retry（attempt=1）が即座に
+// 同じRate_limit_exceededで再失敗することが直接確認された。そのため、
+// retryを送信する前に実測データ同士を比較し、明らかに不足していれば
+// retry自体を送信しないガードを追加した。
+
+test('L) rate limit残量(remaining)が直近の正常response消費量(lastObservedResponseInputTokens)を下回る場合、retryは送信されず、専用のskipマーカーが記録される', () => {
+    const ctx = makeSandbox({
+        respStatus: 'failed',
+        msg: { response: { id: 'resp_l_1', status: 'failed', status_details: { error: { type: 'tokens', code: 'Rate_limit_exceeded' } } } },
+        toolContinuationTraceActive: true,
+        toolContinuationTraceCallId: 'call_l_1',
+        // 実機で実際に観測された値と同じ関係（remaining < 直前の消費量）。
+        lastKnownRateLimitRemainingTokens: 14711,
+        lastObservedResponseInputTokens: 24320,
+    });
+    ctx.run();
+    assert.strictEqual(ctx.sendResponseCreateCalls.length, 0, 'must not send a retry when the budget clearly looks insufficient');
+    const skipLine = ctx.timelineEvents.find(t => t.includes('TOOL_CONTINUATION_RATE_LIMIT_RETRY_SKIPPED'));
+    assert.ok(skipLine, 'must record a distinct skip marker (not silently do nothing)');
+    assert.ok(skipLine.includes('remaining=14711') && skipLine.includes('lastResponseInputTokens=24320'));
+    // ユーザーを無音のまま放置しない（新しい音声は追加せず、UIテキストのみ
+    // 更新する）。
+    assert.strictEqual(ctx.subStatusText.textContent, '混み合っています。少々お待ちください');
+});
+
+test('L2) skip判定でも、同一call_idへの再判定（2回目のresponse.done failed）は発生しない（retry storm防止と同じ仕組みを共有）', () => {
+    const ctx = makeSandbox({
+        respStatus: 'failed',
+        toolContinuationTraceActive: true,
+        toolContinuationTraceCallId: 'call_l2_1',
+        lastKnownRateLimitRemainingTokens: 100,
+        lastObservedResponseInputTokens: 24320,
+    });
+    ctx.sandbox.msg = { response: { id: 'resp_l2_a', status: 'failed', status_details: { error: { type: 'tokens', code: 'rate_limit_exceeded' } } } };
+    ctx.run();
+    ctx.sandbox.msg = { response: { id: 'resp_l2_b', status: 'failed', status_details: { error: { type: 'tokens', code: 'rate_limit_exceeded' } } } };
+    ctx.run();
+    assert.strictEqual(ctx.sendResponseCreateCalls.length, 0);
+    assert.strictEqual(ctx.timelineEvents.filter(t => t.includes('TOOL_CONTINUATION_RATE_LIMIT_RETRY_SKIPPED')).length, 1,
+        'the skip decision itself must also be made at most once per call_id, just like an actual retry would be');
+});
+
+test('M) rate limit残量が直近の正常response消費量以上の場合は、従来通りretryを送信する（回帰）', () => {
+    const ctx = makeSandbox({
+        respStatus: 'failed',
+        msg: { response: { id: 'resp_m_1', status: 'failed', status_details: { error: { type: 'tokens', code: 'rate_limit_exceeded' } } } },
+        toolContinuationTraceActive: true,
+        toolContinuationTraceCallId: 'call_m_1',
+        lastKnownRateLimitRemainingTokens: 30000,
+        lastObservedResponseInputTokens: 24320,
+    });
+    ctx.run();
+    assert.strictEqual(ctx.sendResponseCreateCalls.length, 1, 'must retry as before when the observed budget looks sufficient');
+    assert.strictEqual(ctx.subStatusText.textContent, '確認しています');
+    assert.strictEqual(ctx.timelineEvents.filter(t => t.includes('TOOL_CONTINUATION_RATE_LIMIT_RETRY_SKIPPED')).length, 0);
+});
+
+test('N) rate limit残量・直近消費量のいずれかが未取得(null)の場合は、比較材料が無いためHOTFIX 6と同じくretryを許可する（安全側デフォルトの回帰）', () => {
+    const ctxRemainingUnknown = makeSandbox({
+        respStatus: 'failed',
+        msg: { response: { id: 'resp_n_1', status: 'failed', status_details: { error: { type: 'tokens', code: 'rate_limit_exceeded' } } } },
+        toolContinuationTraceActive: true,
+        toolContinuationTraceCallId: 'call_n_1',
+        lastKnownRateLimitRemainingTokens: null,
+        lastObservedResponseInputTokens: 24320,
+    });
+    ctxRemainingUnknown.run();
+    assert.strictEqual(ctxRemainingUnknown.sendResponseCreateCalls.length, 1);
+
+    const ctxUsageUnknown = makeSandbox({
+        respStatus: 'failed',
+        msg: { response: { id: 'resp_n_2', status: 'failed', status_details: { error: { type: 'tokens', code: 'rate_limit_exceeded' } } } },
+        toolContinuationTraceActive: true,
+        toolContinuationTraceCallId: 'call_n_2',
+        lastKnownRateLimitRemainingTokens: 100,
+        lastObservedResponseInputTokens: null,
+    });
+    ctxUsageUnknown.run();
+    assert.strictEqual(ctxUsageUnknown.sendResponseCreateCalls.length, 1);
+});
+
+test('O) recordUsageEvent()は、usage.input_tokensが得られるたびにlastObservedResponseInputTokensを更新する配線になっている（0の場合は上書きしない）', () => {
+    const idx = SRC.indexOf('function recordUsageEvent(response)');
+    assert.notStrictEqual(idx, -1, 'recordUsageEvent not found');
+    const block = SRC.slice(idx, idx + 800);
+    assert.ok(/if\s*\(usage\.input_tokens\)\s*\{\s*lastObservedResponseInputTokens\s*=\s*usage\.input_tokens;/.test(block),
+        'recordUsageEvent must update lastObservedResponseInputTokens only when usage.input_tokens is truthy (a failed response often reports 0, which must not overwrite the last known real value)');
+});
+
+// =======================================================================
+// 補足: rate_limits.updated診断ハンドラの健全性（HOTFIX 6で新規追加・
+// HOTFIX 7で実機確認済みschemaの抽出を追加）
+// =======================================================================
+test('補足) rate_limits.updatedハンドラは、HOTFIX 6時点では未確認だったfield名を、HOTFIX 7で実機確認できたため安全に抽出するようになった（ただし生JSONの汎用ログも維持）', () => {
+    // HOTFIX 6時点ではrate_limits.updatedの正確なfield名（name/limit/
+    // remaining/reset_seconds）を公式ドキュメントから確認できなかったため、
+    // 推測でfield名を決め打ちせず、msg.rate_limitsを汎用的にJSON化して
+    // 記録するだけに留めていた。HOTFIX 7で実機から
+    //   name:"tokens" limit:40000 remaining:14711 reset_seconds:37.932
+    // という実際の中身が直接観測されたため、このテストの前提
+    // （field名に一切触れてはいけない）はもはや正しくない。現在は
+    // name==="tokens"のentryからremaining/reset_secondsを安全に
+    // （Array.isArray・typeof チェック付きで）抽出しつつ、生JSONの汎用ログも
+    // 引き続き残す設計になっていることを確認する。
     const idx = SRC.indexOf("} else if (type === 'rate_limits.updated') {");
     assert.notStrictEqual(idx, -1, 'rate_limits.updated handler not found');
-    const block = SRC.slice(idx, idx + 1200);
-    assert.ok(!/\.name\b|\.limit\b|\.remaining\b|\.reset_seconds\b/.test(block),
-        'must not assume unconfirmed field names (name/limit/remaining/reset_seconds) — log the object generically instead');
-    assert.ok(block.includes('JSON.stringify(rl)'), 'must log the raw object generically for future real-device schema discovery');
+    const block = SRC.slice(idx, idx + 2200);
+    assert.ok(block.includes('JSON.stringify(rl)'), 'must still log the raw object generically for future real-device schema discovery of other rate limit types');
+    assert.ok(block.includes("e.name === 'tokens'") || block.includes('e.name === "tokens"'),
+        'must look up the confirmed "tokens" entry by name rather than assuming array order');
+    assert.ok(/typeof\s+tokensEntry\.remaining\s*===\s*'number'/.test(block),
+        'must guard the confirmed remaining field with a type check rather than trusting it unconditionally');
+    assert.ok(/typeof\s+tokensEntry\.reset_seconds\s*===\s*'number'/.test(block),
+        'must guard the confirmed reset_seconds field with a type check rather than trusting it unconditionally');
 });
 
 test('補足2) rate_limits.updatedハンドラは送信を一切行わない（観測専用）', () => {

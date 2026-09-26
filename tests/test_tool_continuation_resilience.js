@@ -335,7 +335,11 @@ await test('Q: FAST TURN 3.6B) T10(CONTINUATION_RESPONSE_DONE)はfunction_call�
     // T10マッチ開始位置の実測オフセットが9315文字、トレース終了確認
     // （toolContinuationTraceActive = false;まで含む）の終端が9522文字まで
     // 伸びたため、ウィンドウを7200→10500へ再拡張（測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 10500);
+    // さらにFAST TURN HOTFIX 7で、同じブロック内にrate limit残量に基づく
+    // retryスキップ判定（budgetLooksInsufficientガード・関連コメント）が
+    // 追加され、T10マッチ開始位置の実測オフセットが11900文字まで伸びたため、
+    // ウィンドウを10500→13500へ再拡張（測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 13500);
     assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*pushToolContinuationTrace\('T10_CONTINUATION_RESPONSE_DONE/.test(block),
         'T10 must only be recorded for the final response.done (no function_call), never for the intermediate function-call-only response.done');
     assert.ok(/T10_CONTINUATION_RESPONSE_DONE[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
@@ -455,7 +459,10 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     // bounded rate-limit retryロジックが追加され、startSilenceTimerIfNeeded
     // 呼び出しまでの実測オフセットが8870文字まで伸びたため、ウィンドウを
     // 6800→10000へ再拡張（測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 10000);
+    // さらにFAST TURN HOTFIX 7で、同じブロック内にrate limit残量に基づく
+    // retryスキップ判定が追加され、実測オフセットが11455文字まで伸びたため、
+    // ウィンドウを10000→13000へ再拡張（測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 13000);
     // PHASE O5.6診断: startSilenceTimerIfNeeded()に診断専用の第2引数
     // （armReasonForDiag、例: 'response_done_no_function_call'）が追加された。
     // ガード条件(!responseHasFunctionCall)自体・呼び出し自体（第1引数は

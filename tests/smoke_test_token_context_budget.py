@@ -66,7 +66,21 @@ import httpx
 # 勘の数値ではなく、tests/smoke_test_token_context_budget.py作成時に
 # 本テストと同じ手順（build_realtime_instructions() / _REALTIME_TOOLS を
 # json.dumpsしてlen()）で直接計測した値そのもの。
-BASELINE_INSTRUCTIONS_CHARS = 23568
+#
+# FAST TURN HOTFIX 7更新（2026-09-26、このコミット時点）: 実機で
+# Tool継続responseがOpenAI側のtoken rate limit（Rate_limit_exceeded、
+# limit=40000, remaining=14711）でfailedになったことが確認されたのを受け、
+# static context（instructions + tools schema）の重複監査を行った。
+# _RELATIVE_DATE_TEMPLATEの「この確認と『予約全体の最終確認』は別物です」
+# セクションが、直前の_TIME_AMBIGUITY_TEMPLATEの同趣旨の説明を全文に近い
+# 形で繰り返していたため、意味を保ったまま短い相互参照へ圧縮した（安全性は
+# tests/smoke_test_relative_date_conversion.pyの既存アサーションで担保
+# 済み）。この変更によりinstructionsは23568→23549文字（-19文字）へ減少
+# した。tools schema側はこの時点では変更していない（check_availability/
+# create_reservationのdescriptionはreason_code別の固有ロジックであり、
+# 過去の実機バグ修正に直結する内容のため、安全に削れる重複が見つからず、
+# 今回は見送った。詳細はFAST TURN HOTFIX 7の最終報告を参照）。
+BASELINE_INSTRUCTIONS_CHARS = 23549
 BASELINE_TOOLS_JSON_CHARS = 16490
 ALLOWED_GROWTH_RATIO = 1.10  # 10%までの増加は許容し、それを超えたら気づけるようにする
 

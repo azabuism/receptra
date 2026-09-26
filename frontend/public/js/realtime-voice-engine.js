@@ -285,6 +285,34 @@
         // 継続トレースのみを保持する既存方針と同じ）。
         let toolContinuationRateLimitRetryUsedForCallId = null;
 
+        // FAST TURN HOTFIX 7（今回追加）: HOTFIX 6のimmediate bounded retryを
+        // 実機で検証した結果、rate_limits.updatedで確認できた
+        // remaining（例: 14711）が、直前の正常response自体が消費した
+        // input_tokens（例: 24320）を下回っている状況では、同じ内容の
+        // retryが即座に同じ理由で再度Rate_limit_exceededになることが
+        // 実機で直接確認された（attempt=1がそのまま再失敗）。そのため、
+        // 「retryする前に、直近のrate limit残量と直近のresponseの実際の
+        // トークン消費量を比較し、明らかに不足している場合はretry自体を
+        // 送信しない」という、実測データに基づくガードを追加する
+        // （固定delayや推測のしきい値は使わない。あくまで実際に観測できた
+        // 2つの数値の大小比較のみ）。
+        // - lastObservedResponseInputTokens: 直近に成功裏に記録された
+        //   response.usage.input_tokens（recordUsageEventが更新）。
+        //   failedなresponseはusageが無い/0であることが多いため、実質的に
+        //   「直近の正常な1往復が実際に使った量」の実測値になる。
+        // - lastKnownRateLimitRemainingTokens /
+        //   lastKnownRateLimitResetSeconds: rate_limits.updatedイベントで
+        //   実機確認できたスキーマ（配列内の各entryが
+        //   {name, limit, remaining, reset_seconds}）のうち、
+        //   name==="tokens"のentryから取得した最新値。
+        // どちらか一方でも未取得（null）の場合は、比較材料が無いため
+        // 判断を保留し、HOTFIX 6と同じ「retryは許可する」動作を維持する
+        // （厳密に安全側に倒しすぎて、実際には成功したはずのretryまで
+        // 一律に止めてしまうことを避けるため）。
+        let lastObservedResponseInputTokens = null;
+        let lastKnownRateLimitRemainingTokens = null;
+        let lastKnownRateLimitResetSeconds = null;
+
         // ===== FAST TURN HOTFIX 4（今回追加）: TOOL CONTINUATION RESPONSE
         // WATCHDOG（診断専用・観測のみ） =====
         // 背景: 実機で「明日、二人で12時に予約したいです」に対しAIが
@@ -3767,6 +3795,14 @@
             const usage = response.usage || {};
             const inTD = usage.input_token_details || {};
             const outTD = usage.output_token_details || {};
+            // FAST TURN HOTFIX 7（今回追加）: rate limit retryの要否判断に使う
+            // 「直近の実際のinput_tokens消費量」を記録する。failedなresponseは
+            // usage.input_tokensが0または欠落していることが多いため、この値は
+            // 実質的に「直近に成功した1往復が実際に使った量」の実測値になる
+            // （0の場合は上書きしない＝直前の正常値を保持する）。
+            if (usage.input_tokens) {
+                lastObservedResponseInputTokens = usage.input_tokens;
+            }
             const entry = {
                 response_id: response.id || null,
                 status: response.status || null,
@@ -5150,21 +5186,40 @@
                         if (debugMode && sdErr && sdErr.message) {
                             console.log('[RESPONSE_DONE_FAILED_ERROR_MESSAGE_DEBUG_ONLY]', sdErr.message);
                         }
-                        // FAST TURN HOTFIX 6（今回追加・bounded recovery。今回のみ
-                        // behavior変更）: 実機でerror_type=tokens,
-                        // error_code=Rate_limit_exceededが、Tool継続response
-                        // （check_availability等のTool結果を受けた2回目の
-                        // response.create）の失敗として直接観測された。この
-                        // 「Tool継続中・rate limit由来」という証拠がある場合に
-                        // 限り、call_idごとに最大1回だけ、追加の待機時間を
-                        // 挟まずresponse.createを即座に再送する。
+                        // FAST TURN HOTFIX 6（前回追加・bounded recovery）: 実機で
+                        // error_type=tokens, error_code=Rate_limit_exceededが、
+                        // Tool継続response（check_availability等のTool結果を
+                        // 受けた2回目のresponse.create）の失敗として直接観測
+                        // された。この「Tool継続中・rate limit由来」という証拠が
+                        // ある場合に限り、call_idごとに最大1回だけ、追加の待機
+                        // 時間を挟まずresponse.createを再送する仕組みを追加した。
+                        //
+                        // FAST TURN HOTFIX 7（今回追加・実機evidenceによる修正）:
+                        // HOTFIX 6のimmediate retryを実機で検証したところ、
+                        //   rate_limits.updated: remaining=14711
+                        //   （直前の正常response自体がinput_tokens≈24320を消費）
+                        // という状況で、retry（attempt=1）が即座に同じ
+                        // Rate_limit_exceededで再失敗することが直接確認された。
+                        // 同じ計測ウィンドウ内でremainingが直前の正常な1往復の
+                        // 消費量にすら満たない場合、同内容のretryが再び同じ理由で
+                        // 失敗することは、待つまでもなく実測データだけから
+                        // 判断できる。そこで、retryを送信する前に「直近のrate
+                        // limit残量」と「直近に実際に成功した1往復のinput_tokens
+                        // 消費量」を比較し、明らかに不足している場合はretry自体を
+                        // 送信しないガードを追加した。
                         // - 固定delay/exponential backoffは、公式ドキュメントから
-                        //   安全な待機秒数を確認できなかったため、勘の数値を
-                        //   避けて意図的に追加していない。
-                        // - retry storm防止: toolContinuationRateLimitRetryUsedFor
-                        //   CallIdを送信前に即座にセットするため、同一call_idへの
-                        //   2回目のretryは（このtryブロックが例外を投げた場合を
-                        //   含め）絶対に発生しない。
+                        //   安全な待機秒数を確認できなかったため、今回も勘の数値は
+                        //   使わない（rate_limits.updatedのreset_secondsを
+                        //   setTimeoutに使うことも、通話を無音のまま待たせる実装に
+                        //   なるため今回はしない）。
+                        // - どちらか一方でも未取得（null）の場合は比較材料が無い
+                        //   ため判断を保留し、HOTFIX 6と同じ「retryは許可する」
+                        //   動作を維持する（安全側に倒しすぎて、実際には成功した
+                        //   はずのretryまで一律に止めないため）。
+                        // - retry storm防止: 実際にretryするかスキップするかに
+                        //   関わらず、toolContinuationRateLimitRetryUsedForCallIdを
+                        //   判断の最初に即座にセットするため、同一call_idへの
+                        //   2回目の判断（retryまたはskip）は絶対に発生しない。
                         // - 汎用のsendResponseCreate()をそのまま使うため、新しい
                         //   dc.send()呼び出し経路は増えない（既存の9箇所のまま）。
                         // - このretry応答自体は既存のtoolContinuationTrace(T0〜T10)
@@ -5177,17 +5232,36 @@
                             && toolContinuationTraceCallId
                             && toolContinuationRateLimitRetryUsedForCallId !== toolContinuationTraceCallId) {
                             toolContinuationRateLimitRetryUsedForCallId = toolContinuationTraceCallId;
-                            const retryLine = 'TOOL_CONTINUATION_RATE_LIMIT_RETRY (attempt=1, callIdTail=' + corrCallIdTail
-                                + ', previousResponseIdTail=' + respIdTail + ')';
-                            pushTimelineEvent(retryLine);
-                            console.log('[' + retryLine + ']');
-                            // ユーザーを無音のまま放置しない（新しい音声は試みず、
-                            // 既存の「確認しています」表示を維持するだけ。この
-                            // response.doneのUI_STATE分岐は本ブロックより前に
-                            // 既に「待機中」へ切り替えてしまっているため、
-                            // ここで明示的に戻す）。
-                            subStatusText.textContent = '確認しています';
-                            sendResponseCreate('tool_continuation_rate_limit_retry');
+                            const budgetDataAvailable = (lastKnownRateLimitRemainingTokens !== null
+                                && lastObservedResponseInputTokens !== null);
+                            const budgetLooksInsufficient = (budgetDataAvailable
+                                && lastKnownRateLimitRemainingTokens < lastObservedResponseInputTokens);
+                            if (budgetLooksInsufficient) {
+                                const skipLine = 'TOOL_CONTINUATION_RATE_LIMIT_RETRY_SKIPPED (reason=insufficient_budget'
+                                    + ', remaining=' + lastKnownRateLimitRemainingTokens
+                                    + ', lastResponseInputTokens=' + lastObservedResponseInputTokens
+                                    + ', callIdTail=' + corrCallIdTail
+                                    + ', previousResponseIdTail=' + respIdTail + ')';
+                                pushTimelineEvent(skipLine);
+                                console.log('[' + skipLine + ']');
+                                // ユーザーを無音のまま放置しない（音声は追加せず、
+                                // 既存のUIテキストを、混雑中であることが伝わる
+                                // 表示へ切り替えるだけにとどめる。新しいdc.send
+                                // 呼び出しは一切行わない）。
+                                subStatusText.textContent = '混み合っています。少々お待ちください';
+                            } else {
+                                const retryLine = 'TOOL_CONTINUATION_RATE_LIMIT_RETRY (attempt=1, callIdTail=' + corrCallIdTail
+                                    + ', previousResponseIdTail=' + respIdTail + ')';
+                                pushTimelineEvent(retryLine);
+                                console.log('[' + retryLine + ']');
+                                // ユーザーを無音のまま放置しない（新しい音声は試みず、
+                                // 既存の「確認しています」表示を維持するだけ。この
+                                // response.doneのUI_STATE分岐は本ブロックより前に
+                                // 既に「待機中」へ切り替えてしまっているため、
+                                // ここで明示的に戻す）。
+                                subStatusText.textContent = '確認しています';
+                                sendResponseCreate('tool_continuation_rate_limit_retry');
+                            }
                         }
                     } catch (diagErr) {
                         pushTimelineEvent('RESPONSE_DONE_FAILED_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
@@ -5271,22 +5345,41 @@
             } else if (type === 'rate_limits.updated') {
                 // FAST TURN HOTFIX 6（今回追加・観測専用）: 実機でTool継続response
                 // がerror_type=tokens, error_code=Rate_limit_exceededで失敗した
-                // ことが直接確認された。OpenAI Realtime APIはrate_limits.updated
-                // イベントで現在のrate limit状況を送ってくることがあると複数の
-                // 情報源（コミュニティ報告・関連issue）で確認できたが、各entry
-                // の正確なfield名（name/limit/remaining/reset_seconds等）を
-                // 公式ドキュメントから断定できなかったため、推測でfield名を
-                // 決め打ちせず、msg.rate_limitsが存在すればその中身を汎用的に
-                // （キー名を問わずJSON化して）記録するだけに留める。これにより
-                // 次回実機テストで実際のschemaを実測できる。PIIは含まれ得ない
-                // （rate limitのメタデータのみのため）が、万一未知の内容が
-                // 混入しても影響が無いよう長さを打ち切る。
+                // ことが直接確認された。HOTFIX 6の時点ではOpenAI公式ドキュメント
+                // からrate_limits.updatedの正確なfield名を断定できなかったため、
+                // 推測でfield名を決め打ちせず、msg.rate_limitsが存在すればその
+                // 中身を汎用的に（キー名を問わずJSON化して）記録するだけに
+                // 留めていた。
+                //
+                // FAST TURN HOTFIX 7（今回追加）: 実機で
+                //   [RATE_LIMITS_UPDATED] name:"tokens" limit:40000
+                //   remaining:14711 reset_seconds:37.932
+                // という実際の中身が直接観測され、msg.rate_limitsが
+                // {name, limit, remaining, reset_seconds}を持つentryの配列で
+                // あることが実測で確認された。これにより、name==="tokens"の
+                // entryからremaining/reset_secondsを抽出し、後続のTool継続
+                // rate limit retryの要否判断（実測データに基づく比較のみで、
+                // 固定delayや推測のしきい値は使わない）に使えるようにする。
+                // 依然として、他のnameのentryや未知の追加フィールドについては
+                // 一切決め打ちせず、生JSONの汎用ログも従来通り残す
+                // （将来別のrate limit種別が観測された場合に備える）。
                 try {
                     const rl = msg.rate_limits;
                     if (rl) {
                         const rlJson = JSON.stringify(rl).slice(0, 500);
                         pushTimelineEvent('RATE_LIMITS_UPDATED ' + rlJson);
                         console.log('[RATE_LIMITS_UPDATED]', rlJson);
+                    }
+                    if (Array.isArray(rl)) {
+                        const tokensEntry = rl.find((e) => e && e.name === 'tokens');
+                        if (tokensEntry) {
+                            if (typeof tokensEntry.remaining === 'number') {
+                                lastKnownRateLimitRemainingTokens = tokensEntry.remaining;
+                            }
+                            if (typeof tokensEntry.reset_seconds === 'number') {
+                                lastKnownRateLimitResetSeconds = tokensEntry.reset_seconds;
+                            }
+                        }
                     }
                 } catch (rlErr) {
                     pushTimelineEvent('RATE_LIMITS_UPDATED_MARKER_ERROR (' + ((rlErr && rlErr.message) || '不明') + ')');
@@ -5639,6 +5732,16 @@
             // 無いはずだが、既存の他のtoolContinuation*系状態と同じく明示的に
             // リセットする）。
             toolContinuationRateLimitRetryUsedForCallId = null;
+            // FAST TURN HOTFIX 7（今回追加・安全網）: 前の通話で観測した
+            // rate limit残量・直近response消費量は、時間経過とともに古くなり
+            // （タイムスタンプを保持していないため鮮度を判定できない）、新しい
+            // 通話でそのまま使うと誤った判断（古い低remaining値で新しい通話の
+            // 正当なretryまで止めてしまう等）につながり得るため、明示的に
+            // リセットする。新しい通話側で改めてrate_limits.updated / usage
+            // イベントを受け取り次第、最新値で上書きされる。
+            lastObservedResponseInputTokens = null;
+            lastKnownRateLimitRemainingTokens = null;
+            lastKnownRateLimitResetSeconds = null;
             updatePlaybackRecoveryButton();
 
             // Mobile Real-Call Failure Investigation: 新しい通話開始のたびに
@@ -6442,6 +6545,11 @@
             cancelToolContinuationResponseWatchdog('cleanup_connection');
             // FAST TURN HOTFIX 6（今回追加・安全網）
             toolContinuationRateLimitRetryUsedForCallId = null;
+            // FAST TURN HOTFIX 7（今回追加・安全網。理由はnew_call_setup側の
+            // コメント参照）
+            lastObservedResponseInputTokens = null;
+            lastKnownRateLimitRemainingTokens = null;
+            lastKnownRateLimitResetSeconds = null;
             updatePlaybackRecoveryButton();
             setStatus(stMicTrackEl, 'なし', null);
             setStatus(stWebrtcEl, 'closed', null);
