@@ -265,7 +265,9 @@ await test('F: UI_STATE) function_call検出時点で即座に「確認してい
 await test('G: UI_STATE) 実際にAI音声が再生開始した瞬間(output_audio_buffer.started)にAI_SPEAKINGへ切り替える', () => {
     const idx = SRC.indexOf("if (type === 'output_audio_buffer.started') {");
     assert.notStrictEqual(idx, -1, 'output_audio_buffer.started handler not found');
-    const block = SRC.slice(idx, idx + 500);
+    // ウィンドウは、後発フェーズ（AI SPEAKING PROTECTION等）がこのハンドラの
+    // 先頭に行を追加しても対象文字列に届くよう、実測より余裕を持たせている。
+    const block = SRC.slice(idx, idx + 900);
     assert.ok(block.includes("subStatusText.textContent = 'AIスタッフが応答中';"),
         'must show AI_SPEAKING text exactly when audio actually starts playing');
 });
@@ -281,7 +283,9 @@ await test('N: FAST TURN 3.6B) T7(CONTINUATION_RESPONSE_CREATED)がresponse.crea
 await test('O: FAST TURN 3.6B) T8(CONTINUATION_AUDIO_FIRST_DELTA)がoutput_audio_buffer.startedハンドラ内にある', () => {
     const idx = SRC.indexOf("if (type === 'output_audio_buffer.started') {");
     assert.notStrictEqual(idx, -1, 'output_audio_buffer.started handler not found');
-    const block = SRC.slice(idx, idx + 800);
+    // ウィンドウは、後発フェーズ（AI SPEAKING PROTECTION等）がこのハンドラの
+    // 先頭に行を追加しても対象文字列に届くよう、実測より余裕を持たせている。
+    const block = SRC.slice(idx, idx + 1100);
     assert.ok(block.includes("pushToolContinuationTrace('T8_CONTINUATION_AUDIO_FIRST_DELTA');"),
         'T8 must fire when the Realtime output audio buffer actually starts (not merely when a response.create was sent)');
 });
@@ -319,8 +323,12 @@ await test('H: dc.send()呼び出し箇所は増えていない（新規Realtime
     // 保護したこととUI文言変更のみであり、新しいdc.send()呼び出し箇所や
     // 新しい種類のRealtime制御イベント（response.cancel等）は一切追加して
     // いないことをソースレベルで確認する。
+    // 基準値は8ではなく9（後発の別フェーズ NOISY ENVIRONMENT / 3-SECOND TURN
+    // BOUNDARY がmaybeSendUserTurnFallbackCommitを正当に追加したため。この
+    // FAST TURN 3.6A修正自体は引き続き新しいdc.send()呼び出し箇所を追加して
+    // いない）。
     const sendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(sendCount, 8, 'expected exactly 8 actual dc.send(JSON.stringify(...)) call sites (unchanged from before this fix; comments mentioning dc.send() do not count)');
+    assert.strictEqual(sendCount, 9, 'expected exactly 9 actual dc.send(JSON.stringify(...)) call sites (unchanged by this fix; the baseline itself moved from 8 to 9 in a later, unrelated phase; comments mentioning dc.send() do not count)');
     assert.ok(!SRC.includes("type: 'response.cancel'"), 'must not introduce response.cancel');
     assert.ok(!SRC.includes("type: 'conversation.item.truncate'") || SRC.includes('conversation.item.truncated'),
         'must not send a new conversation.item.truncate control event');
@@ -402,7 +410,11 @@ await test('K: FAST TURN 3.6B) function_call_outputの送信自体は成功し�
 await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む応答のresponse.done完了時には開始されない（既存ガードが無変更のまま維持されている）', () => {
     const idx = SRC.indexOf("} else if (type === 'response.done') {");
     assert.notStrictEqual(idx, -1, 'response.done handler not found');
-    const block = SRC.slice(idx, idx + 2400);
+    // FAST TURN (NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY) フェーズで
+    // response.doneハンドラ内、このガードより前に
+    // releaseAiSpeakingProtection('response_done_fallback'); が追加され、
+    // 実測オフセットが2552文字まで伸びたため、ウィンドウを2400→2800へ拡張。
+    const block = SRC.slice(idx, idx + 2800);
     // PHASE O5.6診断: startSilenceTimerIfNeeded()に診断専用の第2引数
     // （armReasonForDiag、例: 'response_done_no_function_call'）が追加された。
     // ガード条件(!responseHasFunctionCall)自体・呼び出し自体（第1引数は

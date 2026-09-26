@@ -582,7 +582,11 @@ test('T regression: existing NAME/PHONE classification and forced commits still 
 test('WIRING: speech_started handler calls cancelQuickAnswerFinalizeTimer', () => {
     const idx = SRC.indexOf("type === 'input_audio_buffer.speech_started'");
     assert.notStrictEqual(idx, -1);
-    const block = SRC.slice(idx, idx + 3200);
+    // FAST TURN (NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY) フェーズで
+    // speech_startedハンドラ冒頭付近にBARGE_IN_ACCEPTED診断ログ（実機DEBUG
+    // 要件）が追加され、実測オフセットが3702文字まで伸びたため、
+    // ウィンドウを3200→4200へ拡張。
+    const block = SRC.slice(idx, idx + 4200);
     assert.ok(block.includes("cancelQuickAnswerFinalizeTimer('speech_started_again')"),
         'speech_started must cancel any pending SHORT_ANSWER finalize timer (user instruction 4/6)');
 });
@@ -673,9 +677,9 @@ test('WIRING: startCall() resets the new O5.8 Finalization Grace state for every
     });
 });
 
-test('DC-SEND: count remains 8 after O5.10 (user instruction 11: the manual-commit dc.send() line itself was intentionally NOT deleted — only its reachability from the normal SHORT_ANSWER flow was removed, per user instruction 3\'s "keep as fallback candidate" directive; report the true count with reasoning rather than padding it)', () => {
+test('DC-SEND: O5.10 itself keeps the count unchanged (user instruction 11: the manual-commit dc.send() line itself was intentionally NOT deleted — only its reachability from the normal SHORT_ANSWER flow was removed, per user instruction 3\'s "keep as fallback candidate" directive). Baseline is 9, not 8, because a later, independent phase (NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY) legitimately added one new call site (maybeSendUserTurnFallbackCommit); O5.10 itself still adds none.', () => {
     const sendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(sendCount, 8, 'O5.10 does not delete the physical input_audio_buffer.commit send inside maybeSendQuickAnswerCommit (kept as dead/fallback code per instruction 3), and adds no new dc.send() call site (instruction 4: no response.create), so the count is unchanged from O5.6-O5.9.1');
+    assert.strictEqual(sendCount, 9, 'O5.10 does not delete the physical input_audio_buffer.commit send inside maybeSendQuickAnswerCommit (kept as dead/fallback code per instruction 3), and adds no new dc.send() call site (instruction 4: no response.create); the current baseline of 9 reflects a later, unrelated phase adding USER_TURN_3S_FALLBACK, not this one');
 });
 
 // ===== PHASE O5.10: NO-MANUAL-COMMIT (必須テストA/B) =====

@@ -314,9 +314,9 @@ test('PRIVACY: QUICK_ANSWER_COMMIT_ERROR_CORRELATED never includes the raw error
 });
 
 // ===== NO-BEHAVIOR-CHANGE: Realtime送信イベント数・内容が変更されていない =====
-test('NO-BEHAVIOR-CHANGE: dc.send(JSON.stringify( call-site count is unchanged at 8 (O5.9.1 adds diagnostics only, no new Realtime sends)', () => {
+test('NO-BEHAVIOR-CHANGE: dc.send(JSON.stringify( call-site count is unchanged by THIS phase (O5.9.1 adds diagnostics only, no new Realtime sends). Baseline is 9, not 8, because a later, independent phase (NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY) legitimately added one new call site (maybeSendUserTurnFallbackCommit); O5.9.1 itself still adds none.', () => {
     const sendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(sendCount, 8, 'O5.9.1 must not add any new dc.send() call site (diagnostics-only phase)');
+    assert.strictEqual(sendCount, 9, 'O5.9.1 must not add any new dc.send() call site (diagnostics-only phase); the current baseline of 9 reflects a later, unrelated phase adding USER_TURN_3S_FALLBACK, not this one');
 });
 
 test('NO-BEHAVIOR-CHANGE: maybeSendQuickAnswerCommit still sends exactly one input_audio_buffer.commit and never a response.create', () => {

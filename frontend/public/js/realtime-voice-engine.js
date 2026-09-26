@@ -655,6 +655,257 @@
         // 誤発火を防ぐ（NAME/PHONE等と同じ世代ガードの考え方）。
         let quickAnswerFinalizeGeneration = null;
 
+        // ===== NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY（今回追加） =====
+        // 監査結果（実装前に必ずコード上で確認した事実。以下は推測ではない）:
+        //
+        // (1) turn_detection設定（app/services/realtime_voice_ai.py）は
+        //     { type: 'semantic_vad', eagerness: ... } のみで、create_response/
+        //     interrupt_response は一切設定されていない（grepで確認済み・
+        //     0件）。OpenAI公式ドキュメント（developers.openai.com/api/docs/
+        //     guides/realtime-vad、developers.openai.com/api/reference/
+        //     resources/realtime）によれば、interrupt_responseが未設定または
+        //     trueの場合、AIの応答出力中にVADがspeech_startedを検知すると
+        //     サーバー側が自動的にその応答をcancel（truncate）する。この
+        //     自動truncateの発生は、既存コードのconversation.item.truncated/
+        //     output_audio_buffer.cleared受信ハンドラ（PHASE6「無言化調査」・
+        //     本ファイル内に既存）が実際に観測・記録している。
+        // (2) OpenAI Realtime APIのspeech_started/speech_stoppedイベントには
+        //     confidenceスコアや音量情報等、雑音と実際の人間発話を区別できる
+        //     フィールドは一切存在しない（audio_start_ms/audio_end_ms/
+        //     item_id/event_idのみ。公式リファレンスで確認済み）。またこの
+        //     セッションはinput_audio_transcriptionを設定していない
+        //     （realtime_voice_ai.pyをgrepし0件を確認。本ファイル内の既存
+        //     コメント「input_audio_transcriptionが未設定のため発話内容に
+        //     一切アクセスできない」とも整合）。したがって、現在のAPI設定
+        //     だけでは「雑音による誤検知のspeech_started」と「人間の明確な
+        //     発話によるspeech_started」をクライアント側で安全に区別する
+        //     手段が存在しない（ユーザー指示どおり、この限界は最終報告に
+        //     明記し、推測で区別ロジックを実装しない）。
+        // (3) expectedAnswerType==='NONE'（AIの直前発話がPHONE/NAME/YES_NO/
+        //     SHORT_CHOICE/VISIT_REASON/SHORT_ANSWERのいずれの分類語にも
+        //     一致しなかった状態。第一声の挨拶「本日はどのようなご用件
+        //     でしょうか？」の直後がまさにこの状態に該当する。
+        //     classifyExpectedAnswerType()の正規表現を確認した結果、この
+        //     文言はどの分類にも一致せず'NONE'のままになることを確認済み）
+        //     には、startAnswerWindowIfNeeded()が`if (expectedAnswerType ===
+        //     'NONE') return;`により即returnするため、既存のAnswer Window/
+        //     Forced Commit系機構が一切働かない。つまり「1st turn（要件を
+        //     聞く場面）」は、既存5機構（NAME/PHONE/YES_NO・SHORT_CHOICE/
+        //     SHORT_ANSWER）のいずれの安全網も及ばない、唯一無防備な状態
+        //     だった。今回のUSER_TURN_3S_FALLBACKは、この具体的な穴を
+        //     埋めるために新設する、既存Forced Commit関数とは完全に独立した
+        //     新しい仕組みである（ユーザー指示「既存Forced Commitを安易に
+        //     流用・改造しない」に従い、既存のmaybeSendNameCommitPoc等は
+        //     一切変更・呼び出ししない）。
+        // (4) VISIT_REASON（30秒許容の自由回答）には、意図的にこの新機構を
+        //     適用しない。O5.7 Auditの教訓（speech_started起点の固定
+        //     タイマーは長い自然な発話を強制的に打ち切る危険がある）を
+        //     踏まえ、長い自由回答を前提とするVISIT_REASONに3秒の区切りを
+        //     持ち込むと同じ危険を再現しかねないため、スコープを意図的に
+        //     'NONE'のみに限定する（VISIT_REASONの既存30秒Answer Window・
+        //     既存の完全な無介入方針は一切変更しない）。
+        //
+        // 安全設計（既存のO5.8 Finalization Grace / NAME PoC等と同じ考え方を
+        // 踏襲しつつ、コード自体は独立）:
+        //   - 起点はspeech_started（発話開始）ではなく、必ずspeech_stopped
+        //     （サーバー側VADが「発話が止まった」と判定した時点）にする。
+        //     これにより、話している最中に強制的に区切られることは構造上
+        //     起こらない（O5.7 Auditの教訓を守る）。
+        //   - 新たなspeech_startedが来た時点で無条件にcancelする（言い淀み・
+        //     言い直しの可能性を優先する。O5.8と同じ設計）。
+        //   - 1世代（1回のarm）につき最大1回のみinput_audio_buffer.commitを
+        //     送信し、response.createは絶対に追加送信しない（既存4機構と
+        //     全く同じ安全パターン）。
+        //   - 送信直前に正常完了フラグ（committed/item_created/
+        //     response.created/function_callのいずれか）を再確認し、
+        //     既に自然完了していれば送信しない（レース対策）。
+        //   - Tool呼び出し中（toolContinuationTraceActive===true）は
+        //     armもfireも行わない（Tool往復中の待ち時間を誤ってfallback
+        //     対象にしないため）。
+        //   - dc.send例外は非fatal（try/catchで包み、通話自体は継続する）。
+        //
+        // NOISE RECOVERY（AIの応答内容そのもの）について: このfallbackが
+        // manual commitを送った後、AIが実際に何を話すか（「もう一度」と
+        // 会話全体をやり直すのか、既知の情報を保持したまま次の未取得項目を
+        // 具体的に尋ねるのか）は、client側のこの仕組みでは制御できない
+        // （Realtime APIの応答内容はモデルとsession instructions側の責務）。
+        // このため、app/services/realtime_voice_ai.pyのsession instructions
+        // 側に、聞き取れなかった場合の望ましい復帰応答（既存の「既に分かって
+        // いる情報を聞き直さない」「直前に尋ねた質問に対応する回答を優先する
+        // （ノイズ耐性）」を補強する形の追加指示）を別途追加する
+        // （詳細は同ファイルの追記コメント参照）。
+        const USER_TURN_FALLBACK_GRACE_MS = 3000; // ユーザー指示: 「約3秒を上限の目安として」
+        let userTurnFallbackGeneration = 0; // armされるたびに増分する、このfallback専用の世代カウンタ
+        let userTurnFallbackTimerId = null;
+        let userTurnFallbackArmedAt = null;
+        let userTurnFallbackArmedForGeneration = null;
+        let userTurnFallbackCommitSentGeneration = null;
+        let userTurnFallbackNormalCompletionSeen = false;
+        let userTurnFallbackCommitSentAt = null;
+        let userTurnFallbackCommitCallGeneration = null;
+
+        // speech_stoppedのたびに、expectedAnswerType==='NONE'の場合のみ
+        // 呼ぶ。Tool呼び出し中は何もしない（誤発火防止）。
+        function armUserTurnFallbackTimer(myGeneration) {
+            if (expectedAnswerType !== 'NONE') return;
+            if (toolContinuationTraceActive) return;
+            cancelUserTurnFallbackTimer('rearm_on_speech_stopped');
+            userTurnFallbackGeneration += 1;
+            const armedForGeneration = userTurnFallbackGeneration;
+            userTurnFallbackArmedForGeneration = armedForGeneration;
+            userTurnFallbackArmedAt = performance.now();
+            userTurnFallbackNormalCompletionSeen = false;
+            pushTimelineEvent('USER_TURN_FALLBACK_ARMED (durationMs=' + USER_TURN_FALLBACK_GRACE_MS
+                + ', callGeneration=' + myGeneration + ', generation=' + armedForGeneration + ')');
+            userTurnFallbackTimerId = setTimeout(() => {
+                userTurnFallbackTimerId = null;
+                const actualElapsedMs = userTurnFallbackArmedAt === null ? null : msSince(userTurnFallbackArmedAt);
+                userTurnFallbackArmedAt = null;
+                pushTimelineEvent('USER_TURN_3S_FALLBACK (expectedDurationMs=' + USER_TURN_FALLBACK_GRACE_MS
+                    + ', actualElapsedMs=' + (actualElapsedMs === null ? 'null' : actualElapsedMs)
+                    + ', callGeneration=' + myGeneration + ', generation=' + armedForGeneration
+                    + ', normalCompletionSeen=' + userTurnFallbackNormalCompletionSeen + ')');
+                if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない
+                if (armedForGeneration !== userTurnFallbackGeneration) return; // 既に次のarmへ進んでいれば何もしない
+                if (toolContinuationTraceActive) {
+                    pushTimelineEvent('USER_TURN_FALLBACK_SKIPPED (reason=tool_call_active)');
+                    return;
+                }
+                maybeSendUserTurnFallbackCommit(myGeneration, armedForGeneration);
+            }, USER_TURN_FALLBACK_GRACE_MS);
+        }
+
+        // 新たなspeech_startedが来た時・自然完了イベントが届いた時・通話終了時
+        // のいずれかから呼ぶ。armされていなければ何もしない（no-op）。
+        function cancelUserTurnFallbackTimer(reason) {
+            if (userTurnFallbackTimerId === null) return;
+            const timerAgeMs = userTurnFallbackArmedAt === null ? null : msSince(userTurnFallbackArmedAt);
+            clearTimeout(userTurnFallbackTimerId);
+            userTurnFallbackTimerId = null;
+            userTurnFallbackArmedAt = null;
+            pushTimelineEvent('USER_TURN_FALLBACK_CANCELLED (timerAgeMs=' + (timerAgeMs === null ? 'null' : timerAgeMs)
+                + ', reason=' + reason + ', callGeneration=' + callGeneration + ')');
+        }
+
+        // Finalization Grace（3秒）満了時にのみ呼ばれる、実際の送信本体。
+        // 既存4機構（NAME PoC/Short Choice/PHONE/SHORT_ANSWER）と全く同じ
+        // 安全パターン（1世代最大1回・送信直前レース確認・response.create
+        // 絶対不送信・dc未オープン/例外は非fatal）を踏襲するが、コード自体は
+        // 独立（既存関数を呼び出さない・改造しない）。
+        function maybeSendUserTurnFallbackCommit(myGeneration, forGeneration) {
+            if (isStaleCallEvent(myGeneration)) return; // 通話終了後・別世代なら何もしない（保険）
+            if (!dc || dc.readyState !== 'open') {
+                pushTimelineEvent('USER_TURN_FALLBACK_COMMIT_SKIPPED (reason=datachannel_not_open)');
+                return;
+            }
+            if (userTurnFallbackCommitSentGeneration === forGeneration) {
+                // この世代については既に手動commit送信済み（最大1回/世代）
+                return;
+            }
+            if (userTurnFallbackNormalCompletionSeen) {
+                pushTimelineEvent('USER_TURN_FALLBACK_COMMIT_SKIPPED (reason=normal_completion_won_race)');
+                return;
+            }
+            pushTimelineEvent('USER_TURN_FALLBACK_COMMIT_REQUESTED (generation=' + forGeneration + ')');
+            try {
+                // 他4機構と全く同じくinput_audio_buffer.commitのみ。この直後に
+                // response.createを送ることは絶対にしない。
+                dc.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+                userTurnFallbackCommitSentGeneration = forGeneration;
+                userTurnFallbackCommitCallGeneration = myGeneration;
+                userTurnFallbackCommitSentAt = performance.now();
+                // NOISE RECOVERY: 実際にAIがどう応答するか（既知情報を保持し
+                // 未取得項目のみ具体的に尋ねるか）はsession instructions側の
+                // 責務。ここではその復帰応答を期待している、という事実だけを
+                // 診断用に記録する（PIIなし）。
+                pushTimelineEvent('NOISE_RECOVERY (generation=' + forGeneration + ')');
+            } catch (e) {
+                pushTimelineEvent('USER_TURN_FALLBACK_COMMIT_ERROR (message=send_exception)');
+            }
+        }
+
+        // ===== AI SPEAKING PROTECTION（今回追加） =====
+        // 目的: AIの音声出力（output_audio_buffer.started〜stopped/cleared）
+        // 中は、背景雑音によるspeech_startedがサーバー側の自動interrupt
+        // （interrupt_response、上記監査(1)参照）を誤って引き起こし、AIの
+        // 発話が途中で打ち切られる（＝「無言化調査」で観測済みの
+        // conversation.item.truncated/output_audio_buffer.cleared）ことを
+        // 防ぐ。
+        //
+        // 設計方針（監査(2)の結論を踏まえた選択。推測実装ではなく確定的な
+        // 保証を選んだ）: OpenAI Realtime APIには雑音と人間発話を区別する
+        // シグナルが存在しないため、「区別してから割り込みだけ弾く」という
+        // 実装は不可能（推測になってしまう）。そこで、AIの音声出力中は
+        // ローカルのマイクtrack自体をWebRTCの標準機能（MediaStreamTrack.
+        // enabled = false）で一時的にミュートし、雑音・音声を問わずAIの
+        // 発話中は一切サーバーへ音声を送らない、という確定的な保証を選ぶ。
+        // track.enabled=falseはSDP再ネゴシエーション不要の標準的な
+        // ミュート方法であり、無効化されている間はサーバー側でspeech_started
+        // が物理的に発生し得ない（推測ではなく仕様上の保証）。
+        //
+        // トレードオフ（ユーザー指示どおり最終報告に明記する制約。ここでは
+        // コード上の事実として明示しておく）: この設計では、AIが話している
+        // 間は「背景雑音による誤割り込み」だけでなく「人間の明確な発話に
+        // よる意図的なbarge-in」も同様に一切サーバーへ届かない。OpenAI側に
+        // 両者を区別する既存シグナルが無い以上、現在のAPIだけでは安全に
+        // 両立できない（今回のスコープでは、AIの発話を最後まで話し切らせる
+        // ことを優先する）。
+        //
+        // スコープ（意図的な限定。Tool呼び出しの「AI思考中」区間には適用
+        // しない）: 保護区間はoutput_audio_buffer.started〜stopped/cleared
+        // （実際にAIの音声が再生されている区間）のみとし、response.created
+        // 〜output_audio_buffer.started間（音声再生開始前）やTool往復中の
+        // 待ち時間は対象外とする。既存のFAST TURN/T0-T10/Speak-Then-Work
+        // ack fallback機構には一切触れない・影響しない。
+        //
+        // フェイルセーフ: 万一output_audio_buffer.stopped/cleared/response.
+        // doneのいずれも受信できなかった場合に備え、AI_SPEAKING_PROTECTION_
+        // MAX_MS経過で強制的にミュート解除する安全網タイマーを必ず併設する
+        // （お客様のマイクが恒久的にミュートされたままになることは絶対に
+        // 避ける）。
+        const AI_SPEAKING_PROTECTION_MAX_MS = 20000;
+        let aiSpeakingProtected = false;
+        let aiSpeakingProtectionSafetyTimerId = null;
+
+        function engageAiSpeakingProtection(reason) {
+            if (aiSpeakingProtected) return; // 既に保護中なら何もしない（多重engage防止）
+            const track = (localStream && localStream.getAudioTracks) ? localStream.getAudioTracks()[0] : null;
+            if (!track) return; // 保険: マイクtrackが無ければ何もしない（fail-open）
+            try {
+                track.enabled = false;
+            } catch (e) {
+                pushTimelineEvent('AI_SPEAKING_PROTECTION_ERROR (reason=track_disable_failed)');
+                return;
+            }
+            aiSpeakingProtected = true;
+            pushTimelineEvent('AI_SPEAKING_START (reason=' + reason + ')');
+            // 実機DEBUG（ユーザー指示）: AI_SPEAKING_STARTとは別に、マイクtrackが
+            // 実際にミュートされ「保護区間に入った」という事実そのものを専用
+            // マーカーとしても記録する（実機ログでAI_SPEAKING_STARTと紛れずに
+            // 保護区間の開始だけを追いやすくするため。PIIや音声内容は含まない）。
+            pushTimelineEvent('AI_SPEAKING_PROTECTED (reason=' + reason + ')');
+            if (aiSpeakingProtectionSafetyTimerId !== null) clearTimeout(aiSpeakingProtectionSafetyTimerId);
+            aiSpeakingProtectionSafetyTimerId = setTimeout(() => {
+                aiSpeakingProtectionSafetyTimerId = null;
+                pushTimelineEvent('AI_SPEAKING_PROTECTION_SAFETY_UNMUTE (reason=max_duration_exceeded)');
+                releaseAiSpeakingProtection('safety_timeout');
+            }, AI_SPEAKING_PROTECTION_MAX_MS);
+        }
+
+        function releaseAiSpeakingProtection(reason) {
+            if (aiSpeakingProtectionSafetyTimerId !== null) {
+                clearTimeout(aiSpeakingProtectionSafetyTimerId);
+                aiSpeakingProtectionSafetyTimerId = null;
+            }
+            if (!aiSpeakingProtected) return; // 既に解除済みなら何もしない（多重release防止・no-op）
+            const track = (localStream && localStream.getAudioTracks) ? localStream.getAudioTracks()[0] : null;
+            if (track) {
+                try { track.enabled = true; } catch (e) {}
+            }
+            aiSpeakingProtected = false;
+            pushTimelineEvent('AI_SPEAKING_END (reason=' + reason + ')');
+        }
+
         // ===== Conversation Takeover Observation PoC: 追加の最小状態（今回追加） =====
         // 目的・設計方針の詳細はファイル冒頭のtakeoverPocEnabled定義の
         // コメントを参照。NAME Forced Commit Observation PoCとは完全に独立した
@@ -4006,6 +4257,11 @@
             if (type === 'output_audio_buffer.started') {
                 aiAudioOutputActive = true;
                 lastAiAudioEventAt = performance.now();
+                // AI SPEAKING PROTECTION（今回追加）: 実際にAIの音声が再生
+                // され始めた瞬間から、マイクtrackを一時的にミュートする
+                // （詳細設計は本ファイル冒頭のengageAiSpeakingProtection定義
+                // コメント参照）。
+                engageAiSpeakingProtection('output_audio_buffer_started');
                 // FAST TURN 3.6A（UI_STATE整合性・UXのみ、latencyへは無影響）:
                 // 実際にAIの音声出力が始まった瞬間を「AI_SPEAKING」として
                 // 明示する。Tool Callありターンでは、この直前まで
@@ -4028,6 +4284,10 @@
                 aiAudioOutputActive = false;
                 lastAiAudioEventAt = performance.now();
                 pushTimelineEvent('AI_AUDIO_STOPPED');
+                // AI SPEAKING PROTECTION（今回追加）: AIの音声再生が正常に
+                // 終了したため、マイクのミュートを解除する（USER LISTENING
+                // 状態へ復帰）。
+                releaseAiSpeakingProtection('output_audio_buffer_stopped');
                 // Silence Timeout: 終話案内アナウンスの再生完了を検知する主経路
                 // （通常はresponse.doneより先にこちらが来る）。
                 maybeHangUpAfterSilenceGoodbye(callGeneration, 'ai_audio_stopped');
@@ -4054,6 +4314,10 @@
                 }
                 pushTimelineEvent('AI_AUDIO_CLEARED (直前aiAudioOutputActive=' + aiAudioOutputActive + ')');
                 aiAudioOutputActive = false;
+                // AI SPEAKING PROTECTION（今回追加・安全網）: 何らかの理由で
+                // AIの音声出力バッファがクリアされた場合も、マイクのミュートを
+                // 解除する（お客様が話しかけられない状態のまま残ることを防ぐ）。
+                releaseAiSpeakingProtection('output_audio_buffer_cleared');
             } else if (type === 'conversation.item.truncated') {
                 // 無言化調査用: AIの発話アイテムが（割り込み等により）途中で
                 // 打ち切られたことを示すイベント。output_audio_buffer.clearedと
@@ -4116,6 +4380,11 @@
                 // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）
                 quickAnswerTurnNormalCompletionSeen = true;
                 maybeLogQuickAnswerReactionElapsed('committed', 'input_audio_buffer.committed');
+                // NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY（今回追加。全店舗
+                // 適用・独立）: 正常にcommitされたため、USER_TURN_3S_FALLBACK
+                // はもう不要。
+                userTurnFallbackNormalCompletionSeen = true;
+                cancelUserTurnFallbackTimer('committed');
             } else if (type === 'conversation.item.created' && msg.item && msg.item.role === 'user') {
                 // PHASE8（会話停止調査・最重要）: ユーザー発話が会話アイテムとして
                 // 確定したことを示すイベント。「名前を答えた後に止まる」等の症状で、
@@ -4139,6 +4408,10 @@
                 // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）
                 quickAnswerTurnNormalCompletionSeen = true;
                 maybeLogQuickAnswerReactionElapsed('item', 'conversation.item.created');
+                // NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY（今回追加。全店舗
+                // 適用・独立）
+                userTurnFallbackNormalCompletionSeen = true;
+                cancelUserTurnFallbackTimer('item');
             } else if (type === 'input_audio_buffer.speech_started') {
                 if (!initialGreetingSent) userSpokeBeforeGreeting = true;
                 // ISSUE2調査用（PIIなし）: speech_started発生時点のローカルマイク
@@ -4167,6 +4440,18 @@
                     // 確認する（原因を推測で確定させない）。
                     logEvent('[無言化調査] AI音声出力中にspeech_startedを検知しました（バージインとして扱われる可能性。'
                         + '雑音等による誤検知かどうかはこの時点では未確認です）');
+                    // 実機DEBUG（ユーザー指示・BARGE_IN_ACCEPTED）: この時点で
+                    // speech_startedがサーバーへ実際に届いた（＝マイクtrackが
+                    // ミュートされておらず物理的に音声が送信された）という
+                    // 事実のみを記録する。「人間の発話か雑音か」は現在のAPIでは
+                    // 区別できないため断定しない（推測実装しない、という監査結論
+                    // どおり）。aiSpeakingProtected===trueの間は仕様上この
+                    // speech_started自体がサーバー側で発生し得ないため、ここに
+                    // 到達した場合はAI SPEAKING PROTECTIONの保護区間外
+                    // （response.created〜output_audio_buffer.started間の
+                    // 意図的な非対象区間、または保護failed-open時）である
+                    // ことを示す。
+                    pushTimelineEvent('BARGE_IN_ACCEPTED (aiSpeakingProtected=' + aiSpeakingProtected + ')');
                 }
                 if (zeroWaitEnabled && zeroWaitState === 'playing') {
                     // section18: 対処は行わず観測のみ（エコーによるVAD誤反応の可能性）。
@@ -4188,6 +4473,16 @@
                 // （ユーザー指示4・6）。expectedAnswerTypeがSHORT_ANSWER以外の
                 // 場合、このtimerは元々armされていないため無害なno-op。
                 cancelQuickAnswerFinalizeTimer('speech_started_again');
+                // NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY（今回追加）:
+                // 新たなspeech_startedが来た場合、まだ話している途中
+                // （言い淀み・言い直し等）である可能性を優先し、armされている
+                // USER_TURN_3S_FALLBACKタイマーがあれば無条件でcancelする
+                // （O5.8と同じ設計思想。expectedAnswerTypeが'NONE'以外の
+                // 場合、このtimerは元々armされていないため無害なno-op）。
+                cancelUserTurnFallbackTimer('speech_started_again');
+                if (expectedAnswerType === 'NONE') {
+                    pushTimelineEvent('USER_TURN_START (callGeneration=' + callGeneration + ')');
+                }
                 // PHONE Forced Commit（今回追加）: PHONEターン中のユーザー発話
                 // 開始を専用マーカーとしても記録する（既存の汎用USER_SPEECH_STARTED
                 // に加え、実機ログでPHONEターンだけを追いやすくするため）。
@@ -4256,6 +4551,14 @@
                 // このターンを処理した」フラグ）は、既存どおりcommitted/
                 // item_created/response.created/function_callの各イベントで
                 // 立てる（下記参照。この検知ロジック自体は無変更）。
+                // NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY（今回追加）:
+                // expectedAnswerType==='NONE'（1st turn「要件を聞く」場面。
+                // 上のUSER_TURN_FALLBACK監査コメント参照）の場合のみ、
+                // USER_TURN_3S_FALLBACKタイマーをarmする。それ以外の
+                // typeでは内部で何もせずに戻る（既存のNAME/PHONE/YES_NO/
+                // SHORT_CHOICE/VISIT_REASON/SHORT_ANSWERの各機構には一切
+                // 影響しない、完全に独立した新規パス）。
+                armUserTurnFallbackTimer(callGeneration);
                 // PHASE6相関用（PIIなし）: 対応するspeech_startedからの経過時間
                 // （＝サーバーがユーザー発話と判定していた継続時間）を記録する。
                 // 短時間の相槌（「はい」「違います」等）も本物の短い発話として
@@ -4375,6 +4678,12 @@
                 // ようにする。
                 cancelQuickAnswerFinalizeTimer('response_created');
                 quickAnswerTurnNormalCompletionSeen = true;
+                // NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY（今回追加。全店舗
+                // 適用・独立）: response.createdが正常に届いた時点で、まだ
+                // USER_TURN_3S_FALLBACKタイマーが残っていれば必ずcancelする
+                // （二重commit・二重response防止。既存機構と同じ考え方）。
+                cancelUserTurnFallbackTimer('response_created');
+                userTurnFallbackNormalCompletionSeen = true;
                 // Silence Timeout: この回の応答にfunction_callが含まれるかどうかを
                 // 新しい応答サイクルの開始時点でリセットする（response.doneで判定に使う）。
                 responseHasFunctionCall = false;
@@ -4409,6 +4718,11 @@
                 // 戻っているはずだが、稀にそれらのイベントを取りこぼした場合でも
                 // aiAudioOutputActiveが誤ってtrueのまま残らないようにする。
                 aiAudioOutputActive = false;
+                // AI SPEAKING PROTECTION（今回追加・安全網）: 上記と同じ理由で、
+                // response.done到達時点でまだミュートが残っていれば必ず解除する
+                // （お客様のマイクが恒久的にミュートされたまま残ることを防ぐ、
+                // 最終防衛ライン）。
+                releaseAiSpeakingProtection('response_done_fallback');
                 // PHASE5（response lifecycle）: response.doneのmsg.response.statusは
                 // OpenAI Realtime APIが実際に使用する値のみを参照する
                 // （'completed' | 'cancelled' | 'failed' | 'incomplete'）。
@@ -4464,6 +4778,10 @@
                 // 一切影響しない（本cancelは純粋にタイマー1個をclearするのみ）。
                 cancelQuickAnswerFinalizeTimer('function_call_started');
                 quickAnswerTurnNormalCompletionSeen = true;
+                // NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY（今回追加。全店舗
+                // 適用・独立）
+                cancelUserTurnFallbackTimer('function_call_started');
+                userTurnFallbackNormalCompletionSeen = true;
                 // FAST TURN 3.6A（UI_STATE修正・UXのみ）: Tool呼び出しが確定した
                 // この時点で「確認しています」（PROCESSING）へ切り替える
                 // （続くresponse.doneのUI_STATE分岐がこの後も同じ文言を維持する）。
@@ -4906,6 +5224,24 @@
             if (quickAnswerFinalizeTimerId !== null) { clearTimeout(quickAnswerFinalizeTimerId); quickAnswerFinalizeTimerId = null; }
             quickAnswerFinalizeArmedAt = null;
             quickAnswerFinalizeGeneration = null;
+            // NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY（今回追加）: USER_TURN_
+            // 3S_FALLBACKの状態も、新しい通話ごとに必ずリセットする（前回通話の
+            // タイマー・世代・完了フラグを持ち越さない。万一前回通話終了時に
+            // armされたまま残っていた場合の防御的clearTimeoutも兼ねる）。
+            if (userTurnFallbackTimerId !== null) { clearTimeout(userTurnFallbackTimerId); userTurnFallbackTimerId = null; }
+            userTurnFallbackGeneration = 0;
+            userTurnFallbackArmedAt = null;
+            userTurnFallbackArmedForGeneration = null;
+            userTurnFallbackCommitSentGeneration = null;
+            userTurnFallbackNormalCompletionSeen = false;
+            userTurnFallbackCommitSentAt = null;
+            userTurnFallbackCommitCallGeneration = null;
+            // AI SPEAKING PROTECTION（今回追加）: マイクのミュート状態・安全網
+            // タイマーも、新しい通話ごとに必ずリセットする（前回通話のミュート
+            // 状態を持ち越さない。track自体はこの後getUserMediaで新規取得
+            // するため、ここでは状態変数のみリセットすれば十分）。
+            if (aiSpeakingProtectionSafetyTimerId !== null) { clearTimeout(aiSpeakingProtectionSafetyTimerId); aiSpeakingProtectionSafetyTimerId = null; }
+            aiSpeakingProtected = false;
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。
@@ -5533,6 +5869,15 @@
             if (answerWindowTimerId) { clearTimeout(answerWindowTimerId); answerWindowTimerId = null; }
             if (silenceTimerId) { clearTimeout(silenceTimerId); silenceTimerId = null; }
             if (silenceWarningTimerId) { clearTimeout(silenceWarningTimerId); silenceWarningTimerId = null; }
+            // NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY（今回追加）: 同じ理由で
+            // USER_TURN_3S_FALLBACKタイマーもここで確実に止める。
+            if (userTurnFallbackTimerId) { clearTimeout(userTurnFallbackTimerId); userTurnFallbackTimerId = null; }
+            // AI SPEAKING PROTECTION（今回追加）: 安全網タイマーを止め、状態を
+            // 解除しておく（この直後にlocalStreamのtrack自体をstopするため
+            // track.enabled操作自体は不要だが、診断パネル上の状態を一貫させる
+            // ために明示的にfalseへ戻す）。
+            if (aiSpeakingProtectionSafetyTimerId) { clearTimeout(aiSpeakingProtectionSafetyTimerId); aiSpeakingProtectionSafetyTimerId = null; }
+            aiSpeakingProtected = false;
             stopMicLevelMeter();
             stopStatsPolling();
             // 再調査（第2ラウンド・PHASE「ブチッ」とcleanupの順序）: cleanupが

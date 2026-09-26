@@ -372,9 +372,9 @@ test('FAST-TURN/T0-T10: existing tool continuation trace symbols remain untouche
     });
 });
 
-test('DC-SEND: O5.6 diagnostics add zero new dc.send() call sites (pure client-side observation only)', () => {
+test('DC-SEND: O5.6 diagnostics add zero new dc.send() call sites (pure client-side observation only). Baseline is 9, not 8, because a later, independent phase (NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY) legitimately added one new call site (maybeSendUserTurnFallbackCommit); O5.6 itself still adds none.', () => {
     const sendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(sendCount, 8, 'O5.6 must not add any new dc.send() call site');
+    assert.strictEqual(sendCount, 9, 'O5.6 must not add any new dc.send() call site; the current baseline of 9 reflects a later, unrelated phase adding USER_TURN_3S_FALLBACK, not this one');
 });
 
 test('O5.5 regression symbol check: ack-fallback symbols remain untouched by O5.6', () => {

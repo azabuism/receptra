@@ -213,9 +213,9 @@ await test('play()がrejectしても例外が外へ伝播しない（音声再�
     });
 });
 
-await test('DC-SEND: 本フェーズの実装はdc.send(JSON.stringify(の出現数を増やしていない（新規Realtime制御イベントを追加していない）', () => {
+await test('DC-SEND: 本フェーズの実装はdc.send(JSON.stringify(の出現数を増やしていない（新規Realtime制御イベントを追加していない）。基準値は8ではなく9（後発の別フェーズ NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY がmaybeSendUserTurnFallbackCommitを正当に追加したため。本フェーズ自体は引き続き追加していない）。', () => {
     const sendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(sendCount, 8, 'Speak-Then-Work Ack-Fallback must not add any new dc.send() call site (it bypasses the Realtime response lifecycle entirely)');
+    assert.strictEqual(sendCount, 9, 'Speak-Then-Work Ack-Fallback must not add any new dc.send() call site (it bypasses the Realtime response lifecycle entirely); the current baseline of 9 reflects a later, unrelated phase adding USER_TURN_3S_FALLBACK, not this one');
 });
 
 await test('GREETING-REG: Zero-Wait Greeting関連コードの主要シンボルが変更されず残っている', () => {
@@ -228,8 +228,11 @@ await test('配線確認: startCall()内でresetAckFallbackCallState()が呼ば�
     const idx = SRC.indexOf('async function startCall');
     assert.notStrictEqual(idx, -1, 'startCall not found');
     // startCall本体はかなり長いため、次のトップレベル関数定義に到達するまでの
-    // 範囲ではなく、十分広いウィンドウで探索する。
-    const window = SRC.slice(idx, idx + 9600);
+    // 範囲ではなく、十分広いウィンドウで探索する（後発フェーズの状態リセット
+    // 追加分だけ実際の出現位置が後ろへ移動することがあるため、余裕を持たせた
+    // 固定長を使う。実測位置固定ではなく、実測より十分大きい値を使うことで
+    // 将来の追加リセット行にもある程度耐えられるようにする）。
+    const window = SRC.slice(idx, idx + 11000);
     assert.ok(window.includes('resetAckFallbackCallState();'), 'startCall() must reset the ack-fallback playback position for each new call');
 });
 
