@@ -122,9 +122,27 @@ class PreOrder(Base):
     pickup_at = Column(DateTime, nullable=False, index=True)
 
     status = Column(String(20), nullable=False, default=PreOrderStatus.PENDING.value, index=True)
+    # PHASE O3実装時の検討事項（結論: O2時点のCONFIRMEDのまま変更しない）:
+    # Section2の安全原則（根拠のない注文をconfirmedにしない）を守るための
+    # 実質的な防衛線は、このDB列デフォルトではなく、実際の新規作成経路が
+    # 必ず経由する app/services/pre_orders.py の create_public_pre_order() /
+    # determine_pre_order_confirmation() 側にある（Web/AI Chat/AI Voice/
+    # 将来PSTNのいずれも、この関数の戻り値をPreOrder()生成時に明示的に渡し、
+    # 列デフォルトに頼ることは一切ない）。一時、列デフォルト自体も
+    # OWNER_CONFIRMATION_REQUIREDへ変更するdefense-in-depth案を検討したが、
+    # (1) 実際の安全性には寄与しない（上記の理由で列デフォルトが使われる
+    # コードパスが存在しない）、(2) O2で書いた既存の正当な回帰テスト
+    # （tests/smoke_test_phase_o2_preorder_foundation.py）がこの列デフォルトを
+    # 明示的に検証しており、変更するとO2で確立した仕様に対する不要な回帰に
+    # なる、という2点から、変更しない方針に確定した。
     confirmation_status = Column(
         String(30), nullable=False, default=PreOrderConfirmationStatus.CONFIRMED.value
     )
+    # PHASE O3: Web/AI Chat/AI Voice/将来PSTNいずれの経路からの二重送信も
+    # 同一注文として扱うための冪等キー。Reservation.idempotency_keyと
+    # 完全に同じ設計（DB一意インデックスを最終防衛線とする）。Reservationとは
+    # 異なりWeb経路でも使用を想定する（Section19）。
+    idempotency_key = Column(String(200), nullable=True)
 
     # お客様からの要望（例:「Happy Birthdayと書いてください」）と、店舗内部用
     # メモは明確に区別する（Section23）。internal_noteはPublicレスポンス
@@ -145,6 +163,11 @@ class PreOrder(Base):
         # 典型的な将来query（Section15）: 店舗別+今日/明日受取、店舗別+status別
         Index("ix_pre_orders_shop_pickup", "shop_id", "pickup_at"),
         Index("ix_pre_orders_shop_status", "shop_id", "status"),
+        # PHASE O3: Reservationのux_reservations_idempotency_keyと全く同じ設計
+        # （同一キーでの同時多重INSERTをDBレベルで確実に1件だけに絞る最終防衛線）。
+        # PostgreSQLの一意インデックスはNULL同士を重複とみなさないため、
+        # idempotency_keyを指定しないリクエスト（NULLのまま）同士は影響しない。
+        Index("ux_pre_orders_idempotency_key", "idempotency_key", unique=True),
     )
 
     def __repr__(self):

@@ -160,6 +160,15 @@ class Settings(BaseSettings):
     FEATURE_AI_RESPONSES: bool = True
     FEATURE_PAYMENT_PROCESSING: bool = True
 
+    # ===== PHASE O3: Pre-Order Backend Acceptance Engine =====
+    # O3ではPublic PreOrder Create APIをBackendとして実装するが、まだ
+    # pre-order enabledというOwner設定（O4で追加予定）が存在しないため、
+    # このグローバルなfeature gateをデフォルトFalse（無効）としておくことで、
+    # O4以前に第三者がAPIを発見して任意店舗へPreOrderを大量作成できる状態を
+    # 避ける（仕様書Section11/49）。Railway環境変数で明示的にTrueにしない限り、
+    # 本番のPublic Create APIは常に403で無効化されたままになる。
+    PRE_ORDER_PUBLIC_CREATE_ENABLED: bool = False
+
     # ===== テスト設定 =====
     TESTING: bool = False
 

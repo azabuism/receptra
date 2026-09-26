@@ -49,6 +49,7 @@ from app.routers.billing import router as billing_router, webhook_router as payj
 from app.routers.outbound_calls import router as outbound_calls_router
 from app.routers.callback_requests import router as callback_requests_router
 from app.routers.owner_notifications import router as owner_notifications_router
+from app.routers.pre_orders import router as pre_orders_router, shop_pre_orders_router
 from app.routers.line_integration import (
     line_connection_router,
     line_shop_settings_router,
@@ -399,6 +400,23 @@ async def lifespan(app: FastAPI):
             except Exception as alter_err:
                 logger.warning(f"⚠️ staff_shift_overrides.ends_next_day カラム追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
 
+            # PHASE O3: pre_ordersテーブル自体はPHASE O2でBase.metadata.create_all()
+            # により既に作成済み（他のPhase3系新規テーブルと同じ既存パターン）だが、
+            # create_all()は既存テーブルへの新規カラム追加は行わないため、O3で
+            # 追加したidempotency_key列はここで個別にALTERする（Reservationの
+            # idempotency_key追加と全く同じパターン）。既存のPreOrder行（O2では
+            # Public APIが存在しなかったため実運用データは無い）には一切影響しない。
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE pre_orders ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(200)"
+                ))
+                await conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_pre_orders_idempotency_key "
+                    "ON pre_orders (idempotency_key)"
+                ))
+            except Exception as alter_err:
+                logger.warning(f"⚠️ pre_orders.idempotency_key カラム/一意インデックスの追加に失敗（既に存在する場合は無視して問題ありません）: {alter_err}")
+
         logger.info("✅ Database tables initialized")
         await engine.dispose()
 
@@ -505,6 +523,8 @@ def create_app() -> FastAPI:
     app.include_router(outbound_calls_router)
     app.include_router(callback_requests_router)
     app.include_router(owner_notifications_router)
+    app.include_router(pre_orders_router)
+    app.include_router(shop_pre_orders_router)
     app.include_router(line_connection_router)
     app.include_router(line_shop_settings_router)
     app.include_router(line_webhook_router)
