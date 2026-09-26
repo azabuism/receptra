@@ -50,6 +50,11 @@ const FN = {
     handleFunctionCallItem: extractFunctionSource(SRC, 'handleFunctionCallItem', true),
     sendResponseCreate: extractFunctionSource(SRC, 'sendResponseCreate', false),
     isToolOutputFailure: extractFunctionSource(SRC, 'isToolOutputFailure', false),
+    // PHASE O5.6診断: sendResponseCreate()がRESPONSE_CREATE_DIAGを記録する際に
+    // 参照するようになった純粋な分類ヘルパー。挙動には無関係の診断専用関数だが、
+    // 未定義だとReferenceErrorになるため、他のヘルパー同様にこのテストの
+    // サンドボックスへも実ソースから直接抽出して含める。
+    categorizeResponseReason: extractFunctionSource(SRC, 'categorizeResponseReason', false),
 };
 
 // 回帰防止（最重要）: このdc.send()が再びtry/catchの外に出されることを防ぐ、
@@ -115,6 +120,10 @@ function buildSandbox(overrides) {
         toolContinuationTraceT0: null,
         toolContinuationTraceActive: false,
         responseState: 'idle',
+        // PHASE O5.6診断: sendResponseCreate()が触れるようになった診断専用の
+        // ローカル状態（Realtime APIへは送信されない）。挙動には無関係。
+        responseCreateDiagSeq: 0,
+        lastResponseCreateReason: null,
         // check_availability成功のcanned response（PIIなし）。
         callCheckAvailabilityTool: async () => ({
             available: true,
@@ -394,7 +403,12 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     const idx = SRC.indexOf("} else if (type === 'response.done') {");
     assert.notStrictEqual(idx, -1, 'response.done handler not found');
     const block = SRC.slice(idx, idx + 2400);
-    assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*startSilenceTimerIfNeeded\(callGeneration\);\s*\}/.test(block),
+    // PHASE O5.6診断: startSilenceTimerIfNeeded()に診断専用の第2引数
+    // （armReasonForDiag、例: 'response_done_no_function_call'）が追加された。
+    // ガード条件(!responseHasFunctionCall)自体・呼び出し自体（第1引数は
+    // 従来通りcallGeneration）は無変更のため、第2引数の有無を問わずマッチ
+    // するようにする。
+    assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);\s*\}/.test(block),
         'the Silence Timeout must remain gated to only start when this response had no function_call (Tool round-trip window must never be counted as silence)');
 });
 

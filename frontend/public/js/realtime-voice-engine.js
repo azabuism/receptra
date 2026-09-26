@@ -1424,19 +1424,173 @@
         let silenceState = 'idle'; // 'idle' | 'waiting' | 'warned' | 'goodbye'
         let responseHasFunctionCall = false; // 直近のresponse.created〜response.doneの間にfunction_callがあったか
         let pendingSilenceGoodbyeHangup = false; // 終話案内アナウンスの再生完了待ちかどうか
-        const SILENCE_TIMEOUT_MS = 30000; // 約30秒間、有効な発話が無ければ予告
-        const SILENCE_WARNING_GRACE_MS = 8000; // 予告後、約5〜10秒の猶予（中間値を採用）
+        const SILENCE_TIMEOUT_MS = 30000; // 約30秒間、有効な発話が無ければ予告（PHASE O5.6: 値は無変更。挙動を変えない）
+        const SILENCE_WARNING_GRACE_MS = 8000; // 予告後、約5〜10秒の猶予（中間値を採用）（PHASE O5.6: 値は無変更）
+
+        // ===== PHASE O5.6: Silence Timeout Diagnostics（診断専用・挙動は一切変更しない） =====
+        //
+        // 目的: 実機症状「2時でお願いします」→約30秒沈黙→AI「何名様ですか？」→
+        // 会話途中で通話終了、の原因を実測で確定するための追加計測。
+        // 絶対原則: ここに追加する変数・関数はすべて「読み取り専用の観測」であり、
+        // silenceState自体の値・遷移条件・タイマーの発火/解除条件・
+        // response.create/endCallの送信有無やタイミングには一切影響しない。
+        // 既存のpushTimelineEvent()（copyDebugLog()に自動的に含まれる、
+        // debugMode=falseでも常時recentEventsへ記録される既存の仕組み）を
+        // そのまま再利用するだけで、新しいログ収集UIやコンソール出力は追加しない。
+        // 診断コード自体が例外を投げて既存の終話処理を壊すことがないよう、
+        // 全ての新規ロジックをtry/catchで包む。
+
+        // 現在のsilenceStateに入った時刻（timerAgeMs算出用）。
+        let silenceStateEnteredAt = null;
+        // 30秒タイマー（SILENCE_TIMEOUT_MS）が実際にarmされた時刻。
+        let silenceTimerArmedAt = null;
+        // 8秒猶予タイマー（SILENCE_WARNING_GRACE_MS）が実際にarmされた時刻。
+        let silenceWarningGraceArmedAt = null;
+        // 直近にsendResponseCreate()が実際にdc.send()まで成功した際の、その
+        // reason文字列（response.created受信時に一度だけ消費してカテゴリ化する。
+        // 「このresponse.createdが、直前に自分が送ったreasonに対応するものか」を
+        // ローカルでのみ相関させるための変数。OpenAI Realtime APIへは一切
+        // 送信しない）。
+        let lastResponseCreateReason = null;
+        // response.createdごとに採番するローカル診断専用シーケンス番号
+        // （Realtime APIの応答IDとは無関係。ブラウザ内の相関確認のみに使う）。
+        let responseCreateDiagSeq = 0;
+        // CALL_END_DIAG用に持ち越す「直近の応答理由カテゴリ」（response.created
+        // のたびに更新。挙動制御には一切使わない・診断専用）。
+        let lastResponseReasonCategoryForDiag = 'unknown';
+        // 直近のTool呼び出し名・開始時刻（診断専用。既存のlastToolLabel等とは
+        // 別に、CALL_END_DIAGが必要とする「Tool名」「経過ms」だけを単純に保持する）。
+        let lastFunctionCallNameForDiag = null;
+        let lastFunctionCallStartedAtForDiag = null;
+
+        // 指定した過去のperformance.now()時刻からの経過msを返す（未計測ならnull）。
+        // 診断表示専用のフォーマットヘルパーで、既存ロジックには使わない。
+        function msSince(t) {
+            return (t === null || t === undefined) ? null : Math.round(performance.now() - t);
+        }
+
+        // sendResponseCreate()のreason文字列を、診断用の粗いカテゴリへ分類する
+        // （挙動制御には使わない・診断専用）。実際に存在する呼び出し箇所
+        // （'silence_warning' / 'silence_final_goodbye' / 'initial_greeting'系 /
+        // 'tool_result:...'）を実コードで確認した上で分類している。それ以外
+        // （＝直近に明示的なsendResponseCreate()呼び出しが対応付けられない
+        // response.created。OpenAI側のturn_detectionによる自動応答が該当し
+        // 得る）はnormal_conversationとして扱う。
+        function categorizeResponseReason(rawReason) {
+            if (rawReason === null || rawReason === undefined) return 'normal_conversation';
+            if (rawReason === 'silence_warning') return 'silence_warning';
+            if (rawReason === 'silence_final_goodbye') return 'silence_goodbye';
+            if (rawReason.indexOf('tool_result:') === 0) return 'tool_result';
+            if (rawReason.indexOf('initial_greeting') === 0) return 'greeting';
+            return 'unknown';
+        }
+
+        // silenceStateの変更を必ずこの関数経由にすることで、遷移のたびに
+        // SILENCE_STATE_DIAGを1行記録する。silenceStateへの代入とその直後の
+        // silenceStateEnteredAt更新以外、一切のロジックを追加しない
+        // （既存の呼び出し元の条件分岐・ガードは変更前のまま維持する）。
+        function setSilenceState(newState, reason) {
+            const from = silenceState;
+            // 診断ノイズ低減のためのガード（挙動には無関係）:
+            // resetSilenceTimer()は既にidleの状態でも無条件に'idle'を再代入する
+            // 既存仕様のため、from===newStateの場合はSILENCE_STATE_DIAGを記録
+            // せず、silenceStateEnteredAtも更新しない（「現在の状態に実際に
+            // 入った時刻」の意味を保つため）。silenceStateへの代入自体は
+            // 従来どおり必ず行う（値は変わらないため実質的な影響はない）。
+            if (from !== newState) {
+                try {
+                    pushTimelineEvent('SILENCE_STATE_DIAG (from=' + from + ', to=' + newState
+                        + ', reason=' + (reason || '不明')
+                        + ', timerAgeMs=' + (silenceStateEnteredAt === null ? 'null' : msSince(silenceStateEnteredAt))
+                        + ', elapsedSinceSpeechStartedMs=' + (msSince(lastSpeechStartedAt) === null ? 'null' : msSince(lastSpeechStartedAt))
+                        + ', elapsedSinceSpeechStoppedMs=' + (msSince(lastSpeechStoppedAt) === null ? 'null' : msSince(lastSpeechStoppedAt))
+                        + ', responseState=' + responseState
+                        + ', aiAudioOutputActive=' + aiAudioOutputActive + ')');
+                } catch (diagErr) {
+                    // 診断ログ自体の失敗が既存の状態遷移を妨げてはならない。
+                }
+                silenceStateEnteredAt = performance.now();
+            }
+            silenceState = newState;
+        }
+
+        // PeerConnection/DataChannel/マイクトラックの状態を1行にまとめて記録する
+        // 診断専用ヘルパー（既存のlogConnectionSnapshot()とは別に、
+        // pushTimelineEvent経由でcopyDebugLog()にも載る形で残す。読み取りのみ・
+        // 副作用なし）。
+        function pushPcStateDiag(label) {
+            try {
+                const micState = (localStream && localStream.getAudioTracks && localStream.getAudioTracks()[0])
+                    ? localStream.getAudioTracks()[0].readyState : null;
+                pushTimelineEvent('PC_STATE_DIAG (label=' + label
+                    + ', connectionState=' + (pc ? pc.connectionState : null)
+                    + ', iceConnectionState=' + (pc ? pc.iceConnectionState : null)
+                    + ', dcReadyState=' + (dc ? dc.readyState : null)
+                    + ', micTrackReadyState=' + micState + ')');
+            } catch (diagErr) {
+                // 診断ログ自体の失敗が既存の接続状態処理を妨げてはならない。
+            }
+        }
+
+        // O5.6診断 項目11: window.error / unhandledrejection を?debug=1時のみ
+        // 記録する。個人情報を含み得る本文は保存せず、name/messageのみ・
+        // stackは保存しない（無制限のstack保存を避ける）。通話挙動には一切
+        // 影響を与えない（preventDefault等は呼ばない。既存のエラー伝播・
+        // ブラウザのデフォルト処理はそのまま）。
+        if (debugMode) {
+            try {
+                window.addEventListener('error', (ev) => {
+                    try {
+                        const name = (ev && ev.error && ev.error.name) ? ev.error.name : 'Error';
+                        const message = (ev && ev.message) ? String(ev.message).slice(0, 200) : '';
+                        pushTimelineEvent('JS_ERROR_DIAG (name=' + name + ', message=' + message + ')');
+                    } catch (innerErr) {
+                        // 診断ログ自体の失敗を握りつぶす（通話挙動へは影響させない）。
+                    }
+                });
+                window.addEventListener('unhandledrejection', (ev) => {
+                    try {
+                        const reason = ev && ev.reason;
+                        const name = (reason && reason.name) ? reason.name : 'UnhandledRejection';
+                        const message = (reason && reason.message) ? String(reason.message).slice(0, 200) : String(reason || '').slice(0, 200);
+                        pushTimelineEvent('JS_UNHANDLED_REJECTION_DIAG (name=' + name + ', message=' + message + ')');
+                    } catch (innerErr) {
+                        // 診断ログ自体の失敗を握りつぶす（通話挙動へは影響させない）。
+                    }
+                });
+            } catch (setupErr) {
+                // リスナー登録自体の失敗も既存処理へ影響させない。
+            }
+        }
+
         const SILENCE_WARNING_TEXT = 'お声が確認できないため、このままですとお電話を終了します。';
         const SILENCE_GOODBYE_TEXT = 'お電話を終了させていただきます。ありがとうございました。';
 
         // 「AIがユーザーの回答を待っている」状態に入った瞬間に呼ぶ。既に
         // waiting/warned/goodbyeのいずれかであれば何もしない（多重開始防止）。
-        function startSilenceTimerIfNeeded(myGeneration) {
+        function startSilenceTimerIfNeeded(myGeneration, armReasonForDiag) {
             if (silenceState !== 'idle') return;
-            silenceState = 'waiting';
+            setSilenceState('waiting', armReasonForDiag || 'ai_waiting_for_user');
             pushTimelineEvent('SILENCE_TIMER_STARTED');
+            // PHASE O5.6診断: armされた時刻を記録するのみ（発火条件・時間は無変更）。
+            silenceTimerArmedAt = performance.now();
+            try {
+                pushTimelineEvent('SILENCE_TIMER_ARMED (durationMs=' + SILENCE_TIMEOUT_MS
+                    + ', silenceState=waiting, reason=' + (armReasonForDiag || 'ai_waiting_for_user') + ')');
+            } catch (diagErr) {}
             silenceTimerId = setTimeout(() => {
                 silenceTimerId = null;
+                // PHASE O5.6診断: 発火した事実と、実際の経過時間・その時点の
+                // 発話タイミングを記録する（isStaleCallEventの判定・その後の
+                // triggerSilenceWarning呼び出し自体は元のコードと完全に同じ）。
+                try {
+                    pushTimelineEvent('SILENCE_TIMER_FIRED (expectedDurationMs=' + SILENCE_TIMEOUT_MS
+                        + ', actualElapsedMs=' + (silenceTimerArmedAt === null ? 'null' : msSince(silenceTimerArmedAt))
+                        + ', silenceState=' + silenceState
+                        + ', elapsedSinceSpeechStartedMs=' + (msSince(lastSpeechStartedAt) === null ? 'null' : msSince(lastSpeechStartedAt))
+                        + ', elapsedSinceSpeechStoppedMs=' + (msSince(lastSpeechStoppedAt) === null ? 'null' : msSince(lastSpeechStoppedAt))
+                        + ', stale=' + isStaleCallEvent(myGeneration) + ')');
+                } catch (diagErr) {}
                 if (isStaleCallEvent(myGeneration)) return;
                 triggerSilenceWarning(myGeneration);
             }, SILENCE_TIMEOUT_MS);
@@ -1449,11 +1603,32 @@
                 // 既に終話案内アナウンスを送信済み（間もなくendCallする既定路線）。
                 // ここでは取り消さず、既存のcallGeneration/endedガードに委ねる
                 // （終話中の競合防止・ユーザーの明示的な指示）。
+                // PHASE O5.6診断: 「'goodbye'中はキャンセルされない」という
+                // 既存仕様どおりの動作が実際に起きたことをログに残すのみ
+                // （cancel機能自体は今回追加しない）。
+                try {
+                    pushTimelineEvent('SILENCE_TIMER_RESET_IGNORED (state=goodbye, reason=' + reason + ')');
+                } catch (diagErr) {}
                 return;
             }
             const wasWarned = (silenceState === 'warned');
-            if (silenceTimerId !== null) { clearTimeout(silenceTimerId); silenceTimerId = null; }
-            if (silenceWarningTimerId !== null) { clearTimeout(silenceWarningTimerId); silenceWarningTimerId = null; }
+            // PHASE O5.6診断: 実際にどちらのタイマーが（何ms経過時点で）
+            // 解除されたかを記録する。clearTimeout自体・その後のsilenceState
+            // 更新ロジックは元のコードと完全に同じ。
+            if (silenceTimerId !== null) {
+                const timerAgeMsForDiag = silenceTimerArmedAt === null ? null : msSince(silenceTimerArmedAt);
+                clearTimeout(silenceTimerId); silenceTimerId = null;
+                try {
+                    pushTimelineEvent('SILENCE_TIMER_CANCELLED (timerAgeMs=' + (timerAgeMsForDiag === null ? 'null' : timerAgeMsForDiag) + ', reason=' + reason + ')');
+                } catch (diagErr) {}
+            }
+            if (silenceWarningTimerId !== null) {
+                const graceAgeMsForDiag = silenceWarningGraceArmedAt === null ? null : msSince(silenceWarningGraceArmedAt);
+                clearTimeout(silenceWarningTimerId); silenceWarningTimerId = null;
+                try {
+                    pushTimelineEvent('SILENCE_WARNING_GRACE_CANCELLED (timerAgeMs=' + (graceAgeMsForDiag === null ? 'null' : graceAgeMsForDiag) + ', reason=' + reason + ')');
+                } catch (diagErr) {}
+            }
             if (silenceState !== 'idle') {
                 pushTimelineEvent('SILENCE_TIMER_RESET (reason=' + reason + ', 直前state=' + silenceState + ')');
             }
@@ -1461,17 +1636,37 @@
                 // 終話予告後にユーザーが話した場合の終話キャンセル。
                 pushTimelineEvent('SILENCE_WARNING_CANCELLED (reason=' + reason + ')');
             }
-            silenceState = 'idle';
+            setSilenceState('idle', reason);
         }
 
         function triggerSilenceWarning(myGeneration) {
             if (isStaleCallEvent(myGeneration)) return;
             if (silenceState !== 'waiting') return; // 既に別状態へ遷移済みなら何もしない（安全側）
-            silenceState = 'warned';
+            setSilenceState('warned', 'silence_timer_fired');
             pushTimelineEvent('SILENCE_WARNING_TRIGGERED');
             sendResponseCreate('silence_warning', SILENCE_WARNING_TEXT);
+            // PHASE O5.6診断: 8秒猶予タイマーがarmされた時刻を記録する
+            // （SILENCE_WARNING_GRACE_MS・setTimeoutの発火条件は無変更）。
+            silenceWarningGraceArmedAt = performance.now();
+            try {
+                pushTimelineEvent('SILENCE_WARNING_GRACE_ARMED (durationMs=' + SILENCE_WARNING_GRACE_MS + ', silenceState=warned)');
+            } catch (diagErr) {}
             silenceWarningTimerId = setTimeout(() => {
                 silenceWarningTimerId = null;
+                // PHASE O5.6診断: 今回のAudit対象の核心。この時点のsilenceStateが
+                // 'warned'のまま（＝会話が正常に継続していても解除されていない）
+                // かどうかを、そのまま記録する。判定・分岐ロジックは元のコードと
+                // 完全に同じ（この直後のtriggerSilenceFinalGoodbye呼び出しの
+                // ガード自体は変更していない）。
+                try {
+                    pushTimelineEvent('SILENCE_WARNING_GRACE_FIRED (expectedDurationMs=' + SILENCE_WARNING_GRACE_MS
+                        + ', actualElapsedMs=' + (silenceWarningGraceArmedAt === null ? 'null' : msSince(silenceWarningGraceArmedAt))
+                        + ', silenceState=' + silenceState
+                        + ', elapsedSinceSpeechStartedMs=' + (msSince(lastSpeechStartedAt) === null ? 'null' : msSince(lastSpeechStartedAt))
+                        + ', elapsedSinceSpeechStoppedMs=' + (msSince(lastSpeechStoppedAt) === null ? 'null' : msSince(lastSpeechStoppedAt))
+                        + ', lastResponseReasonCategory=' + lastResponseReasonCategoryForDiag
+                        + ', stale=' + isStaleCallEvent(myGeneration) + ')');
+                } catch (diagErr) {}
                 if (isStaleCallEvent(myGeneration)) return;
                 triggerSilenceFinalGoodbye(myGeneration);
             }, SILENCE_WARNING_GRACE_MS);
@@ -1480,7 +1675,7 @@
         function triggerSilenceFinalGoodbye(myGeneration) {
             if (isStaleCallEvent(myGeneration)) return;
             if (silenceState !== 'warned') return; // 猶予中にユーザーが話した等で既にキャンセル済みなら何もしない
-            silenceState = 'goodbye';
+            setSilenceState('goodbye', 'warning_grace_expired');
             pendingSilenceGoodbyeHangup = true;
             pushTimelineEvent('SILENCE_FINAL_GOODBYE_STARTED');
             sendResponseCreate('silence_final_goodbye', SILENCE_GOODBYE_TEXT);
@@ -1544,6 +1739,15 @@
                 }
                 dc.send(JSON.stringify(payload));
                 pushTimelineEvent('RESPONSE_CREATE_REQUESTED (reason=' + reason + (instructionsOverride ? ', instructions_override=true' : '') + ')');
+                // PHASE O5.6診断: 実際に送信できたresponse.createのreasonを、
+                // 次に届くresponse.createdでローカル相関させるためだけに保持する
+                // （OpenAI Realtime APIへは一切送信しない・挙動制御には使わない）。
+                responseCreateDiagSeq += 1;
+                lastResponseCreateReason = reason;
+                try {
+                    pushTimelineEvent('RESPONSE_CREATE_DIAG (seq=' + responseCreateDiagSeq + ', reason=' + reason
+                        + ', category=' + categorizeResponseReason(reason) + ')');
+                } catch (diagErr) {}
                 return true;
             } catch (e) {
                 pushTimelineEvent('RESPONSE_CREATE_FAILED (reason=' + reason + '): ' + e.message);
@@ -2612,7 +2816,7 @@
                     // お客様が話し始めていた場合（userVadState==='speech'）は
                     // 明らかに無言ではないため開始しない。
                     if (userVadState !== 'speech') {
-                        startSilenceTimerIfNeeded(myGeneration);
+                        startSilenceTimerIfNeeded(myGeneration, 'zero_wait_greeting_ended');
                     }
                 }
             };
@@ -3385,6 +3589,11 @@
             toolContinuationTraceShortId = String(callId).slice(-8);
             toolContinuationTraceT0 = performance.now();
             toolContinuationTraceActive = true;
+            // PHASE O5.6診断: CALL_END_DIAGが必要とする「直近のTool呼び出し名・
+            // 経過ms」だけを保持する（既存のtoolContinuationTrace*系とは別の
+            // 単純な変数。読み取り専用・挙動には無関係）。
+            lastFunctionCallNameForDiag = item.name || null;
+            lastFunctionCallStartedAtForDiag = toolContinuationTraceT0;
             pushToolContinuationTrace('T0_FUNCTION_CALL_RECEIVED (tool=' + (item.name || '(不明)') + ')');
 
             // PHASE14/PHASE8（会話停止調査）: Tool Timeline。Tool名+状態のみを
@@ -3881,6 +4090,25 @@
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('RESPONSE_CREATED');
                 pushToolContinuationTrace('T7_CONTINUATION_RESPONSE_CREATED');
+                // PHASE O5.6診断（response.create correlation）: 直近に明示的に
+                // 送信したsendResponseCreate()のreasonを、この時点で一度だけ
+                // 消費してカテゴリ化する。これにより「silenceState='warned'の
+                // 状態で届いたresponse.createdが、本当に自分が送ったsilence_
+                // warningの応答なのか、それとも別の（通常会話やturn_detection
+                // 自動生成の）応答なのか」を後から区別できる。消費後は
+                // lastResponseCreateReasonをnullへ戻すため、対応するsend元が
+                // 無い次のresponse.createdは自動的にnormal_conversation
+                // （＝サーバー側turn_detectionによる自動応答の可能性）として
+                // 記録される。挙動制御には一切使わない・純粋な観測用ログ。
+                try {
+                    const consumedReasonForDiag = lastResponseCreateReason;
+                    const categoryForDiag = categorizeResponseReason(consumedReasonForDiag);
+                    lastResponseReasonCategoryForDiag = categoryForDiag;
+                    pushTimelineEvent('RESPONSE_CREATE_CORRELATION (category=' + categoryForDiag
+                        + ', matchedPendingReason=' + (consumedReasonForDiag === null ? 'null' : consumedReasonForDiag)
+                        + ', silenceStateAtArrival=' + silenceState + ')');
+                    lastResponseCreateReason = null;
+                } catch (diagErr) {}
                 // NAME Forced Commit Observation PoC（PHASE9/12）: 手動commit後に
                 // OpenAI側が自発的にresponse.createdを送ってきた場合、観測する
                 // だけで、こちらから追加のresponse.createは絶対に送らない。
@@ -3942,7 +4170,7 @@
                 // （Tool Call往復中の中間応答では開始しない＝待ち時間を無言として
                 // カウントしないための最重要ガード）。
                 if (!responseHasFunctionCall) {
-                    startSilenceTimerIfNeeded(callGeneration);
+                    startSilenceTimerIfNeeded(callGeneration, 'response_done_no_function_call');
                 }
                 // FAST TURN 3.6B（Tool Continuation Proof）: function_callを含まない
                 // 最終応答が完了した時点で初めてT10を記録し、Tool継続チェーン
@@ -4328,6 +4556,16 @@
             silenceState = 'idle';
             responseHasFunctionCall = false;
             pendingSilenceGoodbyeHangup = false;
+            // PHASE O5.6診断: 新しい通話ごとに診断専用の状態も必ずリセットする
+            // （前回通話の診断値を持ち越さない。挙動には無関係・観測値のみ）。
+            silenceStateEnteredAt = null;
+            silenceTimerArmedAt = null;
+            silenceWarningGraceArmedAt = null;
+            lastResponseCreateReason = null;
+            responseCreateDiagSeq = 0;
+            lastResponseReasonCategoryForDiag = 'unknown';
+            lastFunctionCallNameForDiag = null;
+            lastFunctionCallStartedAtForDiag = null;
             // NAME Forced Commit Observation PoC: 新しい通話ごとに必ずリセット
             // する（前回通話のPoC状態を持ち越さない）。
             nameAnswerGeneration = 0;
@@ -4799,6 +5037,9 @@
                     if (pc !== thisPc) return;
                     logEvent('接続状態(connectionState): ' + pc.connectionState);
                     pushTimelineEvent('PC connectionState=' + pc.connectionState);
+                    // O5.6診断: connectionStateが変化するたびにPC_STATE_DIAGを残す
+                    // （挙動には無関係。特にdisconnected/failed/closedを確実に残す）。
+                    pushPcStateDiag('onconnectionstatechange:' + pc.connectionState);
                     setStatus(stWebrtcEl, pc.connectionState, pc.connectionState === 'connected' ? 'ok' : null);
                     if (pc.connectionState === 'connected') {
                         // PHASE10: disconnectedからの自然回復を含む。猶予タイマーが
@@ -4848,6 +5089,8 @@
                                     }
                                     updateAudioDiagnosticsPanel();
                                     pushTimelineEvent('disconnectedが猶予期間内に回復しなかったため終了します(state=' + pc.connectionState + ')');
+                                    // O5.6診断: 猶予期間満了時点（endCall直前）のPC/DC/mic状態を確実に残す。
+                                    pushPcStateDiag('disconnect_grace_expired:' + pc.connectionState);
                                     const reason = '通話が切断されました。電波状況の良い場所でもう一度おかけ直しください。';
                                     captureFailureSnapshot('pc.onconnectionstatechange:disconnected(grace_expired,state=' + pc.connectionState + ')', reason);
                                     if (!ended) endCall(reason, 'pc.onconnectionstatechange:disconnected(grace_expired,state=' + pc.connectionState + ')');
@@ -4866,6 +5109,8 @@
                             failureSource = (pc.iceConnectionState === 'failed') ? 'ice_failed' : 'peer_connection_failed';
                         }
                         updateAudioDiagnosticsPanel();
+                        // O5.6診断: failed/closedを確実に残す（endCall直前のPC/DC/mic状態）。
+                        pushPcStateDiag('failed_or_closed:' + pc.connectionState);
                         const reason = '通話が切断されました。電波状況の良い場所でもう一度おかけ直しください。';
                         if (!ended) {
                             captureFailureSnapshot('pc.onconnectionstatechange:' + pc.connectionState, reason);
@@ -5053,6 +5298,42 @@
             ended = true;
             pushTimelineEvent('endCall (source=' + (source || '不明') + ', reason=' + (reason ? '有' : '無') + ')');
             logConnectionSnapshot('endCall直前（呼び出し元: ' + (source || '不明') + '）');
+            // ===== PHASE O5.6: CALL_END_DIAG（診断専用・挙動は一切変更しない） =====
+            // endCall()が実際に処理を進める（ended=trueが確定した）この時点、
+            // cleanupConnection()でpc/dc/localStreamがnull化される前に、通話
+            // 終了の原因調査に必要な状態を1行にまとめて記録する。個人情報
+            // （氏名・電話番号・予約内容・transcript全文・音声・トークン等）は
+            // 一切含めない。reason引数自体の全文はログしない（既存の
+            // END_CALL_REQUESTEDと同じ「有/無」表記の慣習を踏襲し、実際の
+            // 終了理由の識別はsource引数側で行う）。例外が起きても既存の
+            // 終話処理（この直後のusage確定・cleanupConnection等）を妨げない
+            // よう、必ずtry/catchで包む。
+            try {
+                const micTrackStateForDiag = (localStream && localStream.getAudioTracks && localStream.getAudioTracks()[0])
+                    ? localStream.getAudioTracks()[0].readyState : null;
+                const elapsedFromCallStartMsForDiag = callStartedAt ? (Date.now() - callStartedAt) : null;
+                const speechStartedElapsedForDiag = msSince(lastSpeechStartedAt);
+                const speechStoppedElapsedForDiag = msSince(lastSpeechStoppedAt);
+                const functionCallElapsedForDiag = msSince(lastFunctionCallStartedAtForDiag);
+                pushTimelineEvent('CALL_END_DIAG (epochMs=' + Date.now()
+                    + ', elapsedFromCallStartMs=' + (elapsedFromCallStartMsForDiag === null ? 'null' : elapsedFromCallStartMsForDiag)
+                    + ', callGeneration=' + callGeneration
+                    + ', source=' + (source || '不明')
+                    + ', reasonPresent=' + !!reason
+                    + ', silenceState=' + silenceState
+                    + ', pendingSilenceGoodbyeHangup=' + pendingSilenceGoodbyeHangup
+                    + ', pcConnectionState=' + (pc ? pc.connectionState : null)
+                    + ', iceConnectionState=' + (pc ? pc.iceConnectionState : null)
+                    + ', dcReadyState=' + (dc ? dc.readyState : null)
+                    + ', micTrackReadyState=' + micTrackStateForDiag
+                    + ', elapsedSinceLastSpeechStartedMs=' + (speechStartedElapsedForDiag === null ? 'null' : speechStartedElapsedForDiag)
+                    + ', elapsedSinceLastSpeechStoppedMs=' + (speechStoppedElapsedForDiag === null ? 'null' : speechStoppedElapsedForDiag)
+                    + ', lastResponseReason=' + lastResponseReasonCategoryForDiag
+                    + ', lastFunctionCallName=' + (lastFunctionCallNameForDiag || 'null')
+                    + ', lastFunctionCallElapsedMs=' + (functionCallElapsedForDiag === null ? 'null' : functionCallElapsedForDiag) + ')');
+            } catch (diagErr) {
+                // 診断ログ自体の失敗が既存の終話処理を妨げてはならない。
+            }
             // Phase2.6: 通話終了時点のusage合計を確定させる（cleanupConnectionより前に
             // 実施し、状態表示のリセットの影響を受けないようにする）。
             if (callStartedAt && !callEndedAt) {
