@@ -869,7 +869,7 @@
             <div id="menu-list" style="margin-top: 18px;"></div>
         </div>
 
-        <div class="card">
+        <div class="card" id="table-card">
             <h2>テーブル・席の管理</h2>
             <p class="hint">テーブル・席ごとに登録すると、人数に応じた空き状況が自動で計算されます。何も登録しない場合は、人数の上限チェックなしで予約を受け付けます。</p>
             <form id="table-form">
@@ -890,7 +890,7 @@
         </div>
 
         <div class="card">
-            <h2>予約リソースの管理</h2>
+            <h2 id="resource-card-title">予約リソースの管理</h2>
             <p class="hint">部屋・ベッド・椅子・車両・カラオケルーム・教室・設備など、予約に使う場所や設備を登録できます。まだ予約の割り当てには使われません（登録・編集のみの機能です）。</p>
             <form id="resource-form">
                 <div class="row-2">
@@ -2035,6 +2035,100 @@
         const SERVICE_BASED_TYPES = ['beauty', 'medical', 'education', 'fitness', 'hotel'];
         let currentServiceLabelMeta = DEFAULT_SERVICE_LABEL_META;
 
+        // PHASE O1（業種に合わない予約設備UIをなくす）: 業種正規化レイヤーと
+        // 中央industry configuration。AUDIT（このフェーズ開始前の監査）で
+        // 実際に確認した値のみを使用し、推測の業種・カテゴリー値は追加しない。
+        //
+        // 監査で判明した実際の値表現：
+        //  (1) app/taxonomy.py の TAXONOMY 8グループのkeyが、現在Shop.business_typeに
+        //      保存される正規値（restaurant/beauty/medical/education/fitness/hotel/
+        //      entertainment/other）。"rental"のような業種キーは存在しない。
+        //  (2) 旧カテゴリー値（大文字の固定文字列）は app/main.py 起動時の一括移行で
+        //      通常は自動的に(1)へ変換済みだが、念のためフロントにも同じ変換表
+        //      （app/taxonomy.py の LEGACY_CATEGORY_MAP と同一の値）を持たせ、
+        //      移行前・移行漏れのデータでもUIが壊れないようにする。
+        //  (3) 上記いずれにも一致しない場合は "other" にフォールバックする
+        //      （未知カテゴリーでもJSエラーを起こさないため）。
+        const KNOWN_BUSINESS_TYPES = ['restaurant', 'beauty', 'medical', 'education', 'fitness', 'hotel', 'entertainment', 'other'];
+        const LEGACY_CATEGORY_TO_BUSINESS_TYPE = {
+            RESTAURANT: 'restaurant', CAFE: 'restaurant', RAMEN: 'restaurant',
+            SUSHI: 'restaurant', IZAKAYA: 'restaurant', BAR: 'restaurant',
+            BEAUTY: 'beauty', SALON: 'beauty',
+            CLINIC: 'medical',
+            OTHER: 'other',
+        };
+
+        function normalizeBusinessType(businessType, category) {
+            if (businessType && KNOWN_BUSINESS_TYPES.indexOf(businessType) !== -1) {
+                return businessType;
+            }
+            if (category && LEGACY_CATEGORY_TO_BUSINESS_TYPE[category]) {
+                return LEGACY_CATEGORY_TO_BUSINESS_TYPE[category];
+            }
+            return 'other';
+        }
+
+        // テーブル/予約リソースカードの表示・名称・新規追加時のデフォルト種別を
+        // 業種ごとに一元管理する。HTML各所にif (businessType === 'beauty')等を
+        // 散在させないための唯一の場所。値は仕様書の例示ではなく、実際の
+        // taxonomyサブカテゴリー名（categoryOverridesのキー）で安全に判定できる
+        // 場合のみ細分化している（例：美容の中でも「エステ・脱毛」「マッサージ・
+        // リラクゼーション」だけは椅子ではなく施術ベッドが自然なため上書き）。
+        // "整体・カイロ"はtaxonomy上は独立の業種ではなく、beautyの
+        // 「マッサージ・リラクゼーション」に該当する（監査で確認済み）。
+        const INDUSTRY_UI_CONFIG = {
+            restaurant: { tableVisible: true, resourceLabel: '設備・予約枠', resourceDefaultType: 'other' },
+            beauty: {
+                tableVisible: false, resourceLabel: '施術席', resourceDefaultType: 'chair',
+                categoryOverrides: {
+                    'エステ・脱毛': { resourceLabel: '施術ベッド', resourceDefaultType: 'bed' },
+                    'マッサージ・リラクゼーション': { resourceLabel: '施術ベッド', resourceDefaultType: 'bed' },
+                },
+            },
+            medical: { tableVisible: false, resourceLabel: '診察室', resourceDefaultType: 'room' },
+            education: { tableVisible: false, resourceLabel: '教室', resourceDefaultType: 'classroom' },
+            fitness: { tableVisible: false, resourceLabel: '設備・予約枠', resourceDefaultType: 'other' },
+            hotel: { tableVisible: false, resourceLabel: '客室', resourceDefaultType: 'room' },
+            entertainment: {
+                tableVisible: false, resourceLabel: '設備・予約枠', resourceDefaultType: 'other',
+                categoryOverrides: {
+                    'カラオケ': { resourceLabel: 'ルーム', resourceDefaultType: 'karaoke_room' },
+                },
+            },
+            other: { tableVisible: false, resourceLabel: '設備・予約枠', resourceDefaultType: 'other' },
+        };
+
+        function resolveIndustryUIConfig(businessType, category) {
+            const canonical = normalizeBusinessType(businessType, category);
+            const base = INDUSTRY_UI_CONFIG[canonical] || INDUSTRY_UI_CONFIG.other;
+            const override = (base.categoryOverrides && category) ? base.categoryOverrides[category] : null;
+            return override ? Object.assign({}, base, override) : base;
+        }
+
+        let currentIndustryUIConfig = INDUSTRY_UI_CONFIG.other;
+
+        // 新規追加フォームの初期選択値だけを変える（セクション7）。既存の
+        // 登録済みResourceのresource_typeを勝手に変更することは一切しない
+        // （このファイルにResourceの編集(edit)機能自体が存在せず、登録・
+        // 有効/無効切替・削除のみのため、誤って既存データを書き換える経路もない）。
+        function applyResourceTypeDefault(defaultType) {
+            const select = document.getElementById('resource-type');
+            if (select && defaultType) select.value = defaultType;
+        }
+
+        // ShopTableは飲食店向け（セクション5）。カテゴリーを理由にShopTableの
+        // データを削除・変換することは一切せず、表示/非表示（CSSのdisplay）
+        // だけを切り替える。既存店舗のShopTable行・API挙動は無変更。
+        function applyIndustryUIConfig(businessType, category) {
+            const config = resolveIndustryUIConfig(businessType, category);
+            currentIndustryUIConfig = config;
+            const tableCard = document.getElementById('table-card');
+            if (tableCard) tableCard.style.display = config.tableVisible ? 'block' : 'none';
+            const resourceTitle = document.getElementById('resource-card-title');
+            if (resourceTitle) resourceTitle.textContent = config.resourceLabel + 'の管理';
+            applyResourceTypeDefault(config.resourceDefaultType);
+        }
+
         if (!token || !shopId) {
             document.getElementById('gate').style.display = 'block';
             window.location.href = 'owner-login.html';
@@ -2222,6 +2316,7 @@
                     }
                     populateCategorySelect(shop.business_type, shop.category);
                     updateServiceStaffVisibility(shop.business_type);
+                    applyIndustryUIConfig(shop.business_type, shop.category);
                     document.getElementById('edit-phone').value = shop.phone || '';
                     document.getElementById('edit-address').value = shop.address || '';
                     document.getElementById('edit-email').value = shop.email || '';
@@ -3231,6 +3326,10 @@
                 }
                 showMsg(msg, '追加しました', 'success');
                 document.getElementById('resource-form').reset();
+                // PHASE O1: .reset()はHTMLの静的なselected属性（先頭の「部屋」）に
+                // 戻ってしまうため、業種に応じた初期選択値を改めて適用し直す
+                // （新規追加フォームのデフォルト値のみで、既存データには影響しない）。
+                applyResourceTypeDefault(currentIndustryUIConfig.resourceDefaultType);
                 loadResources();
             } catch (err) {
                 showMsg(msg, typeof err.message === 'string' ? err.message : '追加に失敗しました', 'error');
@@ -5391,6 +5490,7 @@
             const shop = await res.json();
             document.getElementById('shop-name-title').textContent = shop.name + ' の管理';
             updateServiceStaffVisibility(shop.business_type);
+            applyIndustryUIConfig(shop.business_type, shop.category);
             return { ok: true };
         }
 
