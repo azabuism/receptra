@@ -577,6 +577,43 @@
         // elapsed_msを記録済みかどうか（二重ログ防止。既存3機構と同じ構造）。
         let quickAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
 
+        // ===== PHASE O5.9.1: Forced Commit Error Correlation（診断専用） =====
+        // 背景（O5.9 Auditで確認したギャップ）: QUICK_ANSWER_COMMIT_SENTは記録
+        // されるが、その後OpenAIから非同期に届く'error'イベント（QUICK_ANSWER_
+        // COMMIT_ERROR）は、同一callGeneration内であれば経過時間を問わず
+        // 無条件で記録されていた。これでは「直前のSHORT_ANSWER Forced Commit
+        // に本当に起因するerrorなのか、たまたま同じ通話内の別の原因による
+        // errorなのか」を実ログだけから確実に判別できない。
+        //
+        // 今回追加するのは「原因の確定」ではなく、あくまで「時間的に直前の
+        // commitと相関している可能性が高いerror」を診断目的でラベル付け
+        // するだけの機構。Realtime制御（送信内容・タイミング・retry等）には
+        // 一切影響しない。
+        //
+        // seq（quickAnswerCommitDiagSeq）: このSHORT_ANSWER Forced Commit機構が
+        // 実際にdc.send()を実行した回数を数えるだけの、診断専用の単調増加
+        // カウンタ。quickAnswerGeneration（質問1問ごとの世代）とは別軸で、
+        // 「何回目の実送信か」を一意に識別するために存在する。
+        let quickAnswerCommitDiagSeq = 0;
+        // 直近に成功したSHORT_ANSWER Forced Commit送信1回分のスナップショット
+        // （診断専用。Realtime制御判断には一切使用しない）。
+        // { seq, sentAt(performance.now基準), epochMs(Date.now基準・実時計),
+        //   callGeneration, expectedAnswerType } または未送信ならnull。
+        let lastQuickAnswerCommitDiag = null;
+        // 相関ウィンドウ（診断専用の閾値であり、Realtime側のタイムアウトや
+        // retry等の制御には一切使用しない）。OpenAI Realtimeのcontrol-plane
+        // errorイベント（音声生成を伴わない、リクエスト自体の妥当性検証系の
+        // エラー）は、モデルの応答生成を待つ必要がないため、通常は送信から
+        // 数百ms〜1、2秒程度で返ることが期待される。実測ログ（O5.6/O5.8の
+        // 既存tests/comment群）では、これより十分に大きい既存の目安値として
+        // PHONE Answer Windowの上限10000msや、CommitからCommitReaction
+        // （committed/item_created等）までの実測待ち時間があるが、今回は
+        // 「commitと無関係な、別ターンの後発errorを誤って相関させない」ことを
+        // 優先し、それらより短い5000ms（5秒）を採用する。この値は診断の
+        // 感度調整のみが目的であり、超過したerrorも既存のQUICK_ANSWER_
+        // COMMIT_ERROR自体には引き続き記録される（隠さない。ユーザー指示6）。
+        const QUICK_ANSWER_COMMIT_ERROR_CORRELATION_MS = 5000;
+
         // ===== PHASE O5.8: SHORT_ANSWER Finalization Grace（speech_stopped基準） =====
         // O5.7 Auditの結論（推測ではなく実測での確認は今後の実機ログで行うが、
         // コード構造上の欠陥として確定した点）: 旧SHORT_ANSWER Answer Window
@@ -914,6 +951,17 @@
                 // 意図的に別の接頭辞「quickAnswer」を使う（下記参照）。
                 type = 'SHORT_ANSWER';
             }
+            // PHASE O5.9.1（ユーザー指示8）: classifyExpectedAnswerType()が
+            // 呼ばれるたび（＝AIの発話が1回完了するたび）に、その分類結果を
+            // 無条件で記録する診断専用イベント。既存のEXPECTED_ANSWER_SETは
+            // 「型が変化したときだけ」しか記録しないため、直前と同じ型が
+            // 連続した場合（例: PARTY_SIZE質問の直後にTIME質問が続き、
+            // どちらも'SHORT_ANSWER'のまま変化しない場合）に記録が抜ける。
+            // O5.9 Auditで指摘された「TIME質問が実際にSHORT_ANSWERへ分類
+            // されているか」を実ログだけで確実に確認できるよう、変化の
+            // 有無に関わらず必ず1回記録する。AI発話全文（transcript）は
+            // 一切含めず、分類結果の型文字列のみを記録する（PIIなし）。
+            pushTimelineEvent('EXPECTED_ANSWER_DIAG (type=' + type + ')');
             if (type !== expectedAnswerType) {
                 expectedAnswerType = type;
                 if (type === 'NAME') {
@@ -1339,7 +1387,24 @@
                 quickAnswerCommitCallGeneration = myGeneration;
                 quickAnswerCommitSentAt = performance.now();
                 quickAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
-                pushTimelineEvent('QUICK_ANSWER_COMMIT_SENT (generation=' + quickAnswerGeneration + ')');
+                // PHASE O5.9.1（ユーザー指示2・3）: 診断専用のcommit correlation
+                // stateを更新する。Realtime制御判断（retry・timer等）には一切
+                // 使用せず、後続の'error'イベントハンドラが「時間的に直前の
+                // このcommitと相関している可能性が高いか」を判定するためだけに
+                // 参照する。
+                quickAnswerCommitDiagSeq += 1;
+                lastQuickAnswerCommitDiag = {
+                    seq: quickAnswerCommitDiagSeq,
+                    sentAt: quickAnswerCommitSentAt,
+                    epochMs: Date.now(),
+                    callGeneration: myGeneration,
+                    expectedAnswerType: answerType,
+                };
+                pushTimelineEvent('QUICK_ANSWER_COMMIT_SENT (generation=' + quickAnswerGeneration
+                    + ', seq=' + lastQuickAnswerCommitDiag.seq
+                    + ', epochMs=' + lastQuickAnswerCommitDiag.epochMs
+                    + ', callGeneration=' + lastQuickAnswerCommitDiag.callGeneration
+                    + ', expectedAnswerType=' + lastQuickAnswerCommitDiag.expectedAnswerType + ')');
             } catch (e) {
                 // send自体が例外を投げた場合も非fatal扱い（endCall/
                 // cleanupConnectionは呼ばない）。既存のsemantic_vadに以後を委ねる。
@@ -4444,8 +4509,29 @@
                     const qaErrCode = (msg.error && msg.error.code) || null;
                     const qaErrType = (msg.error && msg.error.type) || null;
                     const qaErrMessage = (msg.error && msg.error.message) || null;
+                    const qaElapsedSinceCommitMs = Math.round(performance.now() - quickAnswerCommitSentAt);
                     pushTimelineEvent('QUICK_ANSWER_COMMIT_ERROR (code=' + qaErrCode + ', type=' + qaErrType
-                        + ', elapsed_ms=' + Math.round(performance.now() - quickAnswerCommitSentAt) + ', message=' + qaErrMessage + ')');
+                        + ', elapsed_ms=' + qaElapsedSinceCommitMs + ', message=' + qaErrMessage + ')');
+                    // PHASE O5.9.1（ユーザー指示4・5・6）: 上のQUICK_ANSWER_COMMIT_ERROR
+                    // （既存・無変更）はcallGenerationが一致してさえいれば経過時間を
+                    // 問わず記録されるため、「本当に直前のSHORT_ANSWER Forced Commit
+                    // に起因するerrorなのか」を実ログだけから断定できないという
+                    // O5.9 Auditのギャップがあった。ここでは「原因の確定」では
+                    // なく、あくまで診断目的で「時間的に直前のcommitと相関して
+                    // いる可能性が高いerror」だけを別イベントとして追加記録する
+                    // （既存QUICK_ANSWER_COMMIT_ERROR自体は一切変更・非表示化
+                    // しない。ユーザー指示6）。ウィンドウ超過分は意図的に対象外
+                    // とし（OLD-ERRORケース）、transcript/PIIは一切含めず、
+                    // type/codeのみを記録する（message全文は含めない）。
+                    if (lastQuickAnswerCommitDiag !== null
+                        && lastQuickAnswerCommitDiag.callGeneration === callGeneration
+                        && qaElapsedSinceCommitMs <= QUICK_ANSWER_COMMIT_ERROR_CORRELATION_MS) {
+                        pushTimelineEvent('QUICK_ANSWER_COMMIT_ERROR_CORRELATED (seq=' + lastQuickAnswerCommitDiag.seq
+                            + ', elapsedSinceCommitMs=' + qaElapsedSinceCommitMs
+                            + ', callGeneration=' + callGeneration
+                            + ', errorType=' + qaErrType
+                            + ', errorCode=' + qaErrCode + ')');
+                    }
                 }
             }
         }
@@ -4764,6 +4850,11 @@
             quickAnswerCommitSentAt = null;
             quickAnswerCommitCallGeneration = null;
             quickAnswerCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
+            // PHASE O5.9.1: Forced Commit Error Correlation用の診断専用stateも、
+            // 新しい通話ごとに必ずリセットする（前回通話のseq/相関情報を
+            // 持ち越さない）。
+            quickAnswerCommitDiagSeq = 0;
+            lastQuickAnswerCommitDiag = null;
             // PHASE O5.8: SHORT_ANSWER Finalization Grace timerも、新しい通話
             // ごとに必ずリセットする（前回通話のタイマーを持ち越さない。万一
             // 前回通話終了時にarmされたまま残っていた場合の防御的clearTimeoutも
