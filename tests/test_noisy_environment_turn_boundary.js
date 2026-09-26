@@ -510,7 +510,11 @@ test('L2: LIVE-WIRING) input_audio_buffer.speech_started ハンドラが cancelU
 test('M: LIVE-WIRING) input_audio_buffer.committed ハンドラが userTurnFallbackNormalCompletionSeen を立てて cancelUserTurnFallbackTimer を呼んでいる', () => {
     const idx = SRC.indexOf("} else if (type === 'input_audio_buffer.committed') {");
     assert.notStrictEqual(idx, -1);
-    const block = SRC.slice(idx, idx + 2600);
+    // 実測: FAST TURN HOTFIX 3のFULL TURN LATENCY TRACE追加（TURN_COMMITTED /
+    // TURN_RESPONSE_REQUESTEDマーカーとその説明コメント）により、アンカーからの
+    // オフセットが2836/2897文字まで伸びたため、ウィンドウを2600→3200へ拡張
+    // （測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 3200);
     assert.ok(block.includes('userTurnFallbackNormalCompletionSeen = true') && block.includes("cancelUserTurnFallbackTimer('committed')"));
 });
 

@@ -272,12 +272,25 @@ await test('G: UI_STATE) 実際にAI音声が再生開始した瞬間(output_aud
         'must show AI_SPEAKING text exactly when audio actually starts playing');
 });
 
-await test('N: FAST TURN 3.6B) T7(CONTINUATION_RESPONSE_CREATED)がresponse.createdハンドラ内、RESPONSE_CREATED記録の直後に置かれている', () => {
+await test('N: FAST TURN 3.6B) T7(CONTINUATION_RESPONSE_CREATED)がresponse.createdハンドラ内、RESPONSE_CREATED記録の直後（他の分岐を挟まず）に置かれている', () => {
     const idx = SRC.indexOf("} else if (type === 'response.created') {");
     assert.notStrictEqual(idx, -1, 'response.created handler not found');
-    const block = SRC.slice(idx, idx + 2000);
-    assert.ok(/pushTimelineEvent\('RESPONSE_CREATED'\);\s*\n\s*pushToolContinuationTrace\('T7_CONTINUATION_RESPONSE_CREATED'\);/.test(block),
-        'T7 must fire right when response.created arrives (this handler resets responseHasFunctionCall itself, so an intermediate function-call-only response.created never carries an active trace from a prior turn)');
+    // 実測: RESPONSE_CREATEDは+1614文字、T7は+1951文字（文字列自体の長さを
+    // 含めると+2015文字）に位置するため、ウィンドウを2000→2400へ拡張
+    // （測定値+余裕分。以前は2000ぴったりでT7の文字列が途中で切られていた）。
+    const block = SRC.slice(idx, idx + 2400);
+    const rcIdx = block.indexOf("pushTimelineEvent('RESPONSE_CREATED');");
+    const t7Idx = block.indexOf("pushToolContinuationTrace('T7_CONTINUATION_RESPONSE_CREATED');");
+    assert.notStrictEqual(rcIdx, -1, 'RESPONSE_CREATED timeline log not found');
+    assert.notStrictEqual(t7Idx, -1, 'T7 not found');
+    assert.ok(rcIdx < t7Idx, 'RESPONSE_CREATED must be logged before T7');
+    // FAST TURN HOTFIX 3（今回追加）が間にTURN_RESPONSE_CREATEDという新しい
+    // 診断専用呼び出し（＋4行の説明コメント）を挿入したため、直接隣接
+    // （改行のみ）という厳密なregexではなく、間に別の分岐・不要なロジックが
+    // 入っていないことを「短い距離（400文字以内）」で確認する方式に変更する。
+    // 実測: RESPONSE_CREATEDからT7まで337文字（コメント+診断呼び出し1行分）。
+    assert.ok(t7Idx - rcIdx < 400,
+        'T7 must fire right when response.created arrives, with nothing but diagnostic-only additions (no branching/business logic) between RESPONSE_CREATED and T7');
 });
 
 await test('O: FAST TURN 3.6B) T8(CONTINUATION_AUDIO_FIRST_DELTA)がoutput_audio_buffer.startedハンドラ内にある', () => {
@@ -293,7 +306,11 @@ await test('O: FAST TURN 3.6B) T8(CONTINUATION_AUDIO_FIRST_DELTA)がoutput_audio
 await test("P: FAST TURN 3.6B) T9(CONTINUATION_AUDIO_PLAYING)が<audio>要素の実際の'playing'イベントリスナー内にある（dc.send成功や仕様上の想定ではなく、ブラウザが実際に音声再生を開始したという事実のみを根拠とする）", () => {
     const idx = SRC.indexOf("audioEl.addEventListener('playing', () => {");
     assert.notStrictEqual(idx, -1, "audioEl 'playing' listener not found");
-    const block = SRC.slice(idx, idx + 900);
+    // 実測: FAST TURN HOTFIX 3が同じリスナー内にTURN_AUDIO_PLAYBACK_START
+    // 診断marker（説明コメント付き）を追加したことで、T9呼び出しまでの
+    // オフセットが1042文字まで伸びたため、ウィンドウを900→1400へ拡張
+    // （測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 1400);
     assert.ok(block.includes("pushToolContinuationTrace('T9_CONTINUATION_AUDIO_PLAYING"),
         'T9 must be anchored to the real <audio> "playing" DOM event, which is the actual physical evidence that audio is being decoded and played, not an inferred/assumed state');
 });

@@ -1079,6 +1079,103 @@
             pushTimelineEvent('TOOL_TRACE ' + label + ' (call=' + toolContinuationTraceShortId + ', t+' + elapsedMs + 'ms)');
         }
 
+        // ===== FAST TURN HOTFIX 3（今回追加）: FULL TURN LATENCY TRACE =====
+        // 目的: 「明日、二人で12時に予約したいです」のような通常の1ユーザー
+        // ターンについて、USER SPEECH START（speech_started）からAI音声の
+        // 実再生開始（<audio>要素のplayingイベント）まで、どのsegmentで
+        // 時間を使っているかをミリ秒単位で可視化する診断専用の追加。
+        //
+        // 重要な設計方針（監査結論に基づく）:
+        // - 挙動は一切変更しない。既存のタイマー・閾値・commit/response.create
+        //   送信ロジック・USER_TURN_3S_FALLBACK・AI SPEAKING PROTECTION等には
+        //   一切触れない。純粋な観測（pushTimelineEvent呼び出しの追加）のみ。
+        // - 発話内容・transcriptは一切保存しない。turnIdは単なる連番文字列。
+        // - 1ターンにつき同じmarker名は1回だけ記録する（response.audio.delta等、
+        //   1ターン中に何度も発火するイベントの重複記録を防ぐため）。これにより
+        //   TURN_RESPONSE_CREATEDはTool呼び出しターンの中間応答（function_call
+        //   のみ）ではなく最初のresponse.createdのみを捉える（既存の
+        //   turnLatencyCommitToResponseMs計算と同じ「初回のみ」設計を踏襲）。
+        // - TURN_RESPONSE_REQUESTED: CRITICAL QUESTION 2の監査結論
+        //   （通常ターンのresponse.createは100%サーバー側semantic_vadの
+        //   自動create_responseであり、クライアントからresponse.createを
+        //   送信する専用イベントは存在しない）を反映し、「サーバーが応答生成を
+        //   開始してよい状態になった」タイミングであるinput_audio_buffer.
+        //   committedと同時刻で記録する（既存コードに新しい「要求」イベントを
+        //   作り出すわけではないことを明示するコメント付き）。
+        // - TURN_TRANSCRIPTION_READY: input_audio_transcriptionはセッション
+        //   設定で有効化されていない（realtime_voice_ai.py監査済み、0件）ため、
+        //   対応するconversation.item.input_audio_transcription.*イベントは
+        //   そもそも発生しない。存在しないイベントへの空ハンドラを追加する
+        //   ことは推測実装にあたるため追加しない（構造的にN/Aという audit結論を
+        //   最終報告に記載する）。
+        // - TURN_AUDIO_PLAYBACK_START: output_audio_buffer.started（OpenAI公式
+        //   既知バグCase #09291741により遅延/欠落しうることがFAST TURN
+        //   HOTFIX 2で判明済み）ではなく、実際に<audio>要素がブラウザで
+        //   物理的な再生を開始した'playing'イベント（既存のT9計測と同じ
+        //   物的証拠）を採用する。これにより「サーバーイベント配信遅延」と
+        //   「実際の音声再生遅延」を区別できるようにする。
+        // - 通話終了時・新しいターン開始時（前のターンが正常完了イベントを
+        //   受け取れないまま次のspeech_startedが来た場合＝多分割発話の可能性の
+        //   直接証拠）は、TURN_TRACE_RESETとして明示的に記録してから
+        //   リセットする（データを黙って失わない）。
+        let turnLatencyTraceId = null;           // 現在計測中のターンの識別子（PIIなし、単なる連番文字列）
+        let turnLatencyTraceSeq = 0;             // ターンID生成用の連番カウンタ（通話単位ではなくページ単位）
+        let turnLatencyTraceCallGeneration = null;
+        let turnLatencyTraceT0 = null;           // このターンのTURN_INPUT_START時刻（基準点、performance.now()）
+        let turnLatencyTraceLastAt = null;       // 直前マーカーの時刻（deltaFromPreviousMs計算用）
+        let turnLatencyTraceMarkersSeen = {};    // 同一ターン内でのmarker重複記録防止
+
+        function resetTurnLatencyTrace(reason) {
+            if (turnLatencyTraceId !== null) {
+                pushTimelineEvent('TURN_TRACE_RESET (turnId=' + turnLatencyTraceId + ', reason=' + reason + ')');
+            }
+            turnLatencyTraceId = null;
+            turnLatencyTraceT0 = null;
+            turnLatencyTraceLastAt = null;
+            turnLatencyTraceMarkersSeen = {};
+        }
+
+        function pushTurnLatencyTrace(marker, extraNote) {
+            if (turnLatencyTraceId === null || turnLatencyTraceT0 === null) return;
+            if (turnLatencyTraceMarkersSeen[marker]) return; // 1ターン1回のみ
+            turnLatencyTraceMarkersSeen[marker] = true;
+            const now = performance.now();
+            const elapsedMs = Math.round(now - turnLatencyTraceT0);
+            const deltaMs = turnLatencyTraceLastAt === null ? null : Math.round(now - turnLatencyTraceLastAt);
+            turnLatencyTraceLastAt = now;
+            pushTimelineEvent('TURN_TRACE ' + marker + ' (turnId=' + turnLatencyTraceId
+                + ', elapsedMs=' + elapsedMs
+                + ', deltaFromPreviousMs=' + (deltaMs === null ? 'null' : deltaMs)
+                + ', expectedAnswerType=' + expectedAnswerType
+                + ', responseState=' + responseState
+                + ', toolContinuationActive=' + toolContinuationTraceActive
+                + (extraNote ? (', ' + extraNote) : '') + ')');
+        }
+
+        function endTurnLatencyTrace(marker, extraNote) {
+            pushTurnLatencyTrace(marker, extraNote);
+            turnLatencyTraceId = null;
+            turnLatencyTraceT0 = null;
+            turnLatencyTraceLastAt = null;
+            turnLatencyTraceMarkersSeen = {};
+        }
+
+        function startTurnLatencyTrace(myCallGeneration) {
+            if (turnLatencyTraceId !== null) {
+                // 前のターンがTURN_RESPONSE_DONEに到達しないまま次のspeech_started
+                // が来た＝1発話が複数のVADターンに分割された可能性の直接証拠。
+                // 黙って上書きせず、明示的にリセット理由を記録する。
+                resetTurnLatencyTrace('new_speech_started_before_previous_turn_done');
+            }
+            turnLatencyTraceSeq += 1;
+            turnLatencyTraceId = 'T' + turnLatencyTraceSeq;
+            turnLatencyTraceCallGeneration = myCallGeneration;
+            turnLatencyTraceT0 = performance.now();
+            turnLatencyTraceLastAt = turnLatencyTraceT0;
+            turnLatencyTraceMarkersSeen = {};
+            pushTurnLatencyTrace('TURN_INPUT_START');
+        }
+
         // CRITICAL INCIDENT調査（音声ブツブツ/ノイズ→応答停止、iPhone実機再現）:
         // iPhone実機ではSafari開発者ツールを開けず、これまでdebug=1の画面を
         // 見てもログをテキストとして取り出す手段が無かった。この関数は既存の
@@ -4332,6 +4429,15 @@
                 subStatusText.textContent = 'AIスタッフが応答中';
                 pushTimelineEvent('AI_AUDIO_STARTED');
                 pushToolContinuationTrace('T8_CONTINUATION_AUDIO_FIRST_DELTA');
+                // FAST TURN HOTFIX 3（今回追加・観測専用・11markerの必須項目
+                // ではない補助marker）: FAST TURN HOTFIX 2で判明済みの
+                // OpenAI公式既知バグ（output_audio_buffer.started/stoppedが
+                // 6〜10秒遅延、または届かない場合があるCase #09291741）が
+                // 「実機での応答が遅い」症状にどの程度寄与しているかを
+                // 切り分けるため、このサーバーイベント自体の到達タイミングも
+                // 記録する（実際の物理再生開始＝TURN_AUDIO_PLAYBACK_STARTとは
+                // 別の値として比較できるようにする）。
+                pushTurnLatencyTrace('TURN_OUTPUT_AUDIO_BUFFER_STARTED_DIAG', 'note=server_event_may_be_delayed_per_case_09291741');
                 // NAME Forced Commit Observation PoC（PHASE9）
                 maybeLogPocReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
                 // Conversation Takeover Observation PoC（NAME PoCとは独立）
@@ -4393,6 +4499,24 @@
                 pushTimelineEvent('conversation.item.truncated (直前aiAudioOutputActive=' + aiAudioOutputActive + ')');
             }
 
+            // FAST TURN HOTFIX 3（今回追加・観測専用）: PHASE1監査で判明した
+            // 「専用ハンドラが存在しない」2イベント（response.output_item.added、
+            // response.audio.delta）に、既存挙動へは一切影響しない新規の
+            // 独立if文としてTURN_TRACEマーカーのみを追加する（既存のif/else-if
+            // チェーンの構造・分岐条件は変更しない）。response.content_part.added
+            // （PHASE1監査項目9）は、この2つに対して追加の時系列情報を持たない
+            // ことを確認済みのため、専用markerを追加しない（不要な複雑化を
+            // 避ける）。
+            if (type === 'response.output_item.added') {
+                pushTurnLatencyTrace('TURN_FIRST_OUTPUT_ITEM');
+            }
+            if (type === 'response.audio.delta') {
+                // このイベントはAI発話1回につき多数回発火するが、
+                // pushTurnLatencyTrace内のmarker重複排除により最初の1回のみ
+                // 記録される。
+                pushTurnLatencyTrace('TURN_FIRST_AUDIO_DELTA');
+            }
+
             if (type === 'session.created' || type === 'session.updated') {
                 setStatus(stSessionEl, type, 'ok');
                 if (greetingTiming.sessionCreated === null) {
@@ -4416,6 +4540,14 @@
                 // いない可能性があるため、両者を区別して記録する（PIIなし・
                 // イベント発生の事実のみ）。
                 pushTimelineEvent('USER_AUDIO_BUFFER_COMMITTED');
+                // FAST TURN HOTFIX 3（今回追加・観測専用）: CRITICAL QUESTION 2
+                // 監査結論により、通常ターンにはclient発の「response要求」
+                // イベントが存在しない（semantic_vad有効時はcommit後、サーバーが
+                // 自動でresponseを生成する設計）。そのためTURN_RESPONSE_REQUESTED
+                // はこのcommitと同時刻の「サーバー側が応答生成してよい状態になった
+                // 時点」として記録する（新しい送信を追加するものではない）。
+                pushTurnLatencyTrace('TURN_COMMITTED');
+                pushTurnLatencyTrace('TURN_RESPONSE_REQUESTED', 'source=server_auto_create_response_on_commit');
                 // FAST TURN 2（Section3/20）: (B) speech_stopped→committedの
                 // 差分（VADテール、意味的判定が「発話継続中」と見なしていた
                 // 追加の待ち時間）を記録する。lastSpeechStoppedAtは、AIが実際に
@@ -4455,6 +4587,8 @@
                 // 反映されていない）を切り分けるための最重要ログ。item本体の
                 // content（発話内容・電話番号・氏名等）は一切参照・記録しない。
                 pushTimelineEvent('USER_ITEM_COMMITTED');
+                // FAST TURN HOTFIX 3（今回追加・観測専用）
+                pushTurnLatencyTrace('TURN_USER_ITEM_CREATED');
                 // NAME Forced Commit Observation PoC（PHASE7/9）
                 nameTurnNormalCompletionSeen = true;
                 maybeLogPocReactionElapsed('item', 'conversation.item.created');
@@ -4475,6 +4609,10 @@
                 userTurnFallbackNormalCompletionSeen = true;
                 cancelUserTurnFallbackTimer('item');
             } else if (type === 'input_audio_buffer.speech_started') {
+                // FAST TURN HOTFIX 3（今回追加）: このイベントを新しい1ユーザー
+                // ターンの起点として、FULL TURN LATENCY TRACEを開始する
+                // （挙動には無関係の観測専用呼び出し）。
+                startTurnLatencyTrace(callGeneration);
                 if (!initialGreetingSent) userSpokeBeforeGreeting = true;
                 // ISSUE2調査用（PIIなし）: speech_started発生時点のローカルマイク
                 // レベルメーターの値（0-100の相対音量パーセンテージのみ。音声内容・
@@ -4576,6 +4714,8 @@
                 // のみ有効。Realtime APIへは何も送信しない）。
                 startLocalSilenceTurn();
             } else if (type === 'input_audio_buffer.speech_stopped') {
+                // FAST TURN HOTFIX 3（今回追加・観測専用）
+                pushTurnLatencyTrace('TURN_INPUT_STOP');
                 userVadState = 'idle';
                 lastSpeechStoppedAt = performance.now();
                 // 正常にターンが終了した（＝雑音等で長時間化していない）ため、
@@ -4712,6 +4852,11 @@
                 responseState = 'active';
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('RESPONSE_CREATED');
+                // FAST TURN HOTFIX 3（今回追加・観測専用）: markerの重複排除により
+                // Tool呼び出しターンの2回目のresponse.created（最終応答）では
+                // 記録されない＝既存のturnLatencyCommitToResponseMsと同じ
+                // 「初回のみ」計測になる。
+                pushTurnLatencyTrace('TURN_RESPONSE_CREATED');
                 pushToolContinuationTrace('T7_CONTINUATION_RESPONSE_CREATED');
                 // PHASE O5.6診断（response.create correlation）: 直近に明示的に
                 // 送信したsendResponseCreate()のreasonを、この時点で一度だけ
@@ -4829,6 +4974,16 @@
                     toolContinuationTraceActive = false;
                     toolContinuationTraceCallId = null;
                     toolContinuationTraceT0 = null;
+                }
+                // FAST TURN HOTFIX 3（今回追加・観測専用）: function_callを含まない
+                // 最終応答が完了した時点で、このターンのFULL TURN LATENCY TRACEを
+                // TURN_RESPONSE_DONEで終了する（T10と同じ「中間応答では終了しない」
+                // 条件を踏襲）。中間応答（Tool呼び出し中）ではトレースを終了せず、
+                // 後続の最終応答まで継続する（toolContinuationActive=trueとして
+                // 各markerに記録され続けるため、人間が後からTOOL_TRACEと突き合わせて
+                // 確認できる）。
+                if (!responseHasFunctionCall) {
+                    endTurnLatencyTrace('TURN_RESPONSE_DONE', 'status=' + (respStatus || '不明'));
                 }
                 // Silence Timeout: 終話案内アナウンスの再生完了検知の安全網
                 // （通常はoutput_audio_buffer.stoppedで既に処理済みのはず）。
@@ -5209,6 +5364,9 @@
             responseState = 'idle';
             audioEnergyTrend = 'unknown';
             lastOutboundAudioEnergy = null;
+            // FAST TURN HOTFIX 3（今回追加）: 新しい通話の開始時に、前の通話から
+            // 残留したFULL TURN LATENCY TRACE状態が万一あれば破棄する（安全網）。
+            resetTurnLatencyTrace('new_call_setup');
             updatePlaybackRecoveryButton();
 
             // Mobile Real-Call Failure Investigation: 新しい通話開始のたびに
@@ -5621,6 +5779,13 @@
                     audioEl.addEventListener('playing', () => {
                         remotePlayState = 'playing';
                         pushTimelineEvent('REALTIME_AUDIO: playing (currentTime=' + (audioEl.currentTime || 0).toFixed(2) + 's)');
+                        // FAST TURN HOTFIX 3（今回追加・観測専用）: <audio>要素が
+                        // 実際に物理再生を開始した、この最も確実な物的証拠の時点を
+                        // TURN_AUDIO_PLAYBACK_STARTとして記録する（output_audio_
+                        // buffer.startedというサーバーイベントではなく、実際の
+                        // 再生開始そのものを採用する理由は本ファイル冒頭の
+                        // FULL TURN LATENCY TRACEコメント参照）。
+                        pushTurnLatencyTrace('TURN_AUDIO_PLAYBACK_START');
                         // FAST TURN 3.6B（Tool Continuation Proof）: dc.send()が
                         // 例外を投げなかったことではなく、実際に<audio>要素が
                         // 'playing'（＝ブラウザが実際に音声デコード・再生を
@@ -5997,6 +6162,9 @@
             remotePlayState = 'unknown';
             userVadState = 'idle';
             responseState = 'idle';
+            // FAST TURN HOTFIX 3（今回追加）: 通話終了時に進行中のFULL TURN
+            // LATENCY TRACEがあれば、理由付きで明示的に終了させる。
+            resetTurnLatencyTrace('cleanup_connection');
             updatePlaybackRecoveryButton();
             setStatus(stMicTrackEl, 'なし', null);
             setStatus(stWebrtcEl, 'closed', null);
