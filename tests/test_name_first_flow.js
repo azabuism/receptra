@@ -71,6 +71,12 @@ const FN = {
     classifyExpectedAnswerType: extractFunctionSource(SRC, 'classifyExpectedAnswerType'),
     pushNameFirstFlowEvent: extractFunctionSource(SRC, 'pushNameFirstFlowEvent'),
     maybeRecordNameFirstAnswer: extractFunctionSource(SRC, 'maybeRecordNameFirstAnswer'),
+    // Realtime Token Architecture Phase 1（今回追加）: maybeRecordNameFirstAnswer()の
+    // NAME分岐がこの関数を呼ぶようになったため、未定義のReferenceErrorを防ぐために
+    // 実ソースからそのまま抽出して含める（このファイル自体のテスト対象はNAME-FIRST
+    // FLOW診断のままで、Phase1遷移そのものの詳細な検証はtests/test_realtime_phase1_
+    // transition.jsが専任で担当する）。
+    armPhaseTransitionAfterResponse: extractFunctionSource(SRC, 'armPhaseTransitionAfterResponse'),
 };
 
 function buildSandbox(overrides) {
@@ -96,6 +102,12 @@ function buildSandbox(overrides) {
         lastAiTranscriptHadTimeKeyword: false,
         lastAiTranscriptHadPartySizeKeyword: false,
         nameFirstStageLogged: { opening_question: false, name_answer_received: false, purpose_question: false, purpose_answer_received: false, before_first_tool_call: false },
+        // Realtime Token Architecture Phase 1（今回追加）: armPhaseTransitionAfterResponse()
+        // が参照する最小限の状態（このファイルではarmされたかどうかの副作用を
+        // 気にしない。詳細はtests/test_realtime_phase1_transition.jsが担当）。
+        currentRealtimePhase: 'name',
+        pendingPhaseTransitionTarget: null,
+        phaseTransitionInProgress: false,
     }, overrides || {});
     Object.assign(context, state);
     vm.createContext(context);

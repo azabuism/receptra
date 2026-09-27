@@ -339,7 +339,12 @@ await test('Q: FAST TURN 3.6B) T10(CONTINUATION_RESPONSE_DONE)はfunction_call�
     // retryスキップ判定（budgetLooksInsufficientガード・関連コメント）が
     // 追加され、T10マッチ開始位置の実測オフセットが11900文字まで伸びたため、
     // ウィンドウを10500→13500へ再拡張（測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 13500);
+    // さらにRealtime Token Architecture Phase 1（今回追加）で、recordUsageEvent()
+    // 直後・このT10ガードより前に、Phase遷移（NAME→ROUTING→legacy_full）用の
+    // session.update消費ロジック（独立ブロック）が追加され、T10マッチ開始位置の
+    // 実測オフセットが13554文字まで伸びたため、ウィンドウを13500→14200へ再拡張
+    // （測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 14200);
     assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*pushToolContinuationTrace\('T10_CONTINUATION_RESPONSE_DONE/.test(block),
         'T10 must only be recorded for the final response.done (no function_call), never for the intermediate function-call-only response.done');
     assert.ok(/T10_CONTINUATION_RESPONSE_DONE[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
@@ -349,7 +354,12 @@ await test('Q: FAST TURN 3.6B) T10(CONTINUATION_RESPONSE_DONE)はfunction_call�
 await test('R: FAST TURN 3.6B/STEP9) 汎用errorハンドラがトレース中であればチェーン断絶として記録し、トレースを終了する（dc.sendが例外を投げなくても、OpenAI側の拒否は見逃さない）', () => {
     const idx = SRC.indexOf("} else if (type === 'error') {");
     assert.notStrictEqual(idx, -1, 'generic error handler not found');
-    const block = SRC.slice(idx, idx + 1200);
+    // Realtime Token Architecture Phase 1（今回追加）で、このerrorハンドラの
+    // 先頭・T_ERRORより前に、Phase遷移進行中フラグをリセットするだけの独立
+    // hook（REALTIME_PHASE_TRANSITION_FAILED診断・retry無し）が追加され、
+    // T_ERRORマッチ開始位置の実測オフセットが1971文字まで伸びたため、
+    // ウィンドウを1200→2400へ拡張（測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 2400);
     assert.ok(block.includes("pushToolContinuationTrace('T_ERROR_REALTIME_ERROR"),
         'a Realtime-level error event arriving mid-trace must be recorded as a broken chain, independent of whether any earlier dc.send() call itself threw');
     assert.ok(/pushToolContinuationTrace\('T_ERROR_REALTIME_ERROR[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
@@ -366,7 +376,9 @@ await test('H: dc.send()呼び出し箇所は増えていない（新規Realtime
     // FAST TURN 3.6A修正自体は引き続き新しいdc.send()呼び出し箇所を追加して
     // いない）。
     const sendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(sendCount, 9, 'expected exactly 9 actual dc.send(JSON.stringify(...)) call sites (unchanged by this fix; the baseline itself moved from 8 to 9 in a later, unrelated phase; comments mentioning dc.send() do not count)');
+    // Realtime Token Architecture Phase 1（今回追加）が正当な新規dc.send呼び出し
+    // 箇所（session.update送信）を1箇所追加したため、基準値を9→10へ更新する。
+    assert.strictEqual(sendCount, 10, 'expected exactly 10 actual dc.send(JSON.stringify(...)) call sites (unchanged by this fix; the baseline moved 8→9 in one later phase and 9→10 in Realtime Token Architecture Phase 1\'s session.update send; comments mentioning dc.send() do not count)');
     assert.ok(!SRC.includes("type: 'response.cancel'"), 'must not introduce response.cancel');
     assert.ok(!SRC.includes("type: 'conversation.item.truncate'") || SRC.includes('conversation.item.truncated'),
         'must not send a new conversation.item.truncate control event');
@@ -462,7 +474,11 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     // さらにFAST TURN HOTFIX 7で、同じブロック内にrate limit残量に基づく
     // retryスキップ判定が追加され、実測オフセットが11455文字まで伸びたため、
     // ウィンドウを10000→13000へ再拡張（測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 13000);
+    // さらにRealtime Token Architecture Phase 1（今回追加）で、recordUsageEvent()
+    // 直後・startSilenceTimerIfNeeded呼び出しより前に、Phase遷移用の
+    // session.update消費ロジック（独立ブロック）が追加され、実測オフセットが
+    // 13082文字まで伸びたため、ウィンドウを13000→13600へ再拡張（測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 13600);
     // PHASE O5.6診断: startSilenceTimerIfNeeded()に診断専用の第2引数
     // （armReasonForDiag、例: 'response_done_no_function_call'）が追加された。
     // ガード条件(!responseHasFunctionCall)自体・呼び出し自体（第1引数は

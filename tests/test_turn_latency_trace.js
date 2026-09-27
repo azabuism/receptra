@@ -374,7 +374,9 @@ test('REGRESSION) dc.send()呼び出し箇所は今回も増えていない（�
     // コメント行（本フェーズで追加したものも含む）まで誤って数えてしまうため、
     // 実際のコード行（行頭がdc.send(で始まる行）のみを数える。
     const actualCallLines = SRC.split('\n').filter(line => line.trim().startsWith('dc.send('));
-    assert.strictEqual(actualCallLines.length, 9, 'dc.send() call-site count must remain 9 — FAST TURN HOTFIX 3 adds zero new Realtime API sends (diagnostic-only phase)');
+    // Realtime Token Architecture Phase 1（今回追加）が正当な新規dc.send呼び出し
+    // 箇所（session.update送信）を1箇所追加したため、基準値を9→10へ更新する。
+    assert.strictEqual(actualCallLines.length, 10, 'dc.send() call-site count must remain 10 (9 + Realtime Token Architecture Phase 1\'s session.update send) — FAST TURN HOTFIX 3 adds zero new Realtime API sends (diagnostic-only phase)');
 });
 
 test('REGRESSION) response.output_item.added / response.audio.delta の新規ハンドラは、既存のoutput_audio_buffer.started等のif/else-ifチェーンの外側に独立したif文として追加されており、既存分岐の条件・構造を変更していない', () => {

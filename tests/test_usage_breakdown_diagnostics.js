@@ -398,7 +398,9 @@ test('I) startCall()・cleanupConnection()の両方が、既存のlastKnownRateL
 // =======================================================================
 test('M) dc.send()呼び出し箇所数は今回も変わっていない（既存9箇所のまま。今回の2つのmarkerはpushTimelineEvent/console.logのみ）', () => {
     const actualCallLines = SRC.split('\n').filter((line) => line.trim().startsWith('dc.send('));
-    assert.strictEqual(actualCallLines.length, 9, 'REALTIME_USAGE_BREAKDOWN/RATE_LIMIT_TOKEN_DELTAはいずれも観測専用でdc.sendを呼ばないため、既存9箇所のまま変わらないはず');
+    // Realtime Token Architecture Phase 1（今回追加）が正当な新規dc.send呼び出し
+    // 箇所（session.update送信）を1箇所追加したため、基準値を9→10へ更新する。
+    assert.strictEqual(actualCallLines.length, 10, 'REALTIME_USAGE_BREAKDOWN/RATE_LIMIT_TOKEN_DELTAはいずれも観測専用でdc.sendを呼ばないため、既存10箇所（9＋Realtime Token Architecture Phase 1のsession.update送信）のまま変わらないはず');
 });
 
 test('N) 今回追加した2つのブロックはsendResponseCreate/dc.sendのいずれも呼ばない（診断専用）', () => {

@@ -66,8 +66,15 @@ def _make_fake_client(captured):
     return fake_openai_client
 
 
-async def _create_session_with_ratio_setting(db_session, shop, ratio_value):
-    """settingsのOPENAI_REALTIME_TRUNCATION_RETENTION_RATIOを一時的に差し替えてcreate_realtime_session()を直接呼ぶ。"""
+async def _create_session_with_ratio_setting(db_session, shop, ratio_value, return_result=False):
+    """settingsのOPENAI_REALTIME_TRUNCATION_RETENTION_RATIOを一時的に差し替えてcreate_realtime_session()を直接呼ぶ。
+
+    Realtime Token Architecture Phase 1（今回）で、初回client_secrets.create()自体が
+    Phase1(name)の最小instructions/tools=[]で作られるようになったため
+    （tests/smoke_test_realtime_phase1_name.py参照）、return_result=Trueの場合は
+    create_realtime_session()の戻り値（realtime_phase_contexts等を含む）も
+    あわせて返す。
+    """
     from app.services import realtime_voice_ai
     from app.config import get_settings
 
@@ -78,10 +85,13 @@ async def _create_session_with_ratio_setting(db_session, shop, ratio_value):
     settings.OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO = ratio_value
     try:
         with patch("app.services.realtime_voice_ai._get_client", return_value=fake_client):
-            await realtime_voice_ai.create_realtime_session(db_session, shop)
+            result = await realtime_voice_ai.create_realtime_session(db_session, shop)
     finally:
         settings.OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO = original
-    return captured.get("session") or {}
+    session_config = captured.get("session") or {}
+    if return_result:
+        return session_config, result
+    return session_config
 
 
 async def main():
@@ -141,17 +151,36 @@ async def main():
                 print("D. 範囲外の値（0以下・1超）はtruncationキーを送信しない: OK")
 
                 # E. 既存の送信内容（instructions/tools）が失われていない
-                session_config = await _create_session_with_ratio_setting(db_session, shop, "0.8")
-                assert "通話冒頭のご用件把握" in session_config.get("instructions", ""), (
-                    "既存のIntent Classificationセクションが送信instructionsから失われています"
+                #
+                # Realtime Token Architecture Phase 1（今回）により、初回
+                # client_secrets.create()自体はPhase1(name)の最小instructions・
+                # tools=[]で作られるようになった（意図的な変更。
+                # tests/smoke_test_realtime_phase1_name.py参照）。そのため、
+                # 初回セッションのsession_config自体にはもはやIntent
+                # Classificationセクションや8Toolは含まれない。既存の
+                # 全機能（Intent Classification・8Tool）自体が失われていない
+                # ことは、create_realtime_session()が返すrealtime_phase_contexts
+                # ["legacy_full"]（ROUTING判定直後に無条件フォールバックする
+                # 既存フル機能コンテキスト）で確認する。
+                session_config, result = await _create_session_with_ratio_setting(
+                    db_session, shop, "0.8", return_result=True
                 )
-                sent_tool_names = [t["name"] for t in session_config.get("tools", [])]
+                assert session_config.get("tools") == [], (
+                    "初回セッション作成時点でtoolsが空リストではありません"
+                    "（Realtime Token Architecture Phase 1のname phase最小化が効いていません）: "
+                    f"{session_config.get('tools')}"
+                )
+                legacy_full = (result.get("realtime_phase_contexts") or {}).get("legacy_full") or {}
+                assert "通話冒頭のご用件把握" in legacy_full.get("instructions", ""), (
+                    "既存のIntent Classificationセクションがlegacy_full instructionsから失われています"
+                )
+                sent_tool_names = [t["name"] for t in legacy_full.get("tools", [])]
                 assert sent_tool_names == [
                     "check_availability", "create_reservation", "get_shop_info", "find_customer",
                     "confirm_customer_identity", "get_customer_context", "set_conversation_language",
                     "request_callback",
                 ], f"既存8Toolの送信内容が変化しています: {sent_tool_names}"
-                print("E. instructions/toolsという既存の送信内容は今回の変更で失われていない: OK")
+                print("E. instructions/toolsという既存の送信内容はlegacy_full phaseとして今回の変更でも失われていない: OK")
 
                 # F. voice-preview用セッションにはtruncationを追加していない
                 from app.services import realtime_voice_ai as rva_module

@@ -690,7 +690,9 @@ test('WIRING: startCall() resets the new O5.8 Finalization Grace state for every
 
 test('DC-SEND: O5.10 itself keeps the count unchanged (user instruction 11: the manual-commit dc.send() line itself was intentionally NOT deleted — only its reachability from the normal SHORT_ANSWER flow was removed, per user instruction 3\'s "keep as fallback candidate" directive). Baseline is 9, not 8, because a later, independent phase (NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY) legitimately added one new call site (maybeSendUserTurnFallbackCommit); O5.10 itself still adds none.', () => {
     const sendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(sendCount, 9, 'O5.10 does not delete the physical input_audio_buffer.commit send inside maybeSendQuickAnswerCommit (kept as dead/fallback code per instruction 3), and adds no new dc.send() call site (instruction 4: no response.create); the current baseline of 9 reflects a later, unrelated phase adding USER_TURN_3S_FALLBACK, not this one');
+    // Realtime Token Architecture Phase 1（今回追加）が正当な新規dc.send呼び出し
+    // 箇所（session.update送信）を1箇所追加したため、基準値を9→10へ更新する。
+    assert.strictEqual(sendCount, 10, 'O5.10 does not delete the physical input_audio_buffer.commit send inside maybeSendQuickAnswerCommit (kept as dead/fallback code per instruction 3), and adds no new dc.send() call site (instruction 4: no response.create); the current baseline of 10 reflects later, unrelated phases adding USER_TURN_3S_FALLBACK and Realtime Token Architecture Phase 1\'s session.update send, not this one');
 });
 
 // ===== PHASE O5.10: NO-MANUAL-COMMIT (必須テストA/B) =====

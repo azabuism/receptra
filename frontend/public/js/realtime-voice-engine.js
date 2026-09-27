@@ -541,6 +541,12 @@
             if (expectedAnswerType === 'NAME') {
                 nameFirstFlowState.hasName = true;
                 pushNameFirstFlowEvent('name_answer_received');
+                // Realtime Token Architecture Phase 1（今回追加）: NAME質問への
+                // 回答が終わった時点で、次のresponse.done（NAME phaseのack応答
+                // 完了時点）でROUTINGへのsession.updateを送るよう予約する
+                // （ここでは何も送信しない。観測用マーカーやForced Commit等の
+                // 既存挙動には一切影響しない独立した予約のみ）。
+                armPhaseTransitionAfterResponse('routing');
             } else if (expectedAnswerType === 'VISIT_REASON') {
                 nameFirstFlowState.hasPurpose = true;
                 pushNameFirstFlowEvent('purpose_answer_received');
@@ -563,6 +569,141 @@
                 ', hasDate=' + nameFirstFlowState.hasDate +
                 ', hasTime=' + nameFirstFlowState.hasTime +
                 ', hasPartySize=' + nameFirstFlowState.hasPartySize + ')');
+        }
+
+        // ===== Realtime Token Architecture Phase 1（2026年9月・今回追加） =====
+        // NAME → ROUTING → legacy_full の3段階session context切り替え用の
+        // 最小限の状態。既存のNAME_FIRST_FLOW/expectedAnswerType/
+        // responseState等の既存状態機械は一切変更せず、それらを読み取り専用で
+        // 参照するだけ（二重の状態機械を作らない）。
+        //
+        // currentRealtimePhase: 'name' | 'routing' | 'legacy_full'。
+        //   session.update送信「時点」で楽観的に更新する（session.updatedの
+        //   受信を待たない）。理由: OpenAI公式Python SDK型定義
+        //   （session_update_event.py/session_updated_event.py）で確認済みの
+        //   通り、session.updateのevent_idは成功時（session.updated）には
+        //   エコーされない（error発生時のみエコー）ため、リクエスト/レスポンスを
+        //   event_idで相関させることができない。そのため「常に高々1件の
+        //   transitionしか進行中でない」という不変条件
+        //   （phaseTransitionInProgress）だけに依拠する設計とした。
+        let currentRealtimePhase = 'name';
+        // このセッションで発行されたPhase別session context（name/routing/
+        // legacy_full）。POST /realtime-voice/sessionのレスポンスに含まれる
+        // realtime_phase_contextsをそのまま保持するだけ（PIIなし。会話内容は
+        // 含まれず、店舗設定から組み立てられた固定テキストのみ）。
+        let realtimePhaseContexts = null;
+        // 現在session.update送信中〜session.updated受信までの間だけtrueになる
+        // ガード。二重送信・重複transition防止の唯一の不変条件（PHASE1仕様の
+        // phaseTransitionInProgress）。
+        let phaseTransitionInProgress = false;
+        // 次のresponse.done到達時に消費される、armed済みの遷移先
+        // （null | 'routing' | 'legacy_full'）。
+        let pendingPhaseTransitionTarget = null;
+        // 直近に送信したsession.updateに対応するsession.updated受信後、
+        // 追加でresponse.createを強制送信すべきかどうか（多スロット同時発話
+        // ケース用の分岐。armPhaseTransitionAfterResponse/
+        // sendRealtimePhaseSessionUpdateの説明コメント参照）。
+        let pendingPhaseTransitionForceFollowUp = null;
+        let pendingPhaseTransitionReasonForFollowUp = null;
+        // REALTIME_SESSION_UPDATED診断用: 直近のsession.update送信時刻
+        // （performance.now()）。
+        let phaseTransitionSessionUpdateSentAt = null;
+
+        // maybeRecordNameFirstAnswer()のNAME判定時に呼び出す。「NAME質問への
+        // 回答が終わった」タイミングで、次のresponse.done（＝この直後にサーバーが
+        // 自動生成するNAME phaseのack応答が完了した時点）でROUTINGへの
+        // session.updateを送るよう予約するだけ（この場では何も送信しない）。
+        // 二重armingガード: 既に同じtargetへarm済み・既にそのphaseにいる・
+        // 既に別のtransitionが進行中、のいずれかであれば何もしない
+        // （L. duplicate transition is prevented 契約）。
+        function armPhaseTransitionAfterResponse(targetPhase) {
+            if (currentRealtimePhase === targetPhase) return;
+            if (pendingPhaseTransitionTarget === targetPhase) return;
+            if (phaseTransitionInProgress) return;
+            pendingPhaseTransitionTarget = targetPhase;
+        }
+
+        // Realtime Token Architecture Phase 1（今回追加）: NAME→ROUTING→
+        // legacy_fullのsession context切り替え本体。既存のRTCPeerConnection・
+        // 音声Track・ANSWER_WINDOW・Forced Commit・semantic_vad関連の初期化は
+        // 一切行わない（既存のWebRTC DataChannel(dc)をそのまま使い、
+        // session.updateイベントを1回送るだけ。M/N/O/P/Q契約）。
+        function sendRealtimePhaseSessionUpdate(targetPhase, reason, forceFollowUp) {
+            if (phaseTransitionInProgress) {
+                pushTimelineEvent('REALTIME_PHASE_TRANSITION_SKIPPED (reason=already_in_progress, target=' + targetPhase + ')');
+                return false;
+            }
+            if (currentRealtimePhase === targetPhase) {
+                pushTimelineEvent('REALTIME_PHASE_TRANSITION_SKIPPED (reason=already_in_phase, target=' + targetPhase + ')');
+                return false;
+            }
+            if (!dc || dc.readyState !== 'open') {
+                pushTimelineEvent('REALTIME_PHASE_TRANSITION_SKIPPED (reason=dc未接続, target=' + targetPhase + ')');
+                return false;
+            }
+            const ctx = realtimePhaseContexts && realtimePhaseContexts[targetPhase];
+            if (!ctx) {
+                pushTimelineEvent('REALTIME_PHASE_TRANSITION_SKIPPED (reason=context未取得, target=' + targetPhase + ')');
+                return false;
+            }
+            const fromPhase = currentRealtimePhase;
+            const msSinceCallStart = callStartedAt ? (Date.now() - callStartedAt) : null;
+            try {
+                const transitionLine = 'REALTIME_PHASE_TRANSITION (from=' + fromPhase + ', to=' + targetPhase
+                    + ', reason=' + reason + ', ms_since_call_start=' + msSinceCallStart + ')';
+                pushTimelineEvent(transitionLine);
+                console.log('[' + transitionLine + ']');
+            } catch (diagErr) {
+                pushTimelineEvent('REALTIME_PHASE_TRANSITION_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
+            }
+
+            const tools = ctx.tools || [];
+            const instructionsChars = (ctx.instructions || '').length;
+            const toolsChars = JSON.stringify(tools).length;
+            const toolCount = tools.length;
+            try {
+                const sentLine = 'REALTIME_SESSION_UPDATE_SENT (phase=' + targetPhase
+                    + ', instructions_chars=' + instructionsChars
+                    + ', tools_chars=' + toolsChars
+                    + ', tool_count=' + toolCount + ')';
+                pushTimelineEvent(sentLine);
+                console.log('[' + sentLine + ']');
+            } catch (diagErr) {
+                pushTimelineEvent('REALTIME_SESSION_UPDATE_SENT_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
+            }
+
+            try {
+                dc.send(JSON.stringify({
+                    type: 'session.update',
+                    session: { instructions: ctx.instructions, tools: tools },
+                }));
+            } catch (e) {
+                pushTimelineEvent('REALTIME_PHASE_TRANSITION_SEND_FAILED (target=' + targetPhase + '): ' + e.message);
+                return false;
+            }
+
+            // K. session.updateは（1回のtransitionにつき）ちょうど1回だけ送信される:
+            // 送信直後にphaseTransitionInProgressをtrueにし、session.updated
+            // （またはerror）受信までの間、次のsendRealtimePhaseSessionUpdate呼び出しは
+            // 上のガードで必ずスキップされる。
+            phaseTransitionInProgress = true;
+            phaseTransitionSessionUpdateSentAt = performance.now();
+            pendingPhaseTransitionForceFollowUp = forceFollowUp;
+            pendingPhaseTransitionReasonForFollowUp = 'phase_transition_to_' + targetPhase;
+
+            // 楽観的更新（上のコメント参照: event_idが成功時にエコーされない仕様のため）。
+            currentRealtimePhase = targetPhase;
+
+            // ユーザー承認済み設計（AskUserQuestion）: ROUTINGへの遷移が完了した
+            // 直後、Reservation/Callback Phaseを実装しない今回は、その次の
+            // response.done（＝ROUTING phaseのack応答完了時点）で無条件に
+            // legacy_full（既存の未変更フル機能）へ自動フォールバックする
+            // ようここで予約する。
+            if (targetPhase === 'routing') {
+                pendingPhaseTransitionTarget = 'legacy_full';
+            }
+
+            return true;
         }
 
         // ===== NAME Forced Commit Observation PoC: 追加の最小状態（今回追加） =====
@@ -4818,6 +4959,36 @@
                 pushTurnLatencyTrace('TURN_FIRST_AUDIO_DELTA');
             }
 
+            // Realtime Token Architecture Phase 1（今回追加・独立ブロック）:
+            // このsession.updatedが、直前にsendRealtimePhaseSessionUpdate()が
+            // 送信したPhase遷移用session.updateへの応答であるとみなせるのは、
+            // phaseTransitionInProgress===trueのとき（＝常に高々1件しか
+            // transitionが進行中でないという不変条件による相関。event_idは
+            // 成功時にエコーされないため使えない）。既存の
+            // maybeSendInitialGreeting()を呼ぶ下の結合ハンドラは変更せず、
+            // それとは独立に処理する。
+            if (type === 'session.updated' && phaseTransitionInProgress) {
+                const msSinceUpdateSent = (phaseTransitionSessionUpdateSentAt !== null)
+                    ? Math.round(performance.now() - phaseTransitionSessionUpdateSentAt) : null;
+                try {
+                    const updatedLine = 'REALTIME_SESSION_UPDATED (phase=' + currentRealtimePhase
+                        + ', ms_since_update_sent=' + msSinceUpdateSent + ')';
+                    pushTimelineEvent(updatedLine);
+                    console.log('[' + updatedLine + ']');
+                } catch (diagErr) {
+                    pushTimelineEvent('REALTIME_SESSION_UPDATED_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
+                }
+                phaseTransitionInProgress = false;
+                phaseTransitionSessionUpdateSentAt = null;
+                const shouldForceFollowUp = pendingPhaseTransitionForceFollowUp;
+                const followUpReason = pendingPhaseTransitionReasonForFollowUp;
+                pendingPhaseTransitionForceFollowUp = null;
+                pendingPhaseTransitionReasonForFollowUp = null;
+                if (shouldForceFollowUp) {
+                    sendResponseCreate(followUpReason || ('phase_transition_to_' + currentRealtimePhase));
+                }
+            }
+
             if (type === 'session.created' || type === 'session.updated') {
                 setStatus(stSessionEl, type, 'ok');
                 if (greetingTiming.sessionCreated === null) {
@@ -5403,6 +5574,34 @@
                     }
                 }
                 recordUsageEvent(msg.response);
+                // Realtime Token Architecture Phase 1（今回追加・独立ブロック）:
+                // armPhaseTransitionAfterResponse()で予約されたPhase遷移を、
+                // この応答の完了（response.done）境界で消費する。サーバーの
+                // turn_detection（create_response=true既定）はcommit直後に
+                // 自動でresponseを生成する設計のため、session.updateは
+                // 「次に生成されるresponseの完了直後」に送るのが最も安全
+                // （responseの生成そのものを妨げない）。
+                // - target='routing': このNAME phase ack応答自身が既に来店目的
+                //   （VISIT_REASON）を尋ねていた場合はforceFollowUp不要（自然に
+                //   ユーザーの回答を待てばよい）。多スロット同時発話等でack応答が
+                //   目的を尋ねなかった場合はforceFollowUp=trueとし、ROUTING
+                //   contextへ切り替わった直後に追加のresponse.createで会話を
+                //   前進させる。
+                // - target='legacy_full': ユーザー承認済み設計により無条件で
+                //   forceFollowUp=true（既存フル機能へ即座にフォールバックし、
+                //   本番の会話継続を一切止めない）。
+                if (pendingPhaseTransitionTarget !== null && !phaseTransitionInProgress) {
+                    const targetPhaseForTransition = pendingPhaseTransitionTarget;
+                    pendingPhaseTransitionTarget = null;
+                    const forceFollowUpForTransition = (targetPhaseForTransition === 'routing')
+                        ? (expectedAnswerType !== 'VISIT_REASON')
+                        : true;
+                    sendRealtimePhaseSessionUpdate(
+                        targetPhaseForTransition,
+                        'response_done_boundary',
+                        forceFollowUpForTransition
+                    );
+                }
                 // Silence Timeout: この回にfunction_callが無かった場合のみ、
                 // 「AIがユーザーの回答を待っている」状態に入ったとみなし開始する
                 // （Tool Call往復中の中間応答では開始しない＝待ち時間を無言として
@@ -5558,6 +5757,23 @@
                 responseState = 'error';
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('サーバーerrorイベント受信 (type=' + ((msg.error && msg.error.type) || '不明') + ')');
+                // Realtime Token Architecture Phase 1（今回追加・独立hook）:
+                // Phase遷移用session.updateの送信後、確認（session.updated）を
+                // 待っている間にerrorが届いた場合、進行中フラグをリセットして
+                // 中断するだけにとどめる（retry stormを避けるため、ここでの
+                // 自動再送は一切行わない。既存のerrorハンドラ本体＝
+                // showErrorBanner/responseState='error'は変更しない）。
+                if (phaseTransitionInProgress) {
+                    const failedLine2 = 'REALTIME_PHASE_TRANSITION_FAILED (phase=' + currentRealtimePhase
+                        + ', error_type=' + ((msg.error && msg.error.type) || '不明')
+                        + ', error_code=' + ((msg.error && msg.error.code) || '不明') + ')';
+                    pushTimelineEvent(failedLine2);
+                    console.log('[' + failedLine2 + ']');
+                    phaseTransitionInProgress = false;
+                    phaseTransitionSessionUpdateSentAt = null;
+                    pendingPhaseTransitionForceFollowUp = null;
+                    pendingPhaseTransitionReasonForFollowUp = null;
+                }
                 // FAST TURN 3.6B（Tool Continuation Proof・STEP9）: Tool継続
                 // チェーンのトレース中にRealtime側からerrorイベントが届いた場合、
                 // dc.send()が例外を投げていなくても、OpenAI側がfunction_call_output
@@ -6034,6 +6250,17 @@
             lastAiTranscriptHadTimeKeyword = false;
             lastAiTranscriptHadPartySizeKeyword = false;
             nameFirstStageLogged = { opening_question: false, name_answer_received: false, purpose_question: false, purpose_answer_received: false, before_first_tool_call: false };
+            // Realtime Token Architecture Phase 1（今回追加）: 前回通話の
+            // Phase遷移状態を持ち越さない（新しい通話は必ずNAME phaseから
+            // 開始する。realtimePhaseContexts自体はこの直後のfetchSession()の
+            // 応答で毎回新しく上書きされる）。
+            currentRealtimePhase = 'name';
+            realtimePhaseContexts = null;
+            phaseTransitionInProgress = false;
+            pendingPhaseTransitionTarget = null;
+            pendingPhaseTransitionForceFollowUp = null;
+            pendingPhaseTransitionReasonForFollowUp = null;
+            phaseTransitionSessionUpdateSentAt = null;
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。
@@ -6201,6 +6428,28 @@
                 logEvent('トークン取得OK（model=' + session.model + '）');
                 // Outbound AI Phase 4B: この通話のCustomer Context用session識別子。
                 voiceSessionId = session.voice_session_id || null;
+                // Realtime Token Architecture Phase 1（今回追加）: バックエンドの
+                // create_realtime_session()が返すPhase別session context
+                // （name/routing/legacy_full）をそのまま保持する。初回の
+                // client_secrets.create()自体が既にPhase1(name)の最小context
+                // で作られているため（バックエンド側で保証済み・A契約）、
+                // ここではその後続phase用のcontextを保持するだけで、初回
+                // セッション自体には何も送信しない。
+                realtimePhaseContexts = session.realtime_phase_contexts || null;
+                if (realtimePhaseContexts && realtimePhaseContexts.name) {
+                    try {
+                        const nameCtx = realtimePhaseContexts.name;
+                        const nameTools = nameCtx.tools || [];
+                        const contextLine = 'REALTIME_PHASE_CONTEXT (phase=name'
+                            + ', instructions_chars=' + (nameCtx.instructions || '').length
+                            + ', tools_chars=' + JSON.stringify(nameTools).length
+                            + ', tool_count=' + nameTools.length + ')';
+                        pushTimelineEvent(contextLine);
+                        console.log('[' + contextLine + ']');
+                    } catch (diagErr) {
+                        pushTimelineEvent('REALTIME_PHASE_CONTEXT_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
+                    }
+                }
 
                 currentSetupStep = 'peer_connection_setup';
                 pc = new RTCPeerConnection();

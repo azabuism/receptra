@@ -553,7 +553,9 @@ test('N: REGRESSION) 新機構は既存4つのForced Commit関数（NAME/SHORT_C
 
 test('O: REGRESSION) dc.send(JSON.stringify(...)) の呼び出し箇所は9箇所のまま（このフェーズで新規に追加したのはmaybeSendUserTurnFallbackCommitの1箇所のみ、という事実の再確認）', () => {
     const sendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(sendCount, 9, 'baseline is 9: 8 pre-existing + 1 new (maybeSendUserTurnFallbackCommit). If this changes, re-audit which new call site was added.');
+    // Realtime Token Architecture Phase 1（今回追加）が正当な新規dc.send呼び出し
+    // 箇所（session.update送信）を1箇所追加したため、基準値を9→10へ更新する。
+    assert.strictEqual(sendCount, 10, 'baseline is 10: 8 pre-existing + 1 (maybeSendUserTurnFallbackCommit, this phase) + 1 (Realtime Token Architecture Phase 1\'s session.update send). If this changes, re-audit which new call site was added.');
 });
 
 test('P: REGRESSION) VISIT_REASONは意図的にスコープ外のまま（O5.7 Auditの教訓により、3秒固定タイマーを長い自由回答へ適用しない）', () => {

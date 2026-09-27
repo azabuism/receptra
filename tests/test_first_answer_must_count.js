@@ -169,7 +169,11 @@ test('挙動不変の確認: 今回追加した診断ログはpushTimelineEvent�
 
 test('REGRESSION) dc.send(JSON.stringify(...)) の呼び出し箇所は今回も9箇所のまま（今回のホットフィックス調査フェーズは純粋な観測ログ追加のみで、新しい送信は一切追加していない）', () => {
     const sendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(sendCount, 9, 'baseline must remain 9 — this diagnostic-only phase adds zero new dc.send call sites');
+    // Realtime Token Architecture Phase 1（今回追加）が、NAME→ROUTING→
+    // legacy_fullのsession.update送信という正当な新規dc.send呼び出し箇所を
+    // 1箇所追加したため、基準値を9→10へ更新する（この診断フェーズ自体は
+    // 引き続き新規送信を追加していない）。
+    assert.strictEqual(sendCount, 10, 'baseline must remain 10 (9 + Realtime Token Architecture Phase 1\'s session.update send) — this diagnostic-only phase adds zero new dc.send call sites');
 });
 
 // ===== startCall()リセット配線の確認（診断値の通話間リーク防止） =====

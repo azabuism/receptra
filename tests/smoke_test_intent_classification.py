@@ -267,27 +267,62 @@ async def _test_session_endpoint_transmits_new_section(client, shop_id):
         assert r.status_code == 200, f"/realtime-voice/session failed: {r.status_code} {r.text}"
         body = r.json()
         assert body.get("client_secret") == "ek_fake_test_secret"
-        # レスポンスにはinstructionsを一切含めない、という既存の秘匿方針の回帰確認
-        assert "instructions" not in body, "レスポンスにinstructionsが漏れています（秘匿方針違反）"
+        # レスポンス直下（トップレベル）にはinstructionsを一切含めない、という
+        # 既存の秘匿方針は今回も維持されている（この不変条件自体は回帰確認する）。
+        assert "instructions" not in body, "レスポンス直下にinstructionsが漏れています（秘匿方針違反）"
+
+        # 【重要・既知の仕様変更（Realtime Token Architecture Phase 1・今回）】
+        # ユーザー承認済みの設計により、NAME→ROUTING→legacy_fullのsession.updateは
+        # 既存のWebRTC DataChannel経由でブラウザ側JS自身が送信する（別アーキテクチャ
+        # へ再設計しない限り技術的に回避不能）。そのため、ブラウザは事前に
+        # routing/legacy_fullの完全なinstructions・tool定義を知っている必要があり、
+        # レスポンスのrealtime_phase_contextsフィールドとして今回から含まれるように
+        # なった。これは意図的に受け入れられた仕様変更であり（谷村様に報告・
+        # 承認済み）、「レスポンスに一切instructionsを含めない」という従来の秘匿
+        # 方針そのものが変わったことを明示するため、ここでは逆に
+        # realtime_phase_contextsが存在し、legacy_full/routingの内容を含んで
+        # いることを積極的に確認する（黙って消えていた場合の見落とし防止）。
+        phase_contexts = body.get("realtime_phase_contexts")
+        assert phase_contexts is not None, (
+            "レスポンスにrealtime_phase_contextsが含まれていません"
+            "（Phase1のクライアント主導session.update設計が壊れている可能性）"
+        )
+        assert set(phase_contexts.keys()) == {"name", "routing", "legacy_full"}
 
     assert "session" in captured, "OpenAIへ送信されたsession_configを捕捉できませんでした"
     session_config = captured["session"]
 
-    sent_instructions = session_config.get("instructions", "")
-    assert "通話冒頭のご用件把握" in sent_instructions, (
-        "実際にOpenAIへ送信されるinstructionsにIntent Classificationセクションが含まれていません"
+    # 初回client_secrets.create()自体はPhase1(name)の最小instructions・tools=[]で
+    # 作られる（Realtime Token Architecture Phase 1・今回。
+    # tests/smoke_test_realtime_phase1_name.py参照）。Intent Classification/
+    # Booking Safety等の既存全セクションは、もはや初回送信には含まれない。
+    initial_sent_instructions = session_config.get("instructions", "")
+    assert "通話冒頭のご用件把握" not in initial_sent_instructions, (
+        "初回セッションのinstructionsにIntent Classificationセクションが含まれています"
+        "（Phase1最小化が効いていない可能性）"
     )
-    assert "予約成立の宣言に関する絶対ルール" in sent_instructions, (
-        "既存のBooking Safetyセクションが送信instructionsから失われています"
+    assert session_config.get("tools") == [], (
+        "初回セッションのtoolsが空リストではありません（Phase1最小化が効いていない可能性）"
     )
 
-    sent_tools = session_config.get("tools", [])
+    # 既存の全セクション（Intent Classification・Booking Safety等）と既存8Toolは
+    # 失われてはおらず、ROUTING判定直後に無条件フォールバックするlegacy_full
+    # フェーズとしてレスポンスに含まれている（上のphase_contextsアサーション参照）。
+    legacy_full_instructions = phase_contexts["legacy_full"]["instructions"]
+    assert "通話冒頭のご用件把握" in legacy_full_instructions, (
+        "legacy_full instructionsにIntent Classificationセクションが含まれていません"
+    )
+    assert "予約成立の宣言に関する絶対ルール" in legacy_full_instructions, (
+        "既存のBooking Safetyセクションがlegacy_full instructionsから失われています"
+    )
+
+    sent_tools = phase_contexts["legacy_full"]["tools"]
     sent_tool_names = [t["name"] for t in sent_tools]
     assert sent_tool_names == [
         "check_availability", "create_reservation", "get_shop_info", "find_customer",
         "confirm_customer_identity", "get_customer_context", "set_conversation_language",
         "request_callback",
-    ], f"実際に送信されるtoolsが既存8個から変化しています: {sent_tool_names}"
+    ], f"legacy_fullのtoolsが既存8個から変化しています: {sent_tool_names}"
 
     print("6. /realtime-voice/session が実際に送信するsession_configにIntent Classification + 既存8Toolが含まれる: OK")
 

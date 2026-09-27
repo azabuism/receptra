@@ -265,7 +265,9 @@ test('PLAIN WATCHDOG) ターンが別のturnIdへ切り替わっていた場合�
 
 test('REGRESSION) dc.send()呼び出し箇所は今回も増えていない（両watchdogは診断ログのみで、Realtime APIへの新規送信を一切追加していない。既存9箇所のまま）', () => {
     const actualCallLines = SRC.split('\n').filter(line => line.trim().startsWith('dc.send('));
-    assert.strictEqual(actualCallLines.length, 9, 'dc.send() call-site count must remain 9 — FAST TURN HOTFIX 4 adds zero new Realtime API sends (diagnostic-only)');
+    // Realtime Token Architecture Phase 1（今回追加）が正当な新規dc.send呼び出し
+    // 箇所（session.update送信）を1箇所追加したため、基準値を9→10へ更新する。
+    assert.strictEqual(actualCallLines.length, 10, 'dc.send() call-site count must remain 10 (9 + Realtime Token Architecture Phase 1\'s session.update send) — FAST TURN HOTFIX 4 adds zero new Realtime API sends (diagnostic-only)');
 });
 
 test('LIVE-WIRING) armToolContinuationResponseWatchdogはT6送信成功時（else節）にのみ呼ばれ、送信スキップ時には呼ばれない', () => {

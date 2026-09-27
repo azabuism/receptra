@@ -2416,6 +2416,175 @@ async def _get_staff_settings(db: AsyncSession, shop_id: str) -> Optional[AIStaf
     return result.scalars().first()
 
 
+# ============================================================
+# Realtime Token Architecture Phase 1（2026年9月）— NAME / ROUTING 最小context
+# ============================================================
+# 背景（実機evidence）: HOTFIX8-10のinstructions圧縮・session.truncationの
+# retention_ratio設定のいずれでも、「input_tokens=20,550・cached_ratio=0.997
+# （ほぼ全キャッシュ）でもrate_limit_exceededが発生し、remainingが
+# 18,565→1,406まで激減する」という実機証拠は解消しなかった。監査の結果、
+# 通話のごく早い段階（お名前を伺う・ご用件を伺う程度の1〜2ターン目）で、
+# build_realtime_instructions()の全15セクション（実測約19,753文字）+
+# _REALTIME_TOOLS全8個（実測約14,277文字）という固定payloadを、会話内容に
+# 関わらず毎回送っていること自体が支配的な要因である可能性が高いと判断した。
+#
+# 採用アーキテクチャ: A（同一Realtime session内、session.updateによる
+# Phase別instructions/tools最小化）。session分割（B）はOpenAI公式に
+# 無音ギャップなしのhandoff機構が存在せず、既存のFIRST ANSWER MUST COUNT等
+# （PeerConnection単位のクライアント側state）の再初期化リスクを伴うため
+# 見送った。Realtime外への処理分離（C/D）はcheck_availability/
+# create_reservationが既に決定的ロジックであること、既存のsemantic_vad・
+# barge-inという強みを失うリスクの大きさから見送った。ユーザーへの完了報告・
+# 実機評価が前提であり、ここでは断定しない。
+#
+# 今回のスコープ（ユーザーの明示的指示により、これ以上は実装しない）:
+#   Phase "name"        : 名前を尋ねるだけの最小instructions・tools=[]
+#   Phase "routing"     : ご用件を一言で受け止めるだけの最小instructions・tools=[]
+#   Phase "legacy_full" : ルーティング直後に、既存のbuild_realtime_instructions()
+#                         + 既存の_REALTIME_TOOLS（8個）へ無条件でフォールバック
+#                         する。Reservation/Callback Phase自体を新規実装する
+#                         のではなく、本番実績のある既存フローへそのまま
+#                         引き継ぐ設計（AskUserQuestionでユーザーに確認済み。
+#                         「ルーティング判定直後に既存フル機能へ自動
+#                         フォールバック」を選択）。これにより、Reservation/
+#                         Callback Phase自体は今回実装していなくても、実際の
+#                         本番着信が迷子になることはない。
+#
+# 3つのcontext（instructions/tools）はいずれもこのモジュールでのみ生成し、
+# フロントエンド(realtime-voice-engine.js)側でプロンプト文言を一切
+# 保持・生成しない（単一の正典はサーバー側のみ）。フロントエンドは
+# create_realtime_session()の戻り値に含まれるrealtime_phase_contextsを
+# そのままsession.updateのペイロードとして中継するだけにする。
+_MINIMAL_EARLY_HANDOFF_SAFETY_TEMPLATE = """\
+# 最小限の安全ルール（重要・必ず守ってください）
+- 空き状況・予約状況・料金など、まだ確認していない内容を想像で答えないでください。
+- お客様が明確に「担当者に代わってほしい」「折り返しがほしい」等、人による対応を
+  求めている場合、それを無視して通常の会話を続けないでください。
+- お客様の発言から緊急性や安全に関わる内容がうかがえる場合、それを軽く扱ったり、
+  通常のご予約として処理したりしないでください。
+- 折り返しやご予約の詳しい手続きは、この直後の会話で改めてご案内します。今の
+  時点で詳細な確認や確約をする必要はありません。
+"""
+
+_PHASE1_NAME_ROLE_TEMPLATE = """\
+# あなたの今の役割（Phase 1: お名前の確認）
+上記の第一声を話した直後、お客様のお名前を伺ってください（例:「恐れ入り
+ますが、お名前を教えていただけますか？」）。
+
+## お名前を伺ったら
+お名前を確認できたら、短く自然に受け止めてください（例:「○○様ですね。」）。
+まだご用件（ご予約・折り返しのご希望など）を伺っていなければ、続けて
+「本日はどのようなご用件でしょうか？」と尋ねてください。すでにご用件や
+日時・人数等をお客様が自発的に話していた場合は、重ねて「ご用件は？」と
+聞き直さず、そのまま「承知しました。少々お待ちください。」のように短く
+受け止めてください。
+
+## 話し方
+1回の発話は短く、1〜2文にしてください。予約の詳しい確認・空き状況の確認・
+折り返しの手続きなどは、この時点ではまだ行いません。
+"""
+
+_PHASE2_ROUTING_ROLE_TEMPLATE = """\
+# あなたの今の役割（Phase 2: ご用件の受け止め）
+直前でお客様のお名前とご用件の確認を始めています。お客様がご用件（ご予約・
+折り返し・お問い合わせなど、どのような内容でも構いません）を話したら、その
+内容を否定せず、短く自然に受け止めてください（例:「承知しました。少々
+お待ちください。」「かしこまりました。」）。
+
+まだご用件を伺えていない場合は、「本日はどのようなご用件でしょうか？」と
+尋ねてください。
+
+この時点では、空き状況の確認・予約の確定・折り返しの登録・料金や店舗情報の
+詳しい案内は行わないでください。詳しい対応はこの直後の会話で行います。
+"""
+
+
+def _build_phase_minimal_instructions(
+    shop: Shop,
+    staff_settings: Optional["AIStaffSettings"],
+    ai_languages: list,
+    staff_languages: Optional[list],
+    role_template: str,
+    include_greeting: bool,
+) -> str:
+    """
+    Phase 1 (NAME) / Phase 2 (ROUTING) 共通の最小instructions組み立て。
+
+    既存のbuild_realtime_instructions()（15セクション・常に固定でHuman
+    Handoff/Booking Safety/Time Ambiguity等の大きなセクションを含む）とは
+    意図的に完全に独立させる。将来どちらかを変更した際にもう一方への影響を
+    見落とすリスクを避けるためであり、コードの重複を許容してでも「Phase 1/2は
+    最小のまま」という不変条件を守ることを優先した。
+
+    含めるのは以下の最小限のみ:
+      1. Core Rules（話し方・言語ルール） … 既存の_CORE_RULES_TEMPLATE /
+         _build_language_rules_section()をそのまま再利用（多言語対応店舗の
+         既存の安全策を、Phase 1/2でも落とさないため）。
+      2. 第一声（Phase 1のみ） … 既存の_build_greeting_section()をそのまま
+         再利用（店舗ごとのAIスタッフ設定のgreeting/人格を落とさないため）。
+      3. 最小限の安全ルール（_HUMAN_HANDOFF_TEMPLATE全文2,791文字の代わり）。
+      4. このPhase専用の役割説明（NAME / ROUTING）。
+    予約Tool・Human Handoff詳細・Booking Safety・Time Ambiguity・Shop
+    Knowledge・Fast Reservation Flow等の大きなセクションは一切含めない。
+    """
+    sections = [
+        _CORE_RULES_TEMPLATE.format(
+            shop_name=shop.name,
+            language_rules_section=_build_language_rules_section(ai_languages, staff_languages),
+        )
+    ]
+    if include_greeting:
+        sections.append(_build_greeting_section(staff_settings, shop.name))
+    sections.append(_MINIMAL_EARLY_HANDOFF_SAFETY_TEMPLATE)
+    sections.append(role_template)
+    return "\n\n".join(sections)
+
+
+async def build_realtime_phase_contexts(
+    db: AsyncSession, shop: Shop, staff_settings: Optional["AIStaffSettings"]
+) -> dict:
+    """
+    Realtime Token Architecture Phase 1: NAME / ROUTING / legacy_full の
+    3つのsession context（instructions・tools）を組み立てて返す。
+
+    - "name" は最初のclient_secrets.create()自体に使う（巨大contextで
+      セッションを開始してからPhase 1へ縮小する、という順序は禁止されて
+      いるため。create_realtime_session()参照）。
+    - "routing" はNAME→ROUTING境界でフロントエンドが送るsession.updateに
+      使う。
+    - "legacy_full" はROUTING→legacy_full境界のsession.updateに使う。中身は
+      既存のbuild_realtime_instructions() + _REALTIME_TOOLSと完全に同一
+      （Reservation/Callback Phase自体を新規実装するのではなく、既存の
+      本番実績のあるフローへ無条件フォールバックする設計のため）。
+
+    tools は name/routing とも意図的に空リスト（[]）にする。OpenAI公式
+    Python SDK (openai==1.109.1) のRealtimeSessionCreateRequest.tools型定義
+    （Optional[List[RealtimeToolsConfigUnion]]、/usr/local/lib/python3.11/
+    dist-packages/openai/types/realtime/realtime_session_create_request.py
+    にて直接確認済み）では、空リストは型上有効な値であり、Tool自体が
+    不要なPhaseで特別な代替表現（例えばtoolsキー自体を省略する等）は
+    必要ないと判断した（推測ではなく型定義の直接確認に基づく）。
+    """
+    ai_languages = effective_ai_languages(shop.ai_supported_languages)
+    staff_languages = effective_languages(shop.staff_supported_languages)
+
+    name_instructions = _build_phase_minimal_instructions(
+        shop, staff_settings, ai_languages, staff_languages,
+        _PHASE1_NAME_ROLE_TEMPLATE, include_greeting=True,
+    )
+    routing_instructions = _build_phase_minimal_instructions(
+        shop, staff_settings, ai_languages, staff_languages,
+        _PHASE2_ROUTING_ROLE_TEMPLATE, include_greeting=False,
+    )
+    legacy_full_instructions = await build_realtime_instructions(db, shop, staff_settings)
+
+    return {
+        "name": {"instructions": name_instructions, "tools": []},
+        "routing": {"instructions": routing_instructions, "tools": []},
+        "legacy_full": {"instructions": legacy_full_instructions, "tools": _REALTIME_TOOLS},
+    }
+
+
 async def create_realtime_session(db: AsyncSession, shop: Shop) -> dict:
     """
     ブラウザ用の短命ephemeralトークン(client secret)を発行する。
@@ -2428,7 +2597,17 @@ async def create_realtime_session(db: AsyncSession, shop: Shop) -> dict:
         raise RuntimeError("OPENAI_API_KEY が設定されていません")
 
     staff_settings = await _get_staff_settings(db, shop.id)
-    instructions = await build_realtime_instructions(db, shop, staff_settings)
+
+    # Realtime Token Architecture Phase 1（2026年9月）: セッションは最初から
+    # Phase "name"（お名前を尋ねるだけの最小instructions・tools=[]）で開始する。
+    # 「巨大な19,753文字instructions+8 toolsでセッションを作成してから
+    # Phase 1へ縮小する」という順序は、最初のresponseで既に巨大contextを
+    # 消費してしまうため明示的に禁止されている（ユーザーの指示）。
+    # routing/legacy_fullの2つはフロントエンドがsession.updateで使うために
+    # そのままレスポンスへ含める（このモジュール内でのみプロンプト文言を
+    # 生成し、フロントエンド側では一切生成・保持しない）。
+    phase_contexts = await build_realtime_phase_contexts(db, shop, staff_settings)
+    instructions = phase_contexts["name"]["instructions"]
 
     # Phase2: 店舗オーナーがAIスタッフ設定でvoiceを指定していればそちらを
     # 使用し、未設定（レコード自体が無い、またはvoiceが空）の場合は
@@ -2478,7 +2657,11 @@ async def create_realtime_session(db: AsyncSession, shop: Shop) -> dict:
     # RealtimeToolsConfig)でセッション直下のフラットな配列であることを確認済み。
     # voice-preview用セッション(create_voice_preview_session)には意図的に含めない
     # （試聴は声質確認のみが目的で、予約関連の会話を行わないため）。
-    session_config["tools"] = _REALTIME_TOOLS
+    #
+    # Realtime Token Architecture Phase 1（2026年9月）: 初回セッション作成時点は
+    # Phase "name"のtools（空リスト）を使う。従来の全8Toolは、フロントエンドが
+    # routing→legacy_full境界でsession.updateを送った後にのみ有効になる。
+    session_config["tools"] = phase_contexts["name"]["tools"]
 
     # reasoning（推論の深さ）: gpt-realtime-2.1のモデルページには
     # 「configurable reasoning effortに対応し、上げるほどレイテンシと
@@ -2553,6 +2736,11 @@ async def create_realtime_session(db: AsyncSession, shop: Shop) -> dict:
         "client_secret": secret.value,
         "expires_at": secret.expires_at,
         "model": settings.OPENAI_REALTIME_MODEL,
+        # Realtime Token Architecture Phase 1（2026年9月）: フロントエンドが
+        # NAME→ROUTING、ROUTING→legacy_fullの各境界でsession.updateへそのまま
+        # 使うための3つのcontext。プロンプト文言はこのモジュール（サーバー側）
+        # にのみ存在し、フロントエンドはこれを中継するだけ。
+        "realtime_phase_contexts": phase_contexts,
     }
 
 

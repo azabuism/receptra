@@ -215,7 +215,9 @@ await test('play()がrejectしても例外が外へ伝播しない（音声再�
 
 await test('DC-SEND: 本フェーズの実装はdc.send(JSON.stringify(の出現数を増やしていない（新規Realtime制御イベントを追加していない）。基準値は8ではなく9（後発の別フェーズ NOISY ENVIRONMENT / 3-SECOND TURN BOUNDARY がmaybeSendUserTurnFallbackCommitを正当に追加したため。本フェーズ自体は引き続き追加していない）。', () => {
     const sendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(sendCount, 9, 'Speak-Then-Work Ack-Fallback must not add any new dc.send() call site (it bypasses the Realtime response lifecycle entirely); the current baseline of 9 reflects a later, unrelated phase adding USER_TURN_3S_FALLBACK, not this one');
+    // Realtime Token Architecture Phase 1（今回追加）が正当な新規dc.send呼び出し
+    // 箇所（session.update送信）を1箇所追加したため、基準値を9→10へ更新する。
+    assert.strictEqual(sendCount, 10, 'Speak-Then-Work Ack-Fallback must not add any new dc.send() call site (it bypasses the Realtime response lifecycle entirely); the current baseline of 10 reflects later, unrelated phases adding USER_TURN_3S_FALLBACK and Realtime Token Architecture Phase 1\'s session.update send, not this one');
 });
 
 await test('GREETING-REG: Zero-Wait Greeting関連コードの主要シンボルが変更されず残っている', () => {
@@ -236,7 +238,11 @@ await test('配線確認: startCall()内でresetAckFallbackCallState()が呼ば�
     // toolContinuationRateLimitRetryUsedForCallId = null; のリセット行が
     // 追加され、resetAckFallbackCallState();までの実測オフセットが11249
     // 文字まで伸びたため、ウィンドウを11000→13000へ再拡張（測定値+余裕分）。
-    const window = SRC.slice(idx, idx + 13000);
+    // さらにRealtime Token Architecture Phase 1（今回追加）で、同じ
+    // リセットブロックにPhase遷移状態（currentRealtimePhase等）のリセット行が
+    // 追加され、実測オフセットが13004文字まで伸びたため、ウィンドウを
+    // 13000→13600へ再拡張（測定値+余裕分）。
+    const window = SRC.slice(idx, idx + 13600);
     assert.ok(window.includes('resetAckFallbackCallState();'), 'startCall() must reset the ack-fallback playback position for each new call');
 });
 

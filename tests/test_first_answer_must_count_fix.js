@@ -257,7 +257,9 @@ test('REGRESSION) releaseAiSpeakingProtection呼び出し箇所は5箇所（既�
 
 test('REGRESSION) dc.send(JSON.stringify(...)) の呼び出し箇所は今回も9箇所のまま（今回の修正はマイクmute/unmuteの発火条件追加のみで、新しい送信は一切追加していない）', () => {
     const count = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
-    assert.strictEqual(count, 9);
+    // Realtime Token Architecture Phase 1（今回追加）がsession.update送信という
+    // 正当な新規dc.send呼び出し箇所を1箇所追加したため、基準値を9→10へ更新する。
+    assert.strictEqual(count, 10);
 });
 
 test('REGRESSION) aiAudioOutputActiveの意味・既存の設定箇所は今回変更していない（output_audio_buffer.started/stopped/cleared/response.doneのみで制御されたまま）', () => {

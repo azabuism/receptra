@@ -338,7 +338,9 @@ test('J) retryロジックはcreate_reservation関連の呼び出しを一切含
 // =======================================================================
 test('K) dc.send()呼び出し箇所数は今回も増えていない（既存9箇所のまま。retryはsendResponseCreate()の既存経路を再利用）', () => {
     const actualCallLines = SRC.split('\n').filter(line => line.trim().startsWith('dc.send('));
-    assert.strictEqual(actualCallLines.length, 9, 'dc.send() call-site count must remain 9 — the retry reuses the existing sendResponseCreate() path');
+    // Realtime Token Architecture Phase 1（今回追加）が正当な新規dc.send呼び出し
+    // 箇所（session.update送信）を1箇所追加したため、基準値を9→10へ更新する。
+    assert.strictEqual(actualCallLines.length, 10, 'dc.send() call-site count must remain 10 (9 + Realtime Token Architecture Phase 1\'s session.update send) — the retry reuses the existing sendResponseCreate() path');
 });
 
 // =======================================================================

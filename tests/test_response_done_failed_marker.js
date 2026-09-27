@@ -354,7 +354,9 @@ test('H) RESPONSE_DONE_FAILEDブロックはtoolContinuationTrace*・turnLatency
 // =======================================================================
 test('I) dc.send()呼び出し箇所数は今回も増えていない（診断ログ追加のみ、既存9箇所のまま）', () => {
     const actualCallLines = SRC.split('\n').filter(line => line.trim().startsWith('dc.send('));
-    assert.strictEqual(actualCallLines.length, 9, 'dc.send() call-site count must remain 9 — FAST TURN HOTFIX 5 adds zero new Realtime API sends (diagnostic-only)');
+    // Realtime Token Architecture Phase 1（今回追加）が正当な新規dc.send呼び出し
+    // 箇所（session.update送信）を1箇所追加したため、基準値を9→10へ更新する。
+    assert.strictEqual(actualCallLines.length, 10, 'dc.send() call-site count must remain 10 (9 + Realtime Token Architecture Phase 1\'s session.update send) — FAST TURN HOTFIX 5 adds zero new Realtime API sends (diagnostic-only)');
 });
 
 // =======================================================================
