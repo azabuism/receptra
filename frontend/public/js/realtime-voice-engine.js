@@ -2881,9 +2881,18 @@
         function maybeHangUpAfterCallbackTerminal(myGeneration, source) {
             if (!pendingCallbackTerminalHangup) return;
             pendingCallbackTerminalHangup = false;
+            // FAST TURN HOTFIX 16（今回追加・§19診断。挙動は変更しない）: この
+            // 関数はoutput_audio_buffer.stopped（音声再生完了）経由でも
+            // response.doneの遅延fallback経由でも呼ばれ得るため、ここに
+            // 到達した時点＝最終案内の音声完了（または安全網によるみなし完了）
+            // を意味する。
+            pushTimelineEvent('CALLBACK_FINAL_AUDIO_DONE (source=' + source + ')');
+            console.log('[CALLBACK_FINAL_AUDIO_DONE]');
             if (isStaleCallEvent(myGeneration)) return;
             pushTimelineEvent('CALLBACK_TERMINAL_END_CALL_REQUESTED (source=' + source + ')');
             console.log('[CALLBACK_TERMINAL_END_CALL]');
+            pushTimelineEvent('CALLBACK_FINAL_END_CALL');
+            console.log('[CALLBACK_FINAL_END_CALL]');
             endCall('お電話ありがとうございました。', 'callback_terminal');
         }
 
@@ -5206,8 +5215,29 @@
                     logEvent('request_callback: 既に確定済みのため再実行をスキップします');
                     pushTimelineEvent('CALLBACK_REQUEST_DEDUPED (reason=already_confirmed)');
                     output = { success: true, status: 'already_confirmed' };
+                    // FAST TURN HOTFIX 16（今回追加・§5/§6/§9・監査で発見した
+                    // 潜在的な二重発話経路の防止）: これまでこの分岐は
+                    // callbackTerminalArmedを再セットしていなかった。1回目の
+                    // 成功で既にarmed→consumeされた後（＝pendingCallbackTerminal
+                    // Hangupも既にfalse）、モデルが何らかの理由でrequest_callback
+                    // を再度呼び出した場合、この分岐のoutputに対しても直後の
+                    // 共通コード（後述T5/T6）が無条件にtool_result:request_
+                    // callbackの継続応答生成を送ってしまい、その応答の
+                    // response.doneがCALLBACK_TERMINAL優先分岐（§9でAI_WORKING/
+                    // incomplete/silence timerを排他する分岐）を通らずに通常の
+                    // 継続ロジックへ落ちてしまう（＝新しいstate machineを追加
+                    // せず、既存のcallbackTerminalArmedゲートを再利用して、
+                    // この経路の応答も必ず「terminalな1回」として扱われる
+                    // ようにする。request_callback自体はcallRequestCallbackTool
+                    // を再実行しない＝実際の折り返し重複作成は既存どおり防止
+                    // されたまま）。
+                    callbackTerminalArmed = true;
+                    pushTimelineEvent('CALLBACK_FINAL_DUPLICATE_BLOCKED (reason=request_callback_reinvoked_after_success)');
+                    console.log('[CALLBACK_FINAL_DUPLICATE_BLOCKED]');
                 } else {
                     logEvent('Tool呼び出し受信: request_callback ' + JSON.stringify(args));
+                    pushTimelineEvent('CALLBACK_ACTION_STARTED');
+                    console.log('[CALLBACK_ACTION_STARTED]');
                     output = await callRequestCallbackTool(args || {}, callId);
                     // FAST TURN HOTFIX 14（今回追加・CASE B §8/§11）: request_callback
                     // が成功した場合のみ、以降の会話をterminal状態として扱う
@@ -5218,6 +5248,8 @@
                     if (!isToolOutputFailure(output)) {
                         callbackAlreadyConfirmedThisCall = true;
                         callbackTerminalArmed = true;
+                        pushTimelineEvent('CALLBACK_ACTION_SUCCESS');
+                        console.log('[CALLBACK_ACTION_SUCCESS]');
                         pushTimelineEvent('CALLBACK_TERMINAL_ARMED');
                         console.log('[CALLBACK_TERMINAL_ARMED]');
                     }
@@ -5335,8 +5367,21 @@
                 toolContinuationResponseCreateSent = false;
                 pushTimelineEvent('TOOL_CONTINUATION_SKIPPED_INTENTIONAL (tool=classify_intent)');
             } else {
+                // FAST TURN HOTFIX 16（今回追加・§19診断）: request_callbackの
+                // Tool結果継続だけは、この直後の応答がCALLBACK_TERMINAL優先
+                // 分岐（callbackTerminalArmed）で消費される「最終案内」候補で
+                // あることをCALLBACK_FINAL_REQUESTEDとして明示的に記録する
+                // （挙動は変更しない。既存のTOOL_CONTINUATION_REQUESTEDと併記）。
+                if (item.name === 'request_callback') {
+                    pushTimelineEvent('CALLBACK_FINAL_REQUESTED');
+                    console.log('[CALLBACK_FINAL_REQUESTED]');
+                }
                 toolContinuationResponseCreateSent = sendResponseCreate('tool_result:' + (item.name || 'unknown') + (functionCallOutputSendFailed ? ':output_send_failed' : ''));
                 pushTimelineEvent('TOOL_CONTINUATION_REQUESTED (tool=' + (item.name || '(不明)') + ')');
+                if (item.name === 'request_callback' && toolContinuationResponseCreateSent) {
+                    pushTimelineEvent('CALLBACK_FINAL_CREATED');
+                    console.log('[CALLBACK_FINAL_CREATED]');
+                }
             }
             // sendResponseCreate()の戻り値（dc.readyState === 'open'だった場合のみ
             // trueで、実際にresponse.createを送信したことを意味する。false＝
@@ -6306,6 +6351,9 @@
                         pendingCallbackTerminalHangup = true;
                         pushTimelineEvent('CALLBACK_TERMINAL_RESPONSE_DONE');
                         console.log('[CALLBACK_TERMINAL_RESPONSE_DONE]');
+                        // FAST TURN HOTFIX 16（今回追加・§19診断。挙動は変更しない）
+                        pushTimelineEvent('CALLBACK_FINAL_DONE');
+                        console.log('[CALLBACK_FINAL_DONE]');
                     } else if (deferSilenceTimerForToolContinuationRateLimit) {
                         pushTimelineEvent('SILENCE_TIMER_START_DEFERRED (reason=tool_continuation_rate_limit_fallback_pending)');
                     } else if (lastResponseTranscriptWasProcessNarrationOnly

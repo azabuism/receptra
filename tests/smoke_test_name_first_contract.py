@@ -104,11 +104,27 @@ def test_e_protected_templates_not_relengthened():
     # （ユーザー指示§6/§17。実機で「最終案内が一度も再生されないまま通話が
     # 切れる」premature hangoutを修正するための一部）。実測でchar delta=+265
     # （2910→3175）であることを確認済み（測定はtests/test_fast_turn_hotfix15_
-    # callback_final_confirmation.js参照）。この意図的な増分を許容するため、
-    # このテンプレートのみベースラインをHOTFIX15後の実測値（3175）+5%へ更新する
-    # （他の3テンプレートはHOTFIX15で一切変更していないため据え置き）。
+    # callback_final_confirmation.js参照）。
+    #
+    # FAST TURN HOTFIX 16（2026年9月・意図的な追記）: 「折り返し対応の進め方」
+    # 手順1・3・4を書き換え、request_callback呼び出し前（＝まだ成功も失敗も
+    # 分かっていない時点）に「担当者から折り返しご連絡いたします」等、結果を
+    # 確約する表現を絶対に使わないことを明記した。また手順3で、必要情報が
+    # 揃った後に「確認します」「少々お待ちください」のような処理中ナレーション
+    # を一切話さずrequest_callbackを内部処理として呼び出すことを明記した
+    # （ユーザー指示§1/§7/§8/§14。実機で「担当者から折り返します」に相当する
+    # 発話が2回生成され、3回目でようやく通話が終了した問題の一次的な原因が、
+    # request_callback呼び出し前の通常応答（terminal state machine外）で
+    # 旧手順1の確約表現が繰り返し話されていたことだったための修正）。
+    # 手順5（5-1/5-2/5-3）・6は一切変更していない（tests/smoke_test_human_
+    # handoff_wording.pyの厳密な文言契約テストを壊さないため、意図的に
+    # スコープ外とした）。実測でchar delta=+416（3175→3591、測定は
+    # tests/test_fast_turn_hotfix16_callback_single_terminal.js参照）。
+    # この意図的な増分を許容するため、このテンプレートのみベースラインを
+    # HOTFIX16後の実測値（3591）+5%へ更新する（他の3テンプレートはHOTFIX16
+    # で一切変更していないため据え置き）。
     baselines_after_phase2 = {
-        "_HUMAN_HANDOFF_TEMPLATE": (_HUMAN_HANDOFF_TEMPLATE, round(3175 * 1.05)),
+        "_HUMAN_HANDOFF_TEMPLATE": (_HUMAN_HANDOFF_TEMPLATE, round(3591 * 1.05)),
         "_BOOKING_SAFETY_TEMPLATE": (_BOOKING_SAFETY_TEMPLATE, round(2077 * 1.05)),
         "_TIME_AMBIGUITY_TEMPLATE": (_TIME_AMBIGUITY_TEMPLATE, round(2061 * 1.05)),
         "_INTENT_CLASSIFICATION_TEMPLATE": (_INTENT_CLASSIFICATION_TEMPLATE, round(1908 * 1.05)),
