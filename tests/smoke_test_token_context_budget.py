@@ -163,7 +163,29 @@ import httpx
 # （-539文字、-2.5%）。tools schemaは変更なし（14277文字のまま）。
 # 残るBOOKING_SAFETY/TIME_AMBIGUITY/INTENT_CLASSIFICATIONはHOTFIX 8
 # Phase 2の後続ステップで段階的に圧縮予定。
-BASELINE_INSTRUCTIONS_CHARS = 20798
+#
+# FAST TURN HOTFIX 8 PHASE 2更新（2026-09-27、Step 2の次のコミット、
+# Step 3: _BOOKING_SAFETY_TEMPLATE圧縮）: 最小構成の店舗でinstructions中
+# 11.3%（2670文字）を占めていた_BOOKING_SAFETY_TEMPLATEを圧縮した。
+# この節は圧縮前の時点で内容を直接検証する契約テストが存在しなかった
+# （他ファイルは見出し文字列をセクション順序の目印として使うのみだった）
+# ため、まずtests/smoke_test_booking_safety_contract.pyを新設し、本文を
+# 読んで洗い出した13項目の実際の挙動（個別逐次確認ではなく予約全体の
+# 最終確認でまとめて確認する／電話番号は例外で必ず1桁ずつ読み上げる／
+# 推測・補完の絶対禁止／予告だけで発話を終えない／個別項目確認は予約
+# 同意にならない／最終確認後の変更・訂正で同意が無効になる／曖昧・否定
+# 返事ではcreate_reservationを呼び出さない／success:trueが返るまで
+# 予約成立を意味する断定表現をしない／success:true後は返却内容と完全に
+# 一致する内容のみ案内／success:falseはreason_code依存で空いている等と
+# 推測しない／成立後は短く伝えて通話を締めくくる、等）が圧縮前の原文で
+# 全項目PASSすることを確認した上で圧縮した。圧縮は、同じ内容を3箇所で
+# 重複説明していた電話番号ルールを1箇所に統合する等、重複除去が中心。
+# 実測: _BOOKING_SAFETY_TEMPLATE 2670→2077文字（-593文字、-22.2%）。
+# instructions全体（最小構成の新規登録店舗）20798→20205文字
+# （-593文字、-2.9%）。tools schemaは変更なし（14277文字のまま）。
+# 残るTIME_AMBIGUITY/INTENT_CLASSIFICATIONはHOTFIX 8 Phase 2の後続
+# ステップで段階的に圧縮予定。
+BASELINE_INSTRUCTIONS_CHARS = 20205
 BASELINE_TOOLS_JSON_CHARS = 14277
 ALLOWED_GROWTH_RATIO = 1.10  # 10%までの増加は許容し、それを超えたら気づけるようにする
 
