@@ -5902,6 +5902,49 @@
                             console.log('[' + retryFailedLine + ']');
                             subStatusText.textContent = '混み合っています。少々お待ちください';
                             rateLimitFallbackNeededForCallId = toolContinuationTraceCallId;
+                        } else if (respStatus === 'failed' && isRateLimitedForRetry
+                            && !(toolContinuationTraceActive && toolContinuationTraceCallId)
+                            && corrCategory !== 'silence_warning' && corrCategory !== 'silence_goodbye') {
+                            // FAST TURN EMERGENCY HOTFIX 11（今回追加・最重要・root cause fix）:
+                            // 実機証拠（RATE_LIMIT_TOKEN_DELTA / RESPONSE_DONE_FAILED
+                            // responseCreateCategory=normal_conversation が2回連続で観測された）
+                            // により、rate_limit_exceededはTool継続応答（tool_result）だけでなく、
+                            // 通常のnormal_conversation応答（サーバーのturn_detectionによる自動
+                            // 応答）や初回挨拶・Phase遷移followup等、toolContinuationTraceActive
+                            // ではない応答でも実際に発生することが確定した。HOTFIX 10の安全網は
+                            // toolContinuationTraceActive && toolContinuationTraceCallId にのみ
+                            // gateされていたため、この経路を一切カバーしておらず、これが
+                            // 「AI受付の佐藤です。」の後で沈黙する／有効な回答1つの後に応答が
+                            // 返らないまま30秒沈黙→誤った終話案内に至るroot causeだった
+                            // （MODEL FAILUREがUSER SILENCEと誤認されていた＝ユーザー指示§11）。
+                            //
+                            // ここでは新しいresponse.create再送信は一切行わない（ユーザー指示
+                            // §10の絶対禁止事項。normal_conversation応答は次のユーザー発話
+                            // 自体が新しいターンを開始するため、Tool継続retryと違い再送信で
+                            // 「今のターンを完成させる」対象が無い）。行うのは、既存の
+                            // HOTFIX 10と全く同じ仕組み（rateLimitFallbackNeededForCallId /
+                            // playToolContinuationRateLimitFallback / deferSilenceTimerFor
+                            // ToolContinuationRateLimit）をそのまま流用し、BUSINESS RESULTを
+                            // 一切含まない既存の固定安全網音声を再生し、その再生完了を待って
+                            // から既存のsilence timerを開始することだけである（新しい音声・
+                            // 新しいTTS・新しい文言は一切追加しない）。
+                            //
+                            // call_idが存在しない（Tool呼び出しではないため）ため、once-per-
+                            // call_idガードの代わりにこのresponseのidをガードキーとして流用する
+                            // （同一response.doneイベントに対して二重に再生しないことだけを
+                            // 保証すれば十分。新しいstate変数は追加しない）。
+                            // silence_warning/silence_goodbye自身の応答がrate_limit_exceededで
+                            // 失敗するケースは、既存のsilence回復フロー（triggerSilenceWarning/
+                            // triggerSilenceFinalGoodbye/maybeHangUpAfterSilenceGoodbye）と
+                            // 干渉する可能性があり、かつ今回の実機証拠には含まれていないため、
+                            // 今回は意図的にスコープ外とする（証拠のない変更はしない＝
+                            // 推測で修正しない、というユーザー指示に従う）。
+                            const normalConvFallbackLine = 'NORMAL_CONVERSATION_RATE_LIMIT_FALLBACK_TRIGGERED (category=' + corrCategory
+                                + ', responseIdTail=' + respIdTail + ')';
+                            pushTimelineEvent(normalConvFallbackLine);
+                            console.log('[' + normalConvFallbackLine + ']');
+                            subStatusText.textContent = '混み合っています。少々お待ちください';
+                            rateLimitFallbackNeededForCallId = 'normal_conv_resp_' + (respIdTail || ('gen' + callGeneration + '_' + Date.now()));
                         }
                         if (rateLimitFallbackNeededForCallId !== null) {
                             deferSilenceTimerForToolContinuationRateLimit = true;

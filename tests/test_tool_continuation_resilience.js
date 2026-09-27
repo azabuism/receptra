@@ -350,7 +350,13 @@ await test('Q: FAST TURN 3.6B) T10(CONTINUATION_RESPONSE_DONE)はfunction_call�
     // else-if分岐＋fallback再生＋安全網setTimeout、関連コメント込み）が追加され、
     // T10マッチ開始位置の実測オフセットが17892文字まで伸びたため、ウィンドウを
     // 14200→19500へ再拡張（測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 19500);
+    // さらにFAST TURN EMERGENCY HOTFIX 11（今回追加）で、同じRESPONSE_DONE_FAILED
+    // ブロック内に、toolContinuationTraceActiveではない応答（normal_conversation
+    // 等）向けのrate limit fallbackトリガー分岐（新しいelse-if分岐＋関連コメント。
+    // response.create再送信は一切追加していない）が追加され、T10マッチ開始位置の
+    // 実測オフセットが21217文字まで伸びたため、ウィンドウを19500→22500へ再拡張
+    // （測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 22500);
     assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*pushToolContinuationTrace\('T10_CONTINUATION_RESPONSE_DONE/.test(block),
         'T10 must only be recorded for the final response.done (no function_call), never for the intermediate function-call-only response.done');
     assert.ok(/T10_CONTINUATION_RESPONSE_DONE[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
@@ -496,7 +502,12 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     // オフセットが17137文字まで伸びたため、ウィンドウを13600→19500へ再拡張
     // （測定値+余裕分。Q（T10）テストで確認済みの実測オフセット17892と
     // 同程度のため、同じ余裕を持つ19500に揃えた）。
-    const block = SRC.slice(idx, idx + 19500);
+    // さらにFAST TURN EMERGENCY HOTFIX 11（今回追加）で、同じRESPONSE_DONE_FAILED
+    // ブロック内に、toolContinuationTraceActiveではない応答向けのrate limit
+    // fallbackトリガー分岐（新しいelse-if分岐＋関連コメント）が追加され、この
+    // STEP13ガード自体の実測オフセットが20435文字まで伸びたため、ウィンドウを
+    // 19500→22500へ再拡張（測定値+余裕分。Qテストと同じ22500に揃えた）。
+    const block = SRC.slice(idx, idx + 22500);
     // PHASE O5.6診断: startSilenceTimerIfNeeded()に診断専用の第2引数
     // （armReasonForDiag、例: 'response_done_no_function_call'）が追加された。
     // ガード条件(!responseHasFunctionCall)自体・呼び出し自体（第1引数は
