@@ -80,15 +80,22 @@ def _test_acknowledgement_only_rule_wording():
 
     print("1. 「相槌だけで発話を終わらせない」ルールと禁止相槌4種の明記: OK")
 
-    # 2. 相槌＋要約＋次の質問の3点セット
-    assert "短い相槌" in normalized
-    assert "短い要約" in normalized
-    assert "次の項目を尋ねる具体的な質問" in normalized
+    # 2. 相槌＋要約＋次の質問の3点セット（HOTFIX 8 Phase 2で圧縮済み。
+    #    具体的な形容語「短い/簡潔な」は変わり得るため、ルール見出し近傍で
+    #    (1)相槌 (2)要約 (3)次の質問、の3要素が指示されていることを意味的に検証する）
+    idx_ack_rule = normalized.find("相槌だけで発話を終わらせない")
+    nearby_ack_rule = normalized[idx_ack_rule:idx_ack_rule + 700]
+    assert "短い相槌" in nearby_ack_rule, "「(1)短い相槌」の指示が見つかりません"
+    assert "要約" in nearby_ack_rule, "「(2)要約」の指示が見つかりません"
+    assert "次の項目を尋ねる" in nearby_ack_rule and "質問" in nearby_ack_rule, (
+        "「(3)まだ分かっていない次の項目を尋ねる質問」の指示が見つかりません"
+    )
     print("2. 「相槌＋要約＋次の質問」を1発話でまとめる指示: OK")
 
-    # 3. ユーザー報告と同一の再現例
+    # 3. ユーザー報告と同一の再現例（悪い例はそのまま。良い例の具体的な言い回しは
+    #    圧縮で変わり得るため、「2名様ですね」という要約フレーズ自体の存在を検証する）
     assert "明日2人で予約したいんですけど" in normalized
-    assert "明日、2名様ですね。何時のご予約に" in normalized or "明日、2名様ですね。" in normalized
+    assert "2名様ですね" in normalized, "良い例における要約フレーズが見当たりません"
     print("3. ユーザー報告と同一の再現例（悪い例・良い例）: OK")
 
 

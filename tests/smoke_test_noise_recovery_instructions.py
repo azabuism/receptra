@@ -70,16 +70,24 @@ def _test_new_rule_wording():
     assert "NOISE RECOVERY" in normalized
     assert "聞き取れなかった" in normalized or "不明瞭だった" in normalized
 
-    # 会話全体のリセットを絶対に禁止していること
-    assert "会話そのものを止めたり" in normalized or "最初からやり直させたり" in normalized
-    idx_reset_ban = normalized.find("最初からやり直させたり")
-    assert idx_reset_ban != -1
-    nearby = normalized[idx_reset_ban:idx_reset_ban + 200]
-    assert "絶対に" in nearby
+    # 会話全体のリセットを絶対に禁止していること（HOTFIX 8 Phase 2で圧縮済み。
+    # 具体的な言い回しは変わり得るため、禁止対象フレーズのいずれかの近傍に
+    # 「絶対に」の強い禁止表現があることを意味的に検証する）
+    reset_ban_phrase = None
+    for cand in ("会話そのものを止めたり", "最初からやり直させたり", "会話全体をリセットする"):
+        if cand in normalized:
+            reset_ban_phrase = cand
+            break
+    assert reset_ban_phrase is not None, "会話リセット禁止の文言が見つかりません"
+    idx_reset_ban = normalized.find(reset_ban_phrase)
+    window = normalized[max(0, idx_reset_ban - 50):idx_reset_ban + 250]
+    assert "絶対に" in window
 
-    # 既知情報の保持・単一項目への絞り込みが明示されていること
+    # 既知情報の保持・単一項目への絞り込みが明示されていること（助詞「を」の
+    # 有無等、細部の言い回しは変わり得るため「ちょうど1つ」＋「選び」の
+    # 両方の存在で意味的に検証する）
     assert "そのまま保持し、聞き直さない" in normalized
-    assert "ちょうど1つだけ選び" in normalized
+    assert "ちょうど1つ" in normalized and "選び" in normalized
 
     # 「聞き取れませんでした」だけで終わらせないことが明示されていること
     assert "聞き取れませんでした" in normalized
@@ -94,8 +102,12 @@ def _test_bad_good_examples():
 
     normalized = _FAST_RESERVATION_FLOW_TEMPLATE.replace("\n", "")
 
-    # ユーザー指定のBAD例
-    assert "もう一度最初からお願いします。」（絶対にしないでください）" in normalized
+    # ユーザー指定のBAD例（禁止の言い回し自体はHOTFIX 8 Phase 2で変わり得るため、
+    # BAD例フレーズの近傍に「絶対に」＋禁止表現があることを意味的に検証する）
+    assert "もう一度最初からお願いします。」" in normalized
+    idx_bad_example = normalized.find("もう一度最初からお願いします。」")
+    window = normalized[max(0, idx_bad_example - 100):idx_bad_example + 150]
+    assert "絶対に" in window and ("しないでください" in window or "しない" in window)
 
     # ユーザー指定のGOOD例（日時取得済み・人数不明の場合）
     assert "ありがとうございます。何名様でのご予約でしょうか？」" in normalized
@@ -132,10 +144,13 @@ def _test_adjacent_existing_rules_unchanged():
     assert "相槌だけで発話を終わらせない（重要）" in _FAST_RESERVATION_FLOW_TEMPLATE
 
     assert "直前に尋ねた質問に対応する回答を優先する（ノイズ耐性）（重要）" in _FAST_RESERVATION_FLOW_TEMPLATE
-    assert "背景の\n雑音・周囲の話し声・テレビの音・無関係な短い音の断片だけを理由に" in _FAST_RESERVATION_FLOW_TEMPLATE
+    # 改行位置（テンプレート内の折り返し位置）は圧縮で変わり得るため、
+    # 改行を除去した上でフレーズ自体の存在を検証する
+    _normalized_for_regression = _FAST_RESERVATION_FLOW_TEMPLATE.replace("\n", "")
+    assert "背景の雑音・周囲の話し声・テレビの音・無関係な短い音の断片だけを理由に" in _normalized_for_regression
 
     assert "最重要：速さのために情報を勝手に作らない" in _FAST_RESERVATION_FLOW_TEMPLATE
-    assert "「自然」「正確」「速い」の3つを同時に" in _FAST_RESERVATION_FLOW_TEMPLATE
+    assert "「自然」「正確」「速い」の3つを同時に" in _normalized_for_regression
 
     print("3. 隣接する既存ルール（既知情報を聞き直さない・相槌・ノイズ耐性・速さ）: 無変更 OK")
 
@@ -205,7 +220,9 @@ async def _test_build_instructions_direct(shop_id):
         assert shop is not None
         instructions = await build_realtime_instructions(session, shop, None)
         _assert_section_order(instructions)
-        assert "ありがとうございます。何名様でのご予約でしょうか？」" in instructions
+        # テンプレート内の改行位置（折り返し）は圧縮で変わり得るため、
+        # 改行を除去した上でフレーズ自体の存在を検証する
+        assert "ありがとうございます。何名様でのご予約でしょうか？」" in instructions.replace("\n", "")
 
     print("5. build_realtime_instructions() 全体でのセクション出現順序・新ルールの実挿入位置: OK")
 

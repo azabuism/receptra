@@ -110,7 +110,38 @@ import httpx
 # 実機検証済みの安全ルールを壊すリスクが高く、本フェーズで新設した
 # 契約テストの範囲を超えるため見送った。詳細はFAST TURN HOTFIX 8の
 # 最終報告を参照）。
-BASELINE_INSTRUCTIONS_CHARS = 23549
+#
+# FAST TURN HOTFIX 8 PHASE 2更新（2026-09-27、commit 14ecbeb時点からの変更、
+# Step 1: _FAST_RESERVATION_FLOW_TEMPLATE圧縮）: 実機で、Phase 1の
+# tool schema圧縮後もinput_tokensが23015→変わらずrate_limit_exceededが
+# 継続することが確認されたのを受け、instructions本体（system prompt）
+# 側の圧縮に着手した。最初の対象は、最小構成の店舗でinstructions全体
+# 23545文字中5212文字（22.1%）を占め、単独最大セクションだった
+# _FAST_RESERVATION_FLOW_TEMPLATEとした。
+# 圧縮方針: 各ルールが禁止する具体的な行動・許可する行動・悪い例／良い例は
+# 一切削らず（多slot保持・相槌のみでの発話終了禁止・内部処理実況のみでの
+# 発話終了禁止・Tool呼び出し前の許可待ち禁止・PHASE O5.5の一言先出し・
+# party_size_guidance差し込み・メニュー詳細の任意化・来店理由の活用・
+# 電話番号は原則最後・Tool結果後の自発継続・ノイズ耐性・NOISE RECOVERY・
+# 速さより正確性優先、の全項目を保持）、重複した接続詞・言い換えの冗長な
+# 説明文・重複気味だった例示を圧縮した。安全性は
+# tests/smoke_test_guidance_unit_acknowledgement.py、
+# tests/smoke_test_no_process_narration_filler.py、
+# tests/smoke_test_noise_recovery_instructions.py、
+# tests/smoke_test_relative_date_conversion.pyの既存アサーション
+# （このコミットで、テンプレート内の折り返し改行位置や助詞等の些末な
+# 言い回しに依存していた一部の完全一致チェックを、同じ意味を保ったまま
+# 出現位置ベースの意味的チェックへ更新した上で）で全項目PASSすることを
+# 確認済み。
+# 実測: _FAST_RESERVATION_FLOW_TEMPLATE（raw, party_size_guidance未展開）
+# 5175→2975文字（-2200文字、-42.5%）。instructions全体（最小構成の
+# 新規登録店舗、build_realtime_instructions()の実測）23549→21337文字
+# （-2212文字、-9.4%）。tools schema側はこのcommitでは変更していない
+# （Phase 1のcommit 14ecbebから14277文字のまま）。
+# 残る大型セクション（HUMAN_HANDOFF/BOOKING_SAFETY/TIME_AMBIGUITY/
+# INTENT_CLASSIFICATION）はHOTFIX 8 Phase 2の後続ステップで段階的に
+# 圧縮予定（詳細はFAST TURN HOTFIX 8 Phase 2の最終報告を参照）。
+BASELINE_INSTRUCTIONS_CHARS = 21337
 BASELINE_TOOLS_JSON_CHARS = 14277
 ALLOWED_GROWTH_RATIO = 1.10  # 10%までの増加は許容し、それを超えたら気づけるようにする
 
