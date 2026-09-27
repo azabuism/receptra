@@ -79,6 +79,12 @@ const FN = {
 
 const ANSWER_WINDOW_LIMITS_MS_EXPR = extractConstExpr(SRC, 'ANSWER_WINDOW_LIMITS_MS');
 const ANSWER_WINDOW_LIMITS_MS = eval('(' + ANSWER_WINDOW_LIMITS_MS_EXPR + ')');
+// FAST TURN EMERGENCY HOTFIX 12（今回追加）: classifyExpectedAnswerType()が
+// 呼び出し末尾で参照するAI_WORKING_NARRATION_ONLY_RE（関数の外側で宣言される
+// 定数）を、ANSWER_WINDOW_LIMITS_MSと同じ方法でソースから抽出してサンドボックス
+// へ注入する（抽出しないとReferenceErrorになる。挙動には無関係・既存の
+// SHORT_CHOICE判定ロジック自体は本HOTFIXで一切変更していない）。
+const AI_WORKING_NARRATION_ONLY_RE_EXPR = extractConstExpr(SRC, 'AI_WORKING_NARRATION_ONLY_RE');
 
 assert.strictEqual(ANSWER_WINDOW_LIMITS_MS.SHORT_CHOICE, 3000, 'SHORT_CHOICE limit should be 3000ms');
 assert.strictEqual(ANSWER_WINDOW_LIMITS_MS.YES_NO, 3000, 'YES_NO limit should now be 3000ms (unified with SHORT_CHOICE)');
@@ -140,6 +146,11 @@ function buildSandbox(overrides) {
         debugMode: false,
         shopId: 'normal-production-shop-id-xxxx', // 通常の本番店舗（PoC店舗ではない）
         dc: { readyState: 'open', sent: [], send(payload) { this.sent.push(JSON.parse(payload)); } },
+        // FAST TURN EMERGENCY HOTFIX 12（今回追加）: classifyExpectedAnswerType()の
+        // 末尾でAI_WORKING判定結果を書き込む先。このテストの対象ではないが、
+        // 未定義だとReferenceErrorになるため用意する（観測用の付随フラグで、
+        // SHORT_CHOICE判定ロジック自体には影響しない）。
+        lastResponseTranscriptWasProcessNarrationOnly: false,
     }, overrides || {});
     Object.assign(context, state);
     context.setTimeout = (fn, delay) => {
@@ -152,6 +163,7 @@ function buildSandbox(overrides) {
     vm.createContext(context);
     vm.runInContext(
         'const ANSWER_WINDOW_LIMITS_MS = ' + ANSWER_WINDOW_LIMITS_MS_EXPR + ';\n' +
+        'const AI_WORKING_NARRATION_ONLY_RE = ' + AI_WORKING_NARRATION_ONLY_RE_EXPR + ';\n' +
         Object.values(FN).join('\n\n'),
         context
     );

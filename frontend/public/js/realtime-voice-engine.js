@@ -1740,6 +1740,13 @@
                 lastAiTranscriptHadTimeKeyword = /時間|何時/.test(t);
                 lastAiTranscriptHadPartySizeKeyword = /人数|何名/.test(t);
             }
+            // FAST TURN EMERGENCY HOTFIX 12（今回追加）: 上のいずれの「本当の
+            // 質問」パターンにも一致しなかった（type==='NONE'のまま）場合に
+            // 限り、AI自身の発話が「これから処理します」という予告のみか
+            // どうかを判定する。真の質問（NAME/PHONE/YES_NO/SHORT_CHOICE/
+            // VISIT_REASON/SHORT_ANSWER）と誤って重複判定しないよう、既存の
+            // 優先順位チェーンが確定した後にのみ評価する。
+            lastResponseTranscriptWasProcessNarrationOnly = (type === 'NONE') && AI_WORKING_NARRATION_ONLY_RE.test(t);
             // PHASE O5.9.1（ユーザー指示8）: classifyExpectedAnswerType()が
             // 呼ばれるたび（＝AIの発話が1回完了するたび）に、その分類結果を
             // 無条件で記録する診断専用イベント。既存のEXPECTED_ANSWER_SETは
@@ -2449,6 +2456,39 @@
         // SILENCE_WARNING_TEXT/SILENCE_GOODBYE_TEXTの値・文言は一切変更しない。
         let deferSilenceTimerForToolContinuationRateLimit = false;
 
+        // FAST TURN EMERGENCY HOTFIX 12（今回追加・最重要）: AI_WORKING /
+        // USER_ANSWER_WAIT の区別。
+        //
+        // 実機証拠: AIが「内容を確認しますので少々お待ちください。」等、
+        // 「これから自分が処理する」ことを宣言する発話をした直後、その発話が
+        // function_callを伴わずに完了してしまうと、既存コードはこれを
+        // 「AIがユーザーの回答を待っている」ケース（本当の質問への回答待ち）と
+        // 一切区別せず、ユーザーが何か（「はい」等）を言わない限り次へ進まない
+        // （＝サーバーのturn_detectionによる自動応答は新しいユーザー発話が
+        // 無ければ発生しないため）。これは受付AIとして不自然であり、
+        // ユーザー指示のWORKING_TURN_MUST_SELF_CONTINUE不変条件に反する。
+        //
+        // app/services/realtime_voice_ai.py（_FAST_RESERVATION_FLOW_TEMPLATE等）
+        // は既に「整理しますね」「確認します」「調べます」「確認してみます」
+        // 「少々お待ちください」等の内部処理実況のみで発話を終わらせることを
+        // 明示的に禁止している（同じ発話で質問かTool呼び出しを続けるよう
+        // 指示済み）。したがって、AIの発話がこの語彙に一致し、かつ既存の
+        // classifyExpectedAnswerType()がPHONE/NAME/YES_NO/SHORT_CHOICE/
+        // VISIT_REASON/SHORT_ANSWERのいずれにも一致しなかった（＝本当の質問
+        // ではない）場合に限り、AI_WORKING（AI自身が処理中）とみなす。
+        // 語彙は既存のsystem instructions側で既に定義されているものをそのまま
+        // 転記しており、新しい判定基準を推測で作ってはいない。
+        const AI_WORKING_NARRATION_ONLY_RE = /整理します|確認します|確認いたします|確認してみます|調べます|お待ちください/;
+        // classifyExpectedAnswerType()がAIの発話完了ごとに更新する。
+        // response.createdの時点で必ずfalseへリセットする（前の応答の判定を
+        // 次の応答へ持ち越さない。responseHasFunctionCallと同じリセット規律）。
+        let lastResponseTranscriptWasProcessNarrationOnly = false;
+        // AI_WORKING継続のためのresponse.create送信後、その継続応答が実際に
+        // 届く（response.created）まで、または安全網タイムアウトまで、
+        // silence timerの開始を見送るためのフラグ（deferSilenceTimerFor
+        // ToolContinuationRateLimitと全く同じ設計方針）。
+        let deferSilenceTimerForAiWorkingContinuation = false;
+
         // ===== PHASE O5.6: Silence Timeout Diagnostics（診断専用・挙動は一切変更しない） =====
         //
         // 目的: 実機症状「2時でお願いします」→約30秒沈黙→AI「何名様ですか？」→
@@ -2504,6 +2544,14 @@
             if (rawReason === 'silence_final_goodbye') return 'silence_goodbye';
             if (rawReason.indexOf('tool_result:') === 0) return 'tool_result';
             if (rawReason.indexOf('initial_greeting') === 0) return 'greeting';
+            // FAST TURN EMERGENCY HOTFIX 12（今回追加）: AI_WORKING継続
+            // （AIが処理宣言のみでfunction_callを伴わずに応答を終えた際、
+            // ユーザーの追加発話を待たず1回だけ送る継続response.create）を
+            // 専用カテゴリとして識別する。既存のtool_continuation_rate_limit_
+            // retry等と同じく、response.done側でこのカテゴリを参照して
+            // 「継続を送った結果の応答が再びAI_WORKINGだった」場合に、
+            // 無限ループを防ぐため2回目の継続は送らない判断に使う。
+            if (rawReason === 'ai_working_continuation') return 'ai_working_continuation';
             return 'unknown';
         }
 
@@ -5705,6 +5753,12 @@
                 // Silence Timeout: この回の応答にfunction_callが含まれるかどうかを
                 // 新しい応答サイクルの開始時点でリセットする（response.doneで判定に使う）。
                 responseHasFunctionCall = false;
+                // FAST TURN EMERGENCY HOTFIX 12（今回追加）: 前の応答の
+                // 「AI_WORKING（処理宣言のみ）」判定を、新しい応答サイクルへ
+                // 持ち越さない（responseHasFunctionCallと同じリセット規律）。
+                // 実際の判定はこの新しい応答のresponse.output_audio_transcript.done
+                // （classifyExpectedAnswerType）で改めて行われる。
+                lastResponseTranscriptWasProcessNarrationOnly = false;
                 // 'waiting'（通常の無言計測中）であればAIが新たに話し始める/
                 // 生成を始めるためキャンセルする。'warned'/'goodbye'中に発生する
                 // response.createdは本機構自身が発行したアナウンスの応答である
@@ -6014,7 +6068,55 @@
                 if (!responseHasFunctionCall) {
                     if (deferSilenceTimerForToolContinuationRateLimit) {
                         pushTimelineEvent('SILENCE_TIMER_START_DEFERRED (reason=tool_continuation_rate_limit_fallback_pending)');
+                    } else if (lastResponseTranscriptWasProcessNarrationOnly
+                        && lastResponseReasonCategoryForDiag !== 'ai_working_continuation') {
+                        // FAST TURN EMERGENCY HOTFIX 12（今回追加・最重要）: AIが
+                        // 「確認します」「少々お待ちください」等、自分がこれから
+                        // 処理することの宣言のみでこのターンを終えた（function_call
+                        // を伴わない）場合、ユーザーの追加発話（「はい」等）を
+                        // 待たず、こちらから1回だけ継続のresponse.createを送り、
+                        // AIに実際の処理（Tool呼び出しまたは次の質問）を促す。
+                        // これは既存のsendResponseCreate()一元化ラッパーを
+                        // そのまま使うだけで、新しいdc.send経路は増やさない。
+                        //
+                        // ループ防止（無限retry禁止・ユーザー指示§6/§10類似の
+                        // 原則）: この応答自体が直前に送った継続response.create
+                        // の結果だった場合（lastResponseReasonCategoryForDiag
+                        // ==='ai_working_continuation'）、たとえ再びAI_WORKING
+                        // 判定でも2回目の継続は送らない（この条件がfalseになり、
+                        // 下のelse節＝通常のsilence timer開始へ安全側にフォール
+                        // バックする）。
+                        deferSilenceTimerForAiWorkingContinuation = true;
+                        const aiWorkingContinuationLine = 'AI_WORKING_CONTINUATION_SENT (previousCategory=' + lastResponseReasonCategoryForDiag + ')';
+                        pushTimelineEvent(aiWorkingContinuationLine);
+                        console.log('[' + aiWorkingContinuationLine + ']');
+                        sendResponseCreate('ai_working_continuation');
+                        // 安全網（HOTFIX10のrate limit fallbackと全く同じ設計方針）:
+                        // 継続response.createに対するresponse.createdが何らかの
+                        // 理由で届かなかった場合に備え、一定時間後も見送ったまま
+                        // であれば強制的にsilence timerを開始する（無期限に無音の
+                        // まま放置しない）。response.createdが正常に届いた場合は
+                        // そちらのハンドラで先にflagがfalseへ戻るため、この
+                        // setTimeoutは何もしない（idempotent。deferSilenceTimerFor
+                        // ToolContinuationRateLimitの安全網タイムアウトと同じ
+                        // 10秒値を踏襲）。
+                        setTimeout(() => {
+                            if (deferSilenceTimerForAiWorkingContinuation) {
+                                deferSilenceTimerForAiWorkingContinuation = false;
+                                pushTimelineEvent('AI_WORKING_CONTINUATION_SILENCE_DEFER_RELEASED (reason=safety_timeout)');
+                                startSilenceTimerIfNeeded(callGeneration, 'ai_working_continuation_safety_timeout');
+                            }
+                        }, 10000);
                     } else {
+                        // FAST TURN EMERGENCY HOTFIX 12（今回追加・観測専用）: 継続
+                        // response.createを送った後もAIが再びAI_WORKING判定の
+                        // 発話のみで終えた場合（無限ループ防止により2回目の継続は
+                        // 送らなかった）ことを、監査のため記録する（挙動は変更
+                        // しない。この後は既存どおり通常のsilence timerを開始する）。
+                        if (lastResponseTranscriptWasProcessNarrationOnly
+                            && lastResponseReasonCategoryForDiag === 'ai_working_continuation') {
+                            pushTimelineEvent('AI_WORKING_CONTINUATION_LOOP_PREVENTED (reason=continuation_still_narration_only)');
+                        }
                         startSilenceTimerIfNeeded(callGeneration, 'response_done_no_function_call');
                     }
                 }
@@ -6595,6 +6697,10 @@
             silenceState = 'idle';
             responseHasFunctionCall = false;
             pendingSilenceGoodbyeHangup = false;
+            // FAST TURN EMERGENCY HOTFIX 12: 新しい通話ごとに必ずリセットする
+            // （前回通話のAI_WORKING判定・defer状態を持ち越さない）。
+            lastResponseTranscriptWasProcessNarrationOnly = false;
+            deferSilenceTimerForAiWorkingContinuation = false;
             // PHASE O5.6診断: 新しい通話ごとに診断専用の状態も必ずリセットする
             // （前回通話の診断値を持ち越さない。挙動には無関係・観測値のみ）。
             silenceStateEnteredAt = null;
