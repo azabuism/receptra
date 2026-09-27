@@ -277,6 +277,16 @@
         let toolContinuationTraceT0 = null;
         let toolContinuationTraceActive = false;
 
+        // FAST TURN EMERGENCY HOTFIX 10（今回追加・観測専用）: §15の
+        // T_CONTINUATION_REQUEST相当（Tool継続のresponse.createが実際に
+        // dc.send()まで成功した時刻）を保持する1変数のみの追加。新しい
+        // trace基盤は作らず、既存のtoolCallStartedAtForLatency（T1相当）・
+        // turnLatencyToolDurationMs（T1→T2のbackend_ms）と組み合わせて
+        // emitFastTurnToolLatencySummary()が§15のサマリを計算する。
+        // Tool呼び出し1件につき1回のみ設定され、サマリ出力後は都度nullへ
+        // 戻す（次のTool呼び出しのT0で改めて明示的にもnullへ戻す）。
+        let toolContinuationResponseCreateSentAt = null;
+
         // FAST TURN HOTFIX 6（今回追加）: Tool継続response（check_availability等の
         // Tool結果を受けた2回目のresponse.create）がOpenAI側のrate limitで
         // failedになった場合の、call_id単位・最大1回のbounded retry用の状態。
@@ -1397,6 +1407,34 @@
             pushTimelineEvent('TOOL_TRACE ' + label + ' (call=' + toolContinuationTraceShortId + ', t+' + elapsedMs + 'ms)');
         }
 
+        // FAST TURN EMERGENCY HOTFIX 10（今回追加・観測専用・§15対応）:
+        // 新しいtrace基盤を作らず、既存のtoolCallStartedAtForLatency（T1相当・
+        // Tool fetch開始時刻）・turnLatencyToolDurationMs（既存のT1→T2 backend
+        // 所要時間）・toolContinuationResponseCreateSentAt（今回追加の1変数、
+        // T6相当）・呼び出し時点のperformance.now()（T8相当・初回音声）だけから
+        // 4つのdeltaを計算する1行サマリを出す。PIIは一切含まない
+        // （tool名の固定文字列＋ミリ秒の数値のみ）。動作は一切変更しない
+        // （純粋な計算＋ログ出力のみ）。
+        function emitFastTurnToolLatencySummary(toolNameForSummary) {
+            if (toolCallStartedAtForLatency === null || toolContinuationResponseCreateSentAt === null) return;
+            const backendMs = (turnLatencyToolDurationMs !== null) ? turnLatencyToolDurationMs : null;
+            const toolResultAt = (backendMs !== null) ? (toolCallStartedAtForLatency + backendMs) : null;
+            const resultToResponseCreateMs = (toolResultAt !== null)
+                ? Math.round(toolContinuationResponseCreateSentAt - toolResultAt) : null;
+            const responseCreateToFirstAudioMs = Math.round(performance.now() - toolContinuationResponseCreateSentAt);
+            const totalMs = Math.round(performance.now() - toolCallStartedAtForLatency);
+            const line = 'FAST_TURN_TOOL_LATENCY (tool=' + (toolNameForSummary || '不明')
+                + ', backend_ms=' + (backendMs === null ? 'null' : backendMs)
+                + ', result_to_response_create_ms=' + (resultToResponseCreateMs === null ? 'null' : resultToResponseCreateMs)
+                + ', response_create_to_first_audio_ms=' + responseCreateToFirstAudioMs
+                + ', total_ms=' + totalMs + ')';
+            pushTimelineEvent(line);
+            console.log('[' + line + ']');
+            // 1回のTool往復につき1回のみ出す（次のTool呼び出しのT0で改めて
+            // nullへ戻されるまで、このサマリを再送信しない）。
+            toolContinuationResponseCreateSentAt = null;
+        }
+
         // ===== FAST TURN HOTFIX 3（今回追加）: FULL TURN LATENCY TRACE =====
         // 目的: 「明日、二人で12時に予約したいです」のような通常の1ユーザー
         // ターンについて、USER SPEECH START（speech_started）からAI音声の
@@ -2397,6 +2435,19 @@
         let pendingSilenceGoodbyeHangup = false; // 終話案内アナウンスの再生完了待ちかどうか
         const SILENCE_TIMEOUT_MS = 30000; // 約30秒間、有効な発話が無ければ予告（PHASE O5.6: 値は無変更。挙動を変えない）
         const SILENCE_WARNING_GRACE_MS = 8000; // 予告後、約5〜10秒の猶予（中間値を採用）（PHASE O5.6: 値は無変更）
+
+        // FAST TURN EMERGENCY HOTFIX 10（今回追加・最重要）: Tool continuationが
+        // rate_limit_exceededで失敗し、追加retryを送らない（送れない）と
+        // 確定した場合にのみtrueにするフラグ。trueの間は、この直後で定義される
+        // 既存のsilence timer開始呼び出し箇所（response.doneハンドラの
+        // 「!responseHasFunctionCall」分岐）がstartSilenceTimerIfNeeded()の
+        // 呼び出しを見送り、代わりにローカル安全網音声（rate limit fallback
+        // audio）の再生完了（またはplay失敗・安全網タイムアウト）を受けて
+        // 改めてstartSilenceTimerIfNeeded()を呼ぶ。
+        // 絶対原則: このフラグはsilence timerの「開始タイミング」のみを
+        // 遅延させるものであり、SILENCE_TIMEOUT_MS/SILENCE_WARNING_GRACE_MS・
+        // SILENCE_WARNING_TEXT/SILENCE_GOODBYE_TEXTの値・文言は一切変更しない。
+        let deferSilenceTimerForToolContinuationRateLimit = false;
 
         // ===== PHASE O5.6: Silence Timeout Diagnostics（診断専用・挙動は一切変更しない） =====
         //
@@ -3721,6 +3772,136 @@
             }
         }
 
+        // ===== FAST TURN EMERGENCY HOTFIX 10: Tool Continuation Rate-Limit
+        // Fallback Audio =====
+        //
+        // 実機証拠に基づくroot cause（詳細は本コミットの説明を参照）:
+        // check_availability等のTool結果をお客様へ伝えるための2回目の
+        // response.create（Tool continuation）がerror_code=rate_limit_exceeded
+        // で失敗し、既存のHOTFIX 6/7のbounded retryロジックが「追加retryを
+        // 送らない」と判断した場合（budgetLooksInsufficient）、またはretry
+        // 自体が同じ理由で再度失敗した場合、これまでは
+        // subStatusText.textContent（画面上のテキストのみ）が変わるだけで、
+        // 電話中のお客様には何も聞こえない状態になっていた。その直後、
+        // function_callを含まない完了扱いのresponse.doneとして既存の
+        // silence timeout（30秒→8秒→終話）が無条件に開始され、無関係な
+        // 「お声が確認できません」案内のあとに通話が終了していた。
+        //
+        // 設計方針（重要・必ず守ること）:
+        // - PHASE O5.5 Speak-Then-Work Ack Fallbackと全く同じパターン
+        //   （Realtime APIのresponse.create/response.done/DataChannelには
+        //   一切関与しない、完全にローカルな事前生成音声のワンショット再生）
+        //   を踏襲するが、ack fallback自身の変数・関数・キャッシュ
+        //   （ackFallback*・_ACK_FALLBACK_TEXT）には一切触れない、完全に
+        //   独立した別実装である。
+        // - 文言は固定・全店舗共通（voiceだけが店舗ごとに異なる）で、
+        //   SYSTEM FAILURE（応答生成が混み合っている）であることのみを伝え、
+        //   「空きがない」「営業時間外」「対応できない」等のBUSINESS RESULTを
+        //   一切含まない（ユーザー指示§8/§9の絶対要件）。
+        // - 新しいTTS基盤・新しい別API・新しいモデルは一切追加しない
+        //   （既存のOpenAI非RealtimeのTTS API・既存の音声配信エンドポイント
+        //   パターンをそのまま踏襲するのみ）。
+        // - この音声の再生完了（'ended'イベント。または再生不可時は即座）を
+        //   受けてから既存のsilence timeoutを開始する（deferSilenceTimer...
+        //   フラグ経由）。追加のresponse.create再送信は一切行わない
+        //   （無限retry禁止・既存の最大1回retryガードをそのまま尊重する）。
+        // - call_idごとに最大1回のみ再生する（同一call_idへの重複再生防止）。
+        const RATE_LIMIT_FALLBACK_AUDIO_URL = '/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/rate-limit-fallback-audio';
+        // 状態遷移: 'idle' -> 'preloading' -> 'ready' | 'preload_failed'
+        let rateLimitFallbackState = 'idle';
+        let rateLimitFallbackAudioEl = null;
+        let rateLimitFallbackObjectUrl = null;
+        // このcall_idについて既に再生を試みたかどうかのonce-per-call_idガード
+        // （toolContinuationRateLimitRetryUsedForCallIdと同じ設計方針）。
+        let toolContinuationRateLimitFallbackPlayedForCallId = null;
+
+        async function preloadRateLimitFallbackAudio() {
+            rateLimitFallbackState = 'preloading';
+            const t0 = performance.now();
+            logEvent('[FastTurnHotfix10] rate limit fallback音声プリロード開始: ' + RATE_LIMIT_FALLBACK_AUDIO_URL);
+            try {
+                const res = await fetch(RATE_LIMIT_FALLBACK_AUDIO_URL);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const blob = await res.blob();
+                rateLimitFallbackObjectUrl = URL.createObjectURL(blob);
+                rateLimitFallbackAudioEl = new Audio();
+                rateLimitFallbackAudioEl.preload = 'auto';
+                rateLimitFallbackAudioEl.src = rateLimitFallbackObjectUrl;
+                rateLimitFallbackAudioEl.addEventListener('playing', () => {
+                    pushTimelineEvent('TOOL_CONTINUATION_RATE_LIMIT_FALLBACK_AUDIO_PLAYING');
+                });
+                rateLimitFallbackAudioEl.load();
+                rateLimitFallbackState = 'ready';
+                logEvent('[FastTurnHotfix10] rate limit fallbackプリロード完了 (' + Math.round(performance.now() - t0) + 'ms, '
+                    + blob.size + 'bytes)');
+            } catch (e) {
+                rateLimitFallbackState = 'preload_failed';
+                // プリロード失敗時は、安全網が機能しないだけ（既存のsilence
+                // timeoutが従来どおり即座に開始される。会話自体は継続する）。
+                logEvent('[FastTurnHotfix10] rate limit fallbackプリロード失敗（安全網が無効になりますが通話は継続します）: ' + e.message);
+            }
+        }
+
+        // 通話開始のたびに再生位置とonce-per-call_idガード・deferフラグを
+        // リセットする（前回通話の状態を持ち越さない）。ack fallbackの
+        // resetAckFallbackCallState()とは独立した別関数（そちらのコードには
+        // 一切触れない）。
+        function resetRateLimitFallbackCallState() {
+            if (rateLimitFallbackAudioEl) {
+                try { rateLimitFallbackAudioEl.pause(); rateLimitFallbackAudioEl.currentTime = 0; } catch (e) {}
+            }
+            toolContinuationRateLimitFallbackPlayedForCallId = null;
+            deferSilenceTimerForToolContinuationRateLimit = false;
+        }
+
+        // RESPONSE_DONE_FAILEDハンドラ（rate_limit_exceeded・追加retry無し確定時、
+        // またはretry自体も失敗確定時）から呼ばれる。再生を試みられた場合は
+        // trueを返し、onEndedOrUnavailableを（'ended'イベント時、play()失敗時、
+        // またはこの関数内で再生できないと判明した時点で）必ず1回呼ぶ。
+        // 呼び出し側はこのコールバックを受けてsilence timerの開始を行う。
+        function playToolContinuationRateLimitFallback(callIdForGuard, myGeneration, onEndedOrUnavailable) {
+            const callOnEnded = () => { if (typeof onEndedOrUnavailable === 'function') onEndedOrUnavailable(); };
+            if (!callIdForGuard || toolContinuationRateLimitFallbackPlayedForCallId === callIdForGuard) {
+                pushTimelineEvent('TOOL_CONTINUATION_RATE_LIMIT_FALLBACK_SKIPPED (reason='
+                    + (!callIdForGuard ? 'no_call_id' : 'already_played_for_call_id') + ')');
+                callOnEnded();
+                return false;
+            }
+            toolContinuationRateLimitFallbackPlayedForCallId = callIdForGuard;
+            if (rateLimitFallbackState !== 'ready' || !rateLimitFallbackAudioEl) {
+                pushTimelineEvent('TOOL_CONTINUATION_RATE_LIMIT_FALLBACK_SKIPPED (reason=fallback_not_ready:' + rateLimitFallbackState + ')');
+                callOnEnded();
+                return false;
+            }
+            if (isStaleCallEvent(myGeneration)) {
+                callOnEnded();
+                return false;
+            }
+            try {
+                rateLimitFallbackAudioEl.currentTime = 0;
+                const onEndedOnce = () => {
+                    rateLimitFallbackAudioEl.removeEventListener('ended', onEndedOnce);
+                    pushTimelineEvent('TOOL_CONTINUATION_RATE_LIMIT_FALLBACK_AUDIO_ENDED');
+                    callOnEnded();
+                };
+                rateLimitFallbackAudioEl.addEventListener('ended', onEndedOnce);
+                const playPromise = rateLimitFallbackAudioEl.play();
+                pushTimelineEvent('TOOL_CONTINUATION_RATE_LIMIT_FALLBACK_PLAY_REQUESTED');
+                if (playPromise && typeof playPromise.catch === 'function') {
+                    playPromise.catch((e) => {
+                        rateLimitFallbackAudioEl.removeEventListener('ended', onEndedOnce);
+                        pushTimelineEvent('TOOL_CONTINUATION_RATE_LIMIT_FALLBACK_PLAY_FAILED: ' + (e && e.message));
+                        callOnEnded();
+                    });
+                }
+                return true;
+            } catch (e) {
+                pushTimelineEvent('TOOL_CONTINUATION_RATE_LIMIT_FALLBACK_PLAY_FAILED: ' + (e && e.message));
+                callOnEnded();
+                return false;
+            }
+        }
+
         // Phase3G: 第一声テキスト取得とZero-Wait対象可否判定(zero_wait_eligible)
         // を同じレスポンスから行う（ハードコードshop_id一覧の代わり）。
         // 常にこの店舗の第一声テキストは取得する（zeroWaitEnabledが後で
@@ -3754,6 +3935,9 @@
         // 判定とは無関係に、全店舗で常にページ読み込み時にプリロードする
         // （固定文言のため、店舗ごとの対象判定が不要）。
         preloadAckFallbackAudio();
+        // FAST TURN EMERGENCY HOTFIX 10: rate limit fallback安全網音声も、
+        // ack fallbackと同様にページ読み込み時に常にプリロードする。
+        preloadRateLimitFallbackAudio();
 
         // startCall()の同期チェーン内（getUserMediaより前・awaitを挟まない）から
         // 呼び出すこと（section11相当: ユーザー操作由来のジェスチャーとして
@@ -4706,6 +4890,10 @@
             toolContinuationTraceShortId = String(callId).slice(-8);
             toolContinuationTraceT0 = performance.now();
             toolContinuationTraceActive = true;
+            // FAST TURN EMERGENCY HOTFIX 10（今回追加・観測専用）: 新しい
+            // Tool呼び出しの開始にあたり、前回分のT_CONTINUATION_REQUEST
+            // 記録を持ち越さない。
+            toolContinuationResponseCreateSentAt = null;
             // PHASE O5.6診断: CALL_END_DIAGが必要とする「直近のTool呼び出し名・
             // 経過ms」だけを保持する（既存のtoolContinuationTrace*系とは別の
             // 単純な変数。読み取り専用・挙動には無関係）。
@@ -4907,6 +5095,10 @@
                 // ケースがないかを次の実機テストで可視化するため、watchdogを
                 // arm する（何も送信しない、記録のみ）。
                 armToolContinuationResponseWatchdog(toolContinuationTraceCallId);
+                // FAST TURN EMERGENCY HOTFIX 10（今回追加・観測専用）: §15の
+                // T_CONTINUATION_REQUEST相当の時刻を記録する（新しいtrace
+                // 基盤は作らず、この1変数のみ追加）。
+                toolContinuationResponseCreateSentAt = performance.now();
             }
             lastToolLabel = (item.name || '(不明)') + ': continuation_requested';
             updateAudioDiagnosticsPanel();
@@ -4966,6 +5158,10 @@
                 subStatusText.textContent = 'AIスタッフが応答中';
                 pushTimelineEvent('AI_AUDIO_STARTED');
                 pushToolContinuationTrace('T8_CONTINUATION_AUDIO_FIRST_DELTA');
+                // FAST TURN EMERGENCY HOTFIX 10（今回追加・観測専用・§15対応）:
+                // Tool継続の最初の音声出力が実際に始まった、このタイミングで
+                // 4つのlatency deltaサマリを1行出す。
+                emitFastTurnToolLatencySummary(turnLatencyToolName);
                 // FAST TURN HOTFIX 3（今回追加・観測専用・11markerの必須項目
                 // ではない補助marker）: FAST TURN HOTFIX 2で判明済みの
                 // OpenAI公式既知バグ（output_audio_buffer.started/stoppedが
@@ -5646,6 +5842,15 @@
                         //   汎用のRESPONSE_CREATED/RESPONSE_DONE/（再失敗時は）
                         //   RESPONSE_DONE_FAILEDマーカーで追跡できる。
                         const isRateLimitedForRetry = !!(errCode && String(errCode).toLowerCase() === 'rate_limit_exceeded');
+                        // FAST TURN EMERGENCY HOTFIX 10（今回追加・最重要）: rate_limit_exceeded
+                        // により追加retryを送らない（送れない）、またはretry自体も同じ理由で
+                        // 失敗したと確定した場合にのみ、そのcall_idを設定する。null以外に
+                        // なった場合、この直後でローカル安全網音声（BUSINESS RESULTを一切
+                        // 含まない、SYSTEM FAILUREのみを伝える固定文言）を再生し、その再生
+                        // 完了を待ってから既存のsilence timerを開始する（deferSilenceTimer...
+                        // フラグ経由）。ここでさらなるresponse.create再送信は一切行わない
+                        // （無限retry禁止・既存の最大1回retryガードをそのまま尊重する）。
+                        let rateLimitFallbackNeededForCallId = null;
                         if (respStatus === 'failed' && isRateLimitedForRetry && toolContinuationTraceActive
                             && toolContinuationTraceCallId
                             && toolContinuationRateLimitRetryUsedForCallId !== toolContinuationTraceCallId) {
@@ -5662,11 +5867,13 @@
                                     + ', previousResponseIdTail=' + respIdTail + ')';
                                 pushTimelineEvent(skipLine);
                                 console.log('[' + skipLine + ']');
-                                // ユーザーを無音のまま放置しない（音声は追加せず、
-                                // 既存のUIテキストを、混雑中であることが伝わる
-                                // 表示へ切り替えるだけにとどめる。新しいdc.send
-                                // 呼び出しは一切行わない）。
+                                // FAST TURN EMERGENCY HOTFIX 10（今回修正・最重要）: これまでは
+                                // このUIテキストの変更のみで、電話中のお客様には何も聞こえない
+                                // 状態だった（実機で30秒沈黙→誤った終話案内に繋がっていたroot
+                                // cause）。BUSINESS RESULTを捏造せず、SYSTEM FAILUREであることの
+                                // みを伝えるローカル安全網音声を、この直後でまとめて再生する。
                                 subStatusText.textContent = '混み合っています。少々お待ちください';
+                                rateLimitFallbackNeededForCallId = toolContinuationTraceCallId;
                             } else {
                                 const retryLine = 'TOOL_CONTINUATION_RATE_LIMIT_RETRY (attempt=1, callIdTail=' + corrCallIdTail
                                     + ', previousResponseIdTail=' + respIdTail + ')';
@@ -5680,6 +5887,43 @@
                                 subStatusText.textContent = '確認しています';
                                 sendResponseCreate('tool_continuation_rate_limit_retry');
                             }
+                        } else if (respStatus === 'failed' && isRateLimitedForRetry && toolContinuationTraceActive
+                            && toolContinuationTraceCallId
+                            && toolContinuationRateLimitRetryUsedForCallId === toolContinuationTraceCallId) {
+                            // FAST TURN EMERGENCY HOTFIX 10（今回追加）: 既にこのcall_idへの
+                            // 1回のretry（HOTFIX 6/7）を消費済みにも関わらず、再度
+                            // rate_limit_exceededで失敗したケース（実機のreset_seconds≈50秒の
+                            // ような、短時間では回復し得ない枯渇状況で起こり得る）。ここで
+                            // さらにretryを送ると無限retry（禁止）になるため、追加の
+                            // response.createは一切送らない。ローカル安全網音声のみ再生する。
+                            const retryFailedLine = 'TOOL_CONTINUATION_RATE_LIMIT_RETRY_ALSO_FAILED (callIdTail=' + corrCallIdTail
+                                + ', previousResponseIdTail=' + respIdTail + ')';
+                            pushTimelineEvent(retryFailedLine);
+                            console.log('[' + retryFailedLine + ']');
+                            subStatusText.textContent = '混み合っています。少々お待ちください';
+                            rateLimitFallbackNeededForCallId = toolContinuationTraceCallId;
+                        }
+                        if (rateLimitFallbackNeededForCallId !== null) {
+                            deferSilenceTimerForToolContinuationRateLimit = true;
+                            let rateLimitFallbackSilenceReleased = false;
+                            const releaseRateLimitFallbackSilenceTimer = (releaseReason) => {
+                                if (rateLimitFallbackSilenceReleased) return;
+                                rateLimitFallbackSilenceReleased = true;
+                                deferSilenceTimerForToolContinuationRateLimit = false;
+                                pushTimelineEvent('TOOL_CONTINUATION_RATE_LIMIT_FALLBACK_SILENCE_TIMER_RELEASED (reason=' + releaseReason + ')');
+                                startSilenceTimerIfNeeded(callGeneration, 'tool_continuation_rate_limit_fallback_' + releaseReason);
+                            };
+                            playToolContinuationRateLimitFallback(
+                                rateLimitFallbackNeededForCallId,
+                                callGeneration,
+                                () => releaseRateLimitFallbackSilenceTimer('audio_ended_or_unavailable')
+                            );
+                            // 安全網（今回追加・観測含む）: 'ended'イベントやplay失敗の
+                            // コールバックが何らかの理由で一度も呼ばれなかった場合に備え、
+                            // 想定される最大再生時間より十分長い時間経過後も未解放であれば
+                            // 強制的にsilence timerを開始する（無期限に無音を放置しない
+                            // ための最終安全網。この場合もresponse.create再送信は行わない）。
+                            setTimeout(() => releaseRateLimitFallbackSilenceTimer('safety_timeout'), 10000);
                         }
                     } catch (diagErr) {
                         pushTimelineEvent('RESPONSE_DONE_FAILED_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
@@ -5718,8 +5962,18 @@
                 // 「AIがユーザーの回答を待っている」状態に入ったとみなし開始する
                 // （Tool Call往復中の中間応答では開始しない＝待ち時間を無言として
                 // カウントしないための最重要ガード）。
+                // FAST TURN EMERGENCY HOTFIX 10（今回追加・最重要）:
+                // deferSilenceTimerForToolContinuationRateLimitがtrueの間
+                // （Tool継続がrate_limit_exceededで失敗し、ローカル安全網音声を
+                // 再生中の間）は、ここでのsilence timer開始を見送る。開始は
+                // その安全網音声の再生完了（またはplay失敗・安全網タイムアウト）
+                // を受けて、上のRESPONSE_DONE_FAILED処理側から改めて行われる。
                 if (!responseHasFunctionCall) {
-                    startSilenceTimerIfNeeded(callGeneration, 'response_done_no_function_call');
+                    if (deferSilenceTimerForToolContinuationRateLimit) {
+                        pushTimelineEvent('SILENCE_TIMER_START_DEFERRED (reason=tool_continuation_rate_limit_fallback_pending)');
+                    } else {
+                        startSilenceTimerIfNeeded(callGeneration, 'response_done_no_function_call');
+                    }
                 }
                 // FAST TURN 3.6B（Tool Continuation Proof）: function_callを含まない
                 // 最終応答が完了した時点で初めてT10を記録し、Tool継続チェーン
@@ -6441,6 +6695,9 @@
             // 持ち越さない（Zero-Waitのresetとは独立。Greeting関連コードには
             // 一切触れない）。
             resetAckFallbackCallState();
+            // FAST TURN EMERGENCY HOTFIX 10: rate limit fallback安全網音声も、
+            // 前回通話の再生位置・once-per-call_idガードを持ち越さない。
+            resetRateLimitFallbackCallState();
             // Outbound AI Phase 4B: 新しい通話の開始にあたり、前回の通話の
             // session状態を必ずクリアする（別通話への流用を防ぐ）。
             // voiceSessionIdはこの直後のfetchSession()成功時に改めて設定する。

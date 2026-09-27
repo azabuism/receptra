@@ -587,6 +587,75 @@ async def get_realtime_voice_ack_fallback_audio(shop_id: str, db: AsyncSession =
     )
 
 
+# FAST TURN EMERGENCY HOTFIX 10: rate-limit-fallback-audio用の別バケット。
+# ack-fallback-audioと同じくページ読み込み時に1回だけプリロードされる想定の
+# 読み取り中心のリクエストのため、同程度の緩めの制限にする。
+_RATE_LIMIT_FALLBACK_AUDIO_RATE_LIMIT_WINDOW_SECONDS = 60
+_RATE_LIMIT_FALLBACK_AUDIO_RATE_LIMIT_MAX_REQUESTS = 20
+_recent_rate_limit_fallback_audio_requests: dict[str, list] = {}
+
+
+def _check_rate_limit_fallback_audio_rate_limit(shop_id: str) -> None:
+    now = time.monotonic()
+    bucket = _recent_rate_limit_fallback_audio_requests.setdefault(shop_id, [])
+    bucket[:] = [t for t in bucket if now - t < _RATE_LIMIT_FALLBACK_AUDIO_RATE_LIMIT_WINDOW_SECONDS]
+    if len(bucket) >= _RATE_LIMIT_FALLBACK_AUDIO_RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="リクエストが多すぎます。しばらくしてから再度お試しください。",
+        )
+    bucket.append(now)
+
+
+@router.get("/rate-limit-fallback-audio")
+async def get_realtime_voice_rate_limit_fallback_audio(shop_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    FAST TURN EMERGENCY HOTFIX 10: Tool continuation（Tool結果をお客様へ伝える
+    ための2回目のresponse.create）がerror_code=rate_limit_exceededで失敗し、
+    既存のbounded retry（HOTFIX 6/7）も送信されない（または送信後さらに
+    失敗した）と判断された場合にのみ再生する、固定文言の安全網音声(mp3)を
+    返す（会員登録不要・認証不要。/ack-fallback-audioと同じ公開範囲の考え方）。
+
+    重要（必ず守ること）:
+    - Speak-Then-Work Ack Fallback（/ack-fallback-audio）とは目的・再生
+      タイミング・文言が異なる別機能であり、そちらのコード・キャッシュには
+      一切触れない。
+    - 文言は固定（app.services.realtime_voice_ai._RATE_LIMIT_FALLBACK_TEXT）で、
+      SYSTEM FAILUREであることのみを伝え、空き状況等のBUSINESS RESULTには
+      一切言及しない。
+    - voiceは通話のRealtime voice設定と同じもの（AIStaffSettings.voice、
+      未設定ならOPENAI_REALTIME_VOICE）を使う。
+    - Cache-Control: no-store（既存の音声配信エンドポイントと方針を統一）。
+    """
+    _check_rate_limit_fallback_audio_rate_limit(shop_id)
+
+    shop = await db.get(Shop, shop_id)
+    if not shop or not shop.is_active:
+        raise HTTPException(status_code=404, detail="店舗が見つかりません")
+
+    settings = get_settings()
+    result = await db.execute(
+        select(AIStaffSettings.voice).filter(AIStaffSettings.shop_id == shop_id)
+    )
+    staff_voice = result.scalar_one_or_none()
+    voice = staff_voice or settings.OPENAI_REALTIME_VOICE
+
+    try:
+        audio_bytes = await realtime_voice_ai.get_or_generate_rate_limit_fallback_audio(voice)
+    except RuntimeError as e:
+        logger.error("rate-limit-fallback-audio生成に失敗（設定エラー） shop_id=%s: %s", shop_id, e)
+        raise HTTPException(status_code=502, detail="音声の準備に失敗しました。しばらくしてから再度お試しください。")
+    except Exception as e:
+        logger.error("rate-limit-fallback-audio取得に失敗 shop_id=%s: %s", shop_id, e)
+        raise HTTPException(status_code=502, detail="音声の準備に失敗しました。しばらくしてから再度お試しください。")
+
+    return Response(
+        content=audio_bytes,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.post("/session")
 async def create_realtime_voice_session(shop_id: str, db: AsyncSession = Depends(get_db)):
     """

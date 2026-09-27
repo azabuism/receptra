@@ -3280,3 +3280,61 @@ async def get_or_generate_ack_fallback_audio(voice: str) -> bytes:
         voice, settings.OPENAI_TTS_MODEL, len(audio_bytes),
     )
     return audio_bytes
+
+
+# ===== FAST TURN EMERGENCY HOTFIX 10: Tool Continuation Rate-Limit Fallback
+# Audio =====
+#
+# 背景（実機証拠に基づくroot cause。詳細は該当コミットの説明を参照）:
+# check_availability等のTool結果をお客様へ伝えるための2回目のresponse.create
+# （Tool continuation）がerror_code=rate_limit_exceededで失敗し、かつ
+# 既存のHOTFIX 6/7の判断により追加retryが送信されない
+# （budgetLooksInsufficient）場合、これまではブラウザ画面上のテキスト変更
+# （subStatusText）のみが行われ、電話中のお客様には何も聞こえない状態に
+# なっていた。その後、function_callを含まない完了扱いのresponse.doneとして
+# 既存のsilence timeout（30秒→8秒→終話）が無条件に開始されてしまい、
+# 無関係な「お声が確認できません」という案内のあとに通話が終了していた。
+#
+# この関数は、Speak-Then-Work Acknowledgement Fallback（PHASE O5.5、上記）と
+# 全く同じパターン（Realtime API本体のresponse lifecycleに一切関与しない、
+# 完全にローカルな事前生成音声のワンショット再生）を踏襲した第二の固定音声
+# である。ack fallbackとは再生タイミング・目的・文言が異なるため、既存の
+# ack fallback用の変数・関数・キャッシュ（_ACK_FALLBACK_TEXT /
+# _ack_fallback_audio_cache / get_or_generate_ack_fallback_audio）には
+# 一切触れず、完全に別の新規実装とする。新しいTTS基盤・別API・別モデルは
+# 一切追加していない（既存のOpenAI非RealtimeのTTS APIをそのまま踏襲）。
+#
+# 文言は「SYSTEM FAILURE（応答生成が混み合っている）」であることが伝わる
+# 内容のみとし、「空きがない」「営業時間外」「対応できない」等の
+# BUSINESS RESULTを一切含まない（ユーザー指示§8/§9の絶対要件）。
+_RATE_LIMIT_FALLBACK_TEXT = "確認に少し時間がかかっています。もう一度確認いたしますので、少々お待ちください。"
+_rate_limit_fallback_audio_cache: dict[str, bytes] = {}
+
+
+async def get_or_generate_rate_limit_fallback_audio(voice: str) -> bytes:
+    """FAST TURN EMERGENCY HOTFIX 10: Tool continuationがrate_limit_exceededで
+    失敗し、かつ追加retryを送らない（送れない）と判断した場合にのみ再生する、
+    SYSTEM FAILUREを伝える固定音声を、voiceごとにプロセス内メモリで
+    キャッシュしつつ返す。BUSINESS RESULTには一切言及しない。"""
+    cached = _rate_limit_fallback_audio_cache.get(voice)
+    if cached is not None:
+        return cached
+
+    settings = get_settings()
+    if not settings.OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY が設定されていません")
+
+    client = _get_client()
+    resp = await client.audio.speech.create(
+        model=settings.OPENAI_TTS_MODEL,
+        voice=voice,
+        input=_RATE_LIMIT_FALLBACK_TEXT,
+        response_format="mp3",
+    )
+    audio_bytes = await resp.aread()
+    _rate_limit_fallback_audio_cache[voice] = audio_bytes
+    logger.info(
+        "Tool continuation rate limit fallback音声を生成 voice=%s model=%s bytes=%d",
+        voice, settings.OPENAI_TTS_MODEL, len(audio_bytes),
+    )
+    return audio_bytes

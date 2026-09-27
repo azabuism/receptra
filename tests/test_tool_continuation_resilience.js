@@ -344,7 +344,13 @@ await test('Q: FAST TURN 3.6B) T10(CONTINUATION_RESPONSE_DONE)はfunction_call�
     // session.update消費ロジック（独立ブロック）が追加され、T10マッチ開始位置の
     // 実測オフセットが13554文字まで伸びたため、ウィンドウを13500→14200へ再拡張
     // （測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 14200);
+    // さらにFAST TURN EMERGENCY HOTFIX 10（今回追加）で、同じRESPONSE_DONE_FAILED
+    // ブロック内に、rate_limit_exceeded・追加retry無し（またはretry自体も失敗）
+    // 確定時のローカル安全網音声トリガーとsilence timer遅延ロジック（新しい
+    // else-if分岐＋fallback再生＋安全網setTimeout、関連コメント込み）が追加され、
+    // T10マッチ開始位置の実測オフセットが17892文字まで伸びたため、ウィンドウを
+    // 14200→19500へ再拡張（測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 19500);
     assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*pushToolContinuationTrace\('T10_CONTINUATION_RESPONSE_DONE/.test(block),
         'T10 must only be recorded for the final response.done (no function_call), never for the intermediate function-call-only response.done');
     assert.ok(/T10_CONTINUATION_RESPONSE_DONE[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
@@ -483,14 +489,40 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     // 直後・startSilenceTimerIfNeeded呼び出しより前に、Phase遷移用の
     // session.update消費ロジック（独立ブロック）が追加され、実測オフセットが
     // 13082文字まで伸びたため、ウィンドウを13000→13600へ再拡張（測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 13600);
+    // さらにFAST TURN EMERGENCY HOTFIX 10（今回追加）で、同じRESPONSE_DONE_FAILED
+    // ブロック内にローカル安全網音声トリガー・新しいelse-if分岐・安全網
+    // setTimeout等が追加され、このSTEP13ガード自体（if (!responseHasFunctionCall) {
+    // if (deferSilenceTimerForToolContinuationRateLimit) { ... } ）の実測
+    // オフセットが17137文字まで伸びたため、ウィンドウを13600→19500へ再拡張
+    // （測定値+余裕分。Q（T10）テストで確認済みの実測オフセット17892と
+    // 同程度のため、同じ余裕を持つ19500に揃えた）。
+    const block = SRC.slice(idx, idx + 19500);
     // PHASE O5.6診断: startSilenceTimerIfNeeded()に診断専用の第2引数
     // （armReasonForDiag、例: 'response_done_no_function_call'）が追加された。
     // ガード条件(!responseHasFunctionCall)自体・呼び出し自体（第1引数は
     // 従来通りcallGeneration）は無変更のため、第2引数の有無を問わずマッチ
     // するようにする。
-    assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);\s*\}/.test(block),
-        'the Silence Timeout must remain gated to only start when this response had no function_call (Tool round-trip window must never be counted as silence)');
+    //
+    // FAST TURN EMERGENCY HOTFIX 10（今回・仕様変更に伴う正当な更新。恣意的な
+    // 緩和ではない）: rate_limit_exceededで追加retryを送らない（送れない）
+    // ケースに限り、startSilenceTimerIfNeeded()の呼び出しをローカル安全網音声の
+    // 再生完了まで遅延させるdeferSilenceTimerForToolContinuationRateLimitガードを
+    // 新設した。この分岐自体（defer===trueの場合にpushTimelineEventのみ行い、
+    // startSilenceTimerIfNeeded()を呼ばない新しいelseブロック）とその独立した
+    // 正当性（無期限に遅延させないための安全網タイムアウト・onEndedコールバック
+    // 経由での確実な再開）は、専用の
+    // tests/test_fast_turn_hotfix10_rate_limit_fallback.jsで別途検証済み。
+    // 本テスト（既存のSTEP13回帰）が確認すべき不変条件は変わっていない
+    // （(1) !responseHasFunctionCallという外側のゲート自体は無変更、
+    // (2) 遅延されない通常時（defer===false）は従来と全く同じ
+    // startSilenceTimerIfNeeded(callGeneration, ...)が呼ばれる）ため、旧来の
+    // 「if直下に単独でstartSilenceTimerIfNeededがある」という厳密な形だけでなく、
+    // 新しいneted if/else構造（defer分岐のelse側にstartSilenceTimerIfNeededが
+    // ある）も許容するよう正規表現を更新した。
+    const legacyDirectForm = /if\s*\(!responseHasFunctionCall\)\s*\{\s*startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);\s*\}/.test(block);
+    const newDeferredForm = /if\s*\(!responseHasFunctionCall\)\s*\{\s*if\s*\(deferSilenceTimerForToolContinuationRateLimit\)\s*\{[\s\S]{0,300}?\}\s*else\s*\{\s*startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);\s*\}\s*\}/.test(block);
+    assert.ok(legacyDirectForm || newDeferredForm,
+        'the Silence Timeout must remain gated to only start when this response had no function_call (Tool round-trip window must never be counted as silence); FAST TURN EMERGENCY HOTFIX 10 legitimately added a further defer-until-fallback-audio-ends condition inside that same gate, which the new-form pattern above accounts for');
 });
 
 await test('M: FAST TURN 3.6B/STEP17重複防止) create_reservationが同一call_idで2回呼ばれても、実際のTool実行は1回だけに保たれる（二重予約防止の既存動作を明示的に確認）', async () => {

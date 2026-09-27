@@ -438,6 +438,12 @@ test('AC: classify_intent skips the automatic tool-continuation response.create,
     let sendResponseCreateCallCount = 0;
     const timelineEvents = [];
     const baseCtx = {
+        // FAST TURN EMERGENCY HOTFIX 10（今回追加）: 抽出したスニペットの
+        // 「他Tool」else分岐に、performance.now()を読むtoolContinuationResponseCreateSentAt
+        // 記録行が追加されたため、vmサンドボックスにもperformanceを提供する
+        // 必要が生じた（挙動自体はarmToolContinuationResponseWatchdog等と同じ
+        // 診断専用の1行で、classify_intentのスキップ判定ロジックには無関係）。
+        performance: { now: () => Date.now() },
         pushTimelineEvent: (t) => { timelineEvents.push(t); },
         pushToolContinuationTrace: () => {},
         armToolContinuationResponseWatchdog: () => {},
@@ -448,6 +454,10 @@ test('AC: classify_intent skips the automatic tool-continuation response.create,
         // スニペットが代入する変数を、宣言ではなく通常のグローバルプロパティとして
         // 事前に用意しておく（上のCONTINUATION_SKIP_SNIPPET_SRCのコメント参照）。
         toolContinuationResponseCreateSent: undefined,
+        // FAST TURN EMERGENCY HOTFIX 10（今回追加）: 同上の理由で、こちらも
+        // 事前にプロパティとして用意する（classify_intent分岐では代入されない、
+        // 「他Tool」分岐でのみperformance.now()が代入される）。
+        toolContinuationResponseCreateSentAt: null,
     };
 
     // classify_intent: sendResponseCreateは呼ばれないはず（意図的スキップ）。
