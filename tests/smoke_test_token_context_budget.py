@@ -141,7 +141,29 @@ import httpx
 # 残る大型セクション（HUMAN_HANDOFF/BOOKING_SAFETY/TIME_AMBIGUITY/
 # INTENT_CLASSIFICATION）はHOTFIX 8 Phase 2の後続ステップで段階的に
 # 圧縮予定（詳細はFAST TURN HOTFIX 8 Phase 2の最終報告を参照）。
-BASELINE_INSTRUCTIONS_CHARS = 21337
+#
+# FAST TURN HOTFIX 8 PHASE 2更新（2026-09-27、Step 1の次のコミット、
+# Step 2: _HUMAN_HANDOFF_TEMPLATE圧縮）: 最小構成の店舗でinstructions中
+# 14.1%（3330文字）を占めていた_HUMAN_HANDOFF_TEMPLATEを圧縮した。
+# この節は「折り返し確定/未確定時の言い回し」「『いつ電話が来ますか』への
+# 定型応答」「保証できない表現の禁止リスト」等、お客様に直接読み上げる
+# 台本に近い一言一句が複数の契約テストで文字通り検証されているため、
+# それらの顧客向けフレーズ自体は一切パラフレーズせず、重複する接続詞・
+# 前置きの説明文・電話番号読み上げ手順の中の既存ルール（Fast Reservation
+# Flow／create_reservationの電話番号確認ルール）との重複説明のみを圧縮
+# した（削減率がStep 1より小さいのは、圧縮対象の大半が顧客向け台本の
+# 文言そのものではなく説明文だったため）。
+# 安全性はtests/smoke_test_human_handoff_wording.py（A〜P全項目）、
+# tests/smoke_test_relative_date_conversion.py、
+# tests/smoke_test_short_choice_and_hours_callback.pyの既存アサーションが
+# 一切の変更なしで全項目PASSすることを確認済み（顧客向け台本フレーズを
+# 一言一句保持したため、テスト自体の書き換えは不要だった）。
+# 実測: _HUMAN_HANDOFF_TEMPLATE 3330→2791文字（-539文字、-16.2%）。
+# instructions全体（最小構成の新規登録店舗）21337→20798文字
+# （-539文字、-2.5%）。tools schemaは変更なし（14277文字のまま）。
+# 残るBOOKING_SAFETY/TIME_AMBIGUITY/INTENT_CLASSIFICATIONはHOTFIX 8
+# Phase 2の後続ステップで段階的に圧縮予定。
+BASELINE_INSTRUCTIONS_CHARS = 20798
 BASELINE_TOOLS_JSON_CHARS = 14277
 ALLOWED_GROWTH_RATIO = 1.10  # 10%までの増加は許容し、それを超えたら気づけるようにする
 
