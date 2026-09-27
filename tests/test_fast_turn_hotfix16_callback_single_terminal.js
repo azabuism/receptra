@@ -236,7 +236,13 @@ test('B) バックエンド契約: 手順3は、必要情報が揃った後に�
     const s3 = t.slice(t.indexOf('3. 上記の必要な情報がすべて揃ったら'), t.indexOf('4. request_callback の結果'));
     assert.ok(s3.includes('確認します'), 'must explicitly name the forbidden narration phrase to guard against it');
     assert.ok(s3.includes('少々お待ちください'));
-    assert.ok(s3.includes('実況する発話は一切せずに'));
+    // FAST TURN HOTFIX 19（今回更新）: 手順3の文言に「担当者から折り返し
+    // しますね」等、お客様の「はい」を待つ発話の禁止を追記したことに伴い、
+    // 元の「実況する発話は一切せずに」という一文が「実況したり、お客様の
+    // 「はい」等の返事を待つ発話は一切せずに」へ変わった（意味は保持・
+    // 拡張のみ）。この意図的な文言変更に合わせてアサーションを更新する。
+    assert.ok(s3.includes('実況したり'));
+    assert.ok(s3.includes('返事を待つ発話は一切せずに'));
     assert.ok(s3.includes('内部処理として扱ってください'));
 });
 

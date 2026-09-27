@@ -193,19 +193,29 @@ test('D2) [手順1: 既に確定している場合の再確認禁止を明記] _
     const t = getHandoffTemplateBody();
     const step1 = t.slice(t.indexOf('## 折り返し対応の進め方'), t.indexOf('2. 折り返しに必要な最小限の情報'));
     assert.ok(step1.includes('折り返しのご連絡をご希望ですか'));
-    assert.ok(step1.includes('改めて確認し直すことは絶対にしないでください'));
+    // FAST TURN HOTFIX 19（今回更新）: 「担当者から折り返ししますね」という
+    // NG例文と「同意を求め直したりする」という禁止を追記したことに伴い、
+    // 元の「改めて確認し直すことは絶対にしないでください」が「改めて確認し
+    // 直したり、同意（「はい」等の返事）を求め直したりすることは絶対に
+    // しないでください」へ変わった（意味は保持・拡張のみ）。
+    assert.ok(step1.includes('改めて確認し直したり'));
+    assert.ok(step1.includes('求め直したりすることは絶対にしないでください'));
 });
 
 test('E) [request_callbackツール自体: 再確認禁止を明記] request_callbackツールのdescriptionは、既に折り返し希望が確定している場合に改めて確認しないことを明示している', () => {
     const desc = getRequestCallbackToolDescription();
     assert.ok(desc.includes('折り返しのご連絡をご希望ですか'));
-    assert.ok(desc.includes('改めて確認し直すことは絶対にしないで'));
+    // FAST TURN HOTFIX 19（今回更新）: 手順1と同じ理由で文言が拡張された。
+    assert.ok(desc.includes('改めて確認し'));
+    assert.ok(desc.includes('直したり、同意を求め直したりすることは絶対にしないでください'));
 });
 
 test('F) [process narration矛盾の解消] request_callbackツールのdescriptionから、処理中ナレーションを促す古い文言（「確認いたしますので少々お待ちください」）が削除されている（HOTFIX16の「内部処理として扱う」方針との矛盾を解消）', () => {
     const desc = getRequestCallbackToolDescription();
     assert.ok(!desc.includes('確認いたしますので少々お待ちください'), 'the stale narration-encouraging phrase must be removed to avoid contradicting the HOTFIX16 no-narration policy');
-    assert.ok(desc.includes('実況する発話は'), 'a no-narration instruction should be present instead');
+    // FAST TURN HOTFIX 19（今回更新）: 「実況する発話は」→「実況したり、
+    // お客様の「はい」等の返事を待ったりする発話は」へ文言が拡張された。
+    assert.ok(desc.includes('実況したり'), 'a no-narration instruction should be present instead');
 });
 
 test('G) [回帰: 手順5(5-1/5-2/5-3)・6は無変更] smoke_test_human_handoff_wording.pyが検証する成功/失敗クロージングの厳密な文言は変更されていない', () => {
@@ -221,10 +231,15 @@ test('H) [回帰: 情報収集ロジック(手順2)は無変更] 手順2の情�
     assert.ok(step2.includes('お問い合わせ内容'));
 });
 
-test('I) [回帰: HOTFIX16の内部処理化(手順3)は無変更] 手順3の「処理中ナレーションを一切せずrequest_callbackを内部処理として呼び出す」指示は残っている', () => {
+test('I) [回帰: HOTFIX16の内部処理化(手順3)は維持] 手順3の「処理中ナレーションを一切せずrequest_callbackを内部処理として呼び出す」指示は残っている', () => {
     const t = getHandoffTemplateBody();
     const step3 = t.slice(t.indexOf('3. 上記の必要な情報がすべて揃ったら'), t.indexOf('4. request_callback の結果'));
-    assert.ok(step3.includes('実況する発話は一切せずに'));
+    // FAST TURN HOTFIX 19（今回更新）: 「実況する発話は一切せずに」が
+    // 「実況したり、お客様の「はい」等の返事を待つ発話は一切せずに」へ
+    // 拡張された（意味は保持。「はい」待ちの禁止が追加されただけ）ため、
+    // アサーションを新しい文言に合わせて更新する。
+    assert.ok(step3.includes('実況したり'));
+    assert.ok(step3.includes('返事を待つ発話は一切せずに'));
     assert.ok(step3.includes('内部処理として扱ってください'));
 });
 
