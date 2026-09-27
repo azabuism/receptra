@@ -229,8 +229,19 @@ import httpx
 # （-307文字、-1.6%）。tools schemaは変更なし（14277文字のまま）。
 # これでHOTFIX 8 Phase 2が定めた4セクション
 # （HUMAN_HANDOFF→BOOKING_SAFETY→TIME_AMBIGUITY→INTENT_CLASSIFICATION）
-# の段階的圧縮が全て完了。累計: instructions全体 23015→19320文字
-# （-3695文字、-16.1%。Phase 1のtools schema圧縮とは別枠）。
+# の段階的圧縮が全て完了。累計（Step 1着手前の実測23549文字を起点。上の
+# Step 1コメントの「instructions全体23549→21337文字」参照）: instructions
+# 全体 23549→19320文字（-4229文字、-18.0%。Phase 1のtools schema圧縮とは
+# 別枠）。
+# 【訂正・2026-09-27、Step 5の次のコミット】上記の累計値を最初に書いた際、
+# 起点として実際の文字数23549ではなく、Phase 1のtool schema圧縮後に実機で
+# 観測されたinput_tokens値「23015」（トークン数であり文字数ではない、
+# 上のStep 1コメント冒頭を参照）を誤って使用し、「23015→19320文字
+# （-3695文字、-16.1%）」と記載していた。これは文字数とトークン数という
+# 異なる単位の実測値を取り違えたミスであり、推測ではなく実測に基づいて
+# 修正した（BASELINE_INSTRUCTIONS_CHARSの値・各Stepごとの実測値・テストの
+# 合否判定には一切影響なし。この訂正はコメントの記述ミスのみを直す
+# ドキュメント修正）。
 BASELINE_INSTRUCTIONS_CHARS = 19320
 BASELINE_TOOLS_JSON_CHARS = 14277
 ALLOWED_GROWTH_RATIO = 1.10  # 10%までの増加は許容し、それを超えたら気づけるようにする
