@@ -85,6 +85,12 @@ const ANSWER_WINDOW_LIMITS_MS = eval('(' + ANSWER_WINDOW_LIMITS_MS_EXPR + ')');
 // へ注入する（抽出しないとReferenceErrorになる。挙動には無関係・既存の
 // SHORT_CHOICE判定ロジック自体は本HOTFIXで一切変更していない）。
 const AI_WORKING_NARRATION_ONLY_RE_EXPR = extractConstExpr(SRC, 'AI_WORKING_NARRATION_ONLY_RE');
+// FAST TURN EMERGENCY HOTFIX 13（今回追加）: classifyExpectedAnswerType()が
+// 呼び出し末尾で参照するCOMPLETE_QUESTION_ENDING_RE（関数の外側で宣言される
+// 定数）を、AI_WORKING_NARRATION_ONLY_REと同じ方法でソースから抽出して
+// サンドボックスへ注入する（抽出しないとReferenceErrorになる。挙動には
+// 無関係・既存のSHORT_CHOICE判定ロジック自体は本HOTFIXで一切変更していない）。
+const COMPLETE_QUESTION_ENDING_RE_EXPR = extractConstExpr(SRC, 'COMPLETE_QUESTION_ENDING_RE');
 
 assert.strictEqual(ANSWER_WINDOW_LIMITS_MS.SHORT_CHOICE, 3000, 'SHORT_CHOICE limit should be 3000ms');
 assert.strictEqual(ANSWER_WINDOW_LIMITS_MS.YES_NO, 3000, 'YES_NO limit should now be 3000ms (unified with SHORT_CHOICE)');
@@ -151,6 +157,14 @@ function buildSandbox(overrides) {
         // 未定義だとReferenceErrorになるため用意する（観測用の付随フラグで、
         // SHORT_CHOICE判定ロジック自体には影響しない）。
         lastResponseTranscriptWasProcessNarrationOnly: false,
+        // FAST TURN EMERGENCY HOTFIX 13（今回追加）: classifyExpectedAnswerType()の
+        // 末尾でINCOMPLETE AI TURN判定結果を書き込む先。このテストの対象では
+        // ないが、未定義だとReferenceErrorになるため用意する（観測用の付随
+        // フラグで、SHORT_CHOICE判定ロジック自体には影響しない）。
+        lastResponseTranscriptWasIncompleteAiTurn: false,
+        // classify()がgreeting応答かどうかを判定するために参照する。この
+        // テストでは通話冒頭の第一声応答を扱わないため常に'unknown'でよい。
+        lastResponseReasonCategoryForDiag: 'unknown',
     }, overrides || {});
     Object.assign(context, state);
     context.setTimeout = (fn, delay) => {
@@ -164,6 +178,7 @@ function buildSandbox(overrides) {
     vm.runInContext(
         'const ANSWER_WINDOW_LIMITS_MS = ' + ANSWER_WINDOW_LIMITS_MS_EXPR + ';\n' +
         'const AI_WORKING_NARRATION_ONLY_RE = ' + AI_WORKING_NARRATION_ONLY_RE_EXPR + ';\n' +
+        'const COMPLETE_QUESTION_ENDING_RE = ' + COMPLETE_QUESTION_ENDING_RE_EXPR + ';\n' +
         Object.values(FN).join('\n\n'),
         context
     );

@@ -79,6 +79,20 @@ const FN = {
     armPhaseTransitionAfterResponse: extractFunctionSource(SRC, 'armPhaseTransitionAfterResponse'),
 };
 
+function extractConstExpr(src, name) {
+    const re = new RegExp('const\\s+' + name + '\\s*=\\s*([^;]+);');
+    const m = src.match(re);
+    if (!m) throw new Error('const not found in source: ' + name);
+    return m[1].trim();
+}
+
+// FAST TURN EMERGENCY HOTFIX 13（今回追加）: classifyExpectedAnswerType()が
+// 呼び出し末尾で参照するCOMPLETE_QUESTION_ENDING_RE（関数の外側で宣言される
+// 定数）をソースから抽出してサンドボックスへ注入する（抽出しないと
+// ReferenceErrorになる。挙動には無関係・NAME-FIRST FLOW診断ロジック自体は
+// 一切変更していない）。
+const COMPLETE_QUESTION_ENDING_RE_EXPR = extractConstExpr(SRC, 'COMPLETE_QUESTION_ENDING_RE');
+
 function buildSandbox(overrides) {
     const events = [];
     const context = {
@@ -108,10 +122,21 @@ function buildSandbox(overrides) {
         currentRealtimePhase: 'name',
         pendingPhaseTransitionTarget: null,
         phaseTransitionInProgress: false,
+        // FAST TURN EMERGENCY HOTFIX 12/13（今回追加）: classifyExpectedAnswerType()の
+        // 末尾でAI_WORKING/INCOMPLETE AI TURN判定結果を書き込む先・greeting判定に
+        // 使う値。このファイルの対象ではないが、未定義だとReferenceErrorになるため
+        // 用意する（観測用の付随フラグで、NAME-FIRST FLOW診断ロジックには影響しない）。
+        lastResponseTranscriptWasProcessNarrationOnly: false,
+        lastResponseTranscriptWasIncompleteAiTurn: false,
+        lastResponseReasonCategoryForDiag: 'unknown',
     }, overrides || {});
     Object.assign(context, state);
     vm.createContext(context);
-    vm.runInContext(Object.values(FN).join('\n\n'), context);
+    vm.runInContext(
+        'const COMPLETE_QUESTION_ENDING_RE = ' + COMPLETE_QUESTION_ENDING_RE_EXPR + ';\n' +
+        Object.values(FN).join('\n\n'),
+        context
+    );
     return { ctx: context, events };
 }
 

@@ -82,6 +82,12 @@ const FN = {
 
 const QUICK_ANSWER_COMMIT_ERROR_CORRELATION_MS_EXPR = extractConstExpr(SRC, 'QUICK_ANSWER_COMMIT_ERROR_CORRELATION_MS');
 const QUICK_ANSWER_COMMIT_ERROR_CORRELATION_MS = eval('(' + QUICK_ANSWER_COMMIT_ERROR_CORRELATION_MS_EXPR + ')');
+// FAST TURN EMERGENCY HOTFIX 13（今回追加）: classifyExpectedAnswerType()が
+// 呼び出し末尾で参照するCOMPLETE_QUESTION_ENDING_RE（関数の外側で宣言される
+// 定数）を、他の定数と同じ方法でソースから抽出してサンドボックスへ注入する
+// （抽出しないとReferenceErrorになる。挙動には無関係・このテストの検証対象
+// ロジック自体は一切変更していない）。
+const COMPLETE_QUESTION_ENDING_RE_EXPR = extractConstExpr(SRC, 'COMPLETE_QUESTION_ENDING_RE');
 
 // 実際のhandleDataChannelEvent内の 'error' ハンドラのうち、SHORT_ANSWER
 // Forced Commit相関ロジックのifブロックだけを抜き出す。このifは
@@ -125,11 +131,19 @@ function buildSandbox(overrides) {
         debugMode: false,
         shopId: 'normal-production-shop-id-xxxx',
         dc: { readyState: 'open', sent: [], send(payload) { this.sent.push(JSON.parse(payload)); } },
+        // FAST TURN EMERGENCY HOTFIX 12/13（今回追加）: classifyExpectedAnswerType()の
+        // 末尾でAI_WORKING/INCOMPLETE AI TURN判定結果を書き込む先・greeting判定に
+        // 使う値。このテストの対象ではないが、未定義だとReferenceErrorになるため
+        // 用意する（観測用の付随フラグで、このテストの検証対象ロジックには影響しない）。
+        lastResponseTranscriptWasProcessNarrationOnly: false,
+        lastResponseTranscriptWasIncompleteAiTurn: false,
+        lastResponseReasonCategoryForDiag: 'unknown',
     }, overrides || {});
     Object.assign(context, state);
     vm.createContext(context);
     vm.runInContext(
         'const QUICK_ANSWER_COMMIT_ERROR_CORRELATION_MS = ' + QUICK_ANSWER_COMMIT_ERROR_CORRELATION_MS_EXPR + ';\n' +
+        'const COMPLETE_QUESTION_ENDING_RE = ' + COMPLETE_QUESTION_ENDING_RE_EXPR + ';\n' +
         Object.values(FN).join('\n\n') + '\n\n' +
         // 実際のerrorハンドラのifブロックを、msgを受け取る単独関数として
         // ラップする（実ソースをそのまま実行。再実装ではない）。

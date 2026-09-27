@@ -104,6 +104,21 @@ function buildClassifySandbox(overrides) {
             // eslint-disable-next-line no-eval
             return eval(m[1]);
         })(),
+        // FAST TURN EMERGENCY HOTFIX 13（今回追加）: COMPLETE_QUESTION_ENDING_REも
+        // 同じ理由（関数の外側で宣言される定数）で、同じ方法でソースから抽出して
+        // 用意する必要がある（抽出しないとReferenceErrorになる）。
+        COMPLETE_QUESTION_ENDING_RE: (() => {
+            const m = SRC.match(/const COMPLETE_QUESTION_ENDING_RE = (\/.*\/);/);
+            assert.ok(m, 'COMPLETE_QUESTION_ENDING_RE constant not found in source');
+            // eslint-disable-next-line no-eval
+            return eval(m[1]);
+        })(),
+        lastResponseTranscriptWasIncompleteAiTurn: false,
+        // classify()がgreeting応答かどうかを判定するために参照する。既存の
+        // HOTFIX12テスト項目はいずれも通話冒頭の第一声応答を扱わないため
+        // 'unknown'のままでよい（HOTFIX13の新規テストが別途'greeting'で
+        // 上書きして検証する）。
+        lastResponseReasonCategoryForDiag: 'unknown',
         pushTimelineEvent: (text) => { events.push(text); },
         // classify内部で参照される既存の周辺状態（挙動には使わないが
         // ReferenceErrorを避けるために必要な最小限のみ用意する）。
@@ -238,6 +253,11 @@ function buildGateContext(overrides) {
         lastResponseTranscriptWasProcessNarrationOnly: false,
         lastResponseReasonCategoryForDiag: 'normal_conversation',
         deferSilenceTimerForAiWorkingContinuation: false,
+        // FAST TURN EMERGENCY HOTFIX 13（今回追加）: GATE_SNIPPETが新しく参照する
+        // INCOMPLETE AI TURN側の状態。このHOTFIX12専用テストではデフォルトfalseの
+        // まま（HOTFIX13自身のテストファイルで別途trueにして検証する）。
+        lastResponseTranscriptWasIncompleteAiTurn: false,
+        deferSilenceTimerForIncompleteAiTurnContinuation: false,
         callGeneration: 1,
         pushTimelineEvent: (text) => { events.push(text); },
         console: { log: (line) => { logs.push(line); } },

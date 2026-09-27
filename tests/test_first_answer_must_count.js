@@ -101,7 +101,21 @@ test('STEP7/8結論の固定: classifyExpectedAnswerTypeで「何名様/何時�
     }
     const fnSrc = SRC.slice(idx, i);
     const vm = require('vm');
-    const ctx = { pushTimelineEvent: () => {}, expectedAnswerType: 'NONE', nameAnswerGeneration: 0, nameTurnNormalCompletionSeen: false, phoneAnswerGeneration: 0, phoneTurnNormalCompletionSeen: false, shortChoiceAnswerGeneration: 0, shortChoiceTurnNormalCompletionSeen: false, quickAnswerGeneration: 0, quickAnswerTurnNormalCompletionSeen: false };
+    // FAST TURN EMERGENCY HOTFIX 13（今回追加）: classifyExpectedAnswerType()が
+    // 呼び出し末尾で参照するCOMPLETE_QUESTION_ENDING_RE（関数の外側で宣言される
+    // 定数）と、greeting判定に使うlastResponseReasonCategoryForDiagを、他の
+    // テストファイルと同じ方法でソースから抽出/用意する（抽出しないと
+    // ReferenceErrorになる。挙動には無関係・このテストの検証対象ロジック
+    // 自体は一切変更していない）。
+    const completeQuestionEndingReMatch = SRC.match(/const COMPLETE_QUESTION_ENDING_RE = (\/.*\/);/);
+    if (!completeQuestionEndingReMatch) throw new Error('COMPLETE_QUESTION_ENDING_RE constant not found in source');
+    const ctx = {
+        pushTimelineEvent: () => {}, expectedAnswerType: 'NONE', nameAnswerGeneration: 0, nameTurnNormalCompletionSeen: false, phoneAnswerGeneration: 0, phoneTurnNormalCompletionSeen: false, shortChoiceAnswerGeneration: 0, shortChoiceTurnNormalCompletionSeen: false, quickAnswerGeneration: 0, quickAnswerTurnNormalCompletionSeen: false,
+        // eslint-disable-next-line no-eval
+        COMPLETE_QUESTION_ENDING_RE: eval(completeQuestionEndingReMatch[1]),
+        lastResponseTranscriptWasIncompleteAiTurn: false,
+        lastResponseReasonCategoryForDiag: 'unknown',
+    };
     vm.createContext(ctx);
     vm.runInContext(fnSrc, ctx);
     vm.runInContext("classifyExpectedAnswerType('何名様ですか？')", ctx);

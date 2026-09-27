@@ -80,6 +80,13 @@ const nameCommitPocEnabledExpr = extractConstExpr(SRC, 'nameCommitPocEnabled');
 const takeoverPocEnabledExpr = extractConstExpr(SRC, 'takeoverPocEnabled');
 const ANSWER_WINDOW_LIMITS_MS_EXPR = extractConstExpr(SRC, 'ANSWER_WINDOW_LIMITS_MS');
 const TAKEOVER_TIMER_MS_EXPR = extractConstExpr(SRC, 'TAKEOVER_TIMER_MS');
+// FAST TURN EMERGENCY HOTFIX 12/13（今回追加）: classifyExpectedAnswerType()が
+// 呼び出し末尾で参照するAI_WORKING_NARRATION_ONLY_RE / COMPLETE_QUESTION_
+// ENDING_RE（関数の外側で宣言される定数）を、他の定数と同じ方法でソースから
+// 抽出してサンドボックスへ注入する（抽出しないとReferenceErrorになる。
+// 挙動には無関係・このPoCの判定ロジック自体は一切変更していない）。
+const AI_WORKING_NARRATION_ONLY_RE_EXPR = extractConstExpr(SRC, 'AI_WORKING_NARRATION_ONLY_RE');
+const COMPLETE_QUESTION_ENDING_RE_EXPR = extractConstExpr(SRC, 'COMPLETE_QUESTION_ENDING_RE');
 
 assert.strictEqual(NAME_COMMIT_POC_SHOP_ID, '65932cb5-97db-460e-b9d6-0471fce23d88');
 
@@ -146,6 +153,13 @@ function buildSandbox(overrides) {
 
         // ---- datachannel モック ----
         dc: { readyState: 'open', sent: [], send(payload) { this.sent.push(JSON.parse(payload)); } },
+        // FAST TURN EMERGENCY HOTFIX 12/13（今回追加）: classifyExpectedAnswerType()
+        // の末尾でAI_WORKING/INCOMPLETE AI TURN判定結果を書き込む先。このPoCの
+        // 対象ではないが、未定義だとReferenceErrorになるため用意する（観測用の
+        // 付随フラグで、このPoCの判定ロジック自体には影響しない）。
+        lastResponseTranscriptWasProcessNarrationOnly: false,
+        lastResponseTranscriptWasIncompleteAiTurn: false,
+        lastResponseReasonCategoryForDiag: 'unknown',
     }, overrides || {});
 
     const sandbox = {
@@ -170,7 +184,9 @@ function buildSandbox(overrides) {
         'var nameCommitPocEnabled = ' + nameCommitPocEnabledExpr + ';\n' +
         'var takeoverPocEnabled = ' + takeoverPocEnabledExpr + ';\n' +
         'const ANSWER_WINDOW_LIMITS_MS = ' + ANSWER_WINDOW_LIMITS_MS_EXPR + ';\n' +
-        'const TAKEOVER_TIMER_MS = ' + TAKEOVER_TIMER_MS_EXPR + ';\n',
+        'const TAKEOVER_TIMER_MS = ' + TAKEOVER_TIMER_MS_EXPR + ';\n' +
+        'const AI_WORKING_NARRATION_ONLY_RE = ' + AI_WORKING_NARRATION_ONLY_RE_EXPR + ';\n' +
+        'const COMPLETE_QUESTION_ENDING_RE = ' + COMPLETE_QUESTION_ENDING_RE_EXPR + ';\n',
         sandbox
     );
 
@@ -220,6 +236,10 @@ function buildSandbox2(overrides) {
         debugMode: false,
         shopId: 'normal-shop-id-xxxx',
         dc: { readyState: 'open', sent: [], send(payload) { this.sent.push(JSON.parse(payload)); } },
+        // FAST TURN EMERGENCY HOTFIX 12/13（今回追加。理由は上のbuildSandboxと同じ）
+        lastResponseTranscriptWasProcessNarrationOnly: false,
+        lastResponseTranscriptWasIncompleteAiTurn: false,
+        lastResponseReasonCategoryForDiag: 'unknown',
     }, overrides || {});
     Object.assign(context, state);
     context.setTimeout = (fn, delay) => {
@@ -236,6 +256,8 @@ function buildSandbox2(overrides) {
         'var takeoverPocEnabled = ' + takeoverPocEnabledExpr + ';\n' +
         'const ANSWER_WINDOW_LIMITS_MS = ' + ANSWER_WINDOW_LIMITS_MS_EXPR + ';\n' +
         'const TAKEOVER_TIMER_MS = ' + TAKEOVER_TIMER_MS_EXPR + ';\n' +
+        'const AI_WORKING_NARRATION_ONLY_RE = ' + AI_WORKING_NARRATION_ONLY_RE_EXPR + ';\n' +
+        'const COMPLETE_QUESTION_ENDING_RE = ' + COMPLETE_QUESTION_ENDING_RE_EXPR + ';\n' +
         Object.values(FN).join('\n\n'),
         context
     );

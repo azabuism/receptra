@@ -363,7 +363,15 @@ await test('Q: FAST TURN 3.6B) T10(CONTINUATION_RESPONSE_DONE)はfunction_call�
     // setTimeout、関連コメント込み）が追加され、T10マッチ開始位置の実測
     // オフセットが24471文字まで伸びたため、ウィンドウを22500→25500へ再拡張
     // （測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 25500);
+    // さらにFAST TURN EMERGENCY HOTFIX 13（今回追加）で、同じsilence timeout
+    // ゲート内に、AIが話題を切り出しただけで質問を言い切らずに終えた場合
+    // （incomplete lead-in）向けの、AI_WORKING継続と対称なもう1つのelse-if
+    // 分岐（継続response.create＋ループ防止＋安全網setTimeout、関連コメント
+    // 込み）が追加され、T10マッチ開始位置の実測オフセットが27545文字・
+    // トレース終了確認（toolContinuationTraceActive = false;まで）の終端が
+    // 27664文字まで伸びたため、ウィンドウを25500→30500へ再拡張（測定値+
+    // 余裕分）。
+    const block = SRC.slice(idx, idx + 30500);
     assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*pushToolContinuationTrace\('T10_CONTINUATION_RESPONSE_DONE/.test(block),
         'T10 must only be recorded for the final response.done (no function_call), never for the intermediate function-call-only response.done');
     assert.ok(/T10_CONTINUATION_RESPONSE_DONE[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
@@ -519,7 +527,12 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     // AI_WORKING継続分岐（新しいelse-if＋ループ防止＋安全網setTimeout）が
     // 追加されたことで、Qテストと同じくガード全体を含めるにはウィンドウを
     // 22500→25500へ再拡張する必要がある（測定値+余裕分。Qテストと揃えた）。
-    const block = SRC.slice(idx, idx + 25500);
+    // さらにFAST TURN EMERGENCY HOTFIX 13（今回追加）で、同じif/else-ifチェーン
+    // 内にincomplete lead-in継続分岐（もう1つのelse-if＋ループ防止＋安全網
+    // setTimeout）が追加され、最終else節のstartSilenceTimerIfNeeded呼び出し
+    // 位置の実測オフセットが27078文字まで伸びたため、Qテストと同じくウィンドウを
+    // 25500→30500へ再拡張する（測定値+余裕分。Qテストと揃えた）。
+    const block = SRC.slice(idx, idx + 30500);
     // PHASE O5.6診断: startSilenceTimerIfNeeded()に診断専用の第2引数
     // （armReasonForDiag、例: 'response_done_no_function_call'）が追加された。
     // ガード条件(!responseHasFunctionCall)自体・呼び出し自体（第1引数は
@@ -563,8 +576,23 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     const legacyDirectForm = /if\s*\(!responseHasFunctionCall\)\s*\{\s*startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);\s*\}/.test(block);
     const newDeferredForm = /if\s*\(!responseHasFunctionCall\)\s*\{\s*if\s*\(deferSilenceTimerForToolContinuationRateLimit\)\s*\{[\s\S]{0,300}?\}\s*else\s*\{\s*startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);\s*\}\s*\}/.test(block);
     const hotfix12TripleForm = /if\s*\(!responseHasFunctionCall\)\s*\{\s*if\s*\(deferSilenceTimerForToolContinuationRateLimit\)\s*\{[\s\S]{0,400}?\}\s*else\s+if\s*\([\s\S]{0,400}?\)\s*\{[\s\S]{0,4000}?\}\s*else\s*\{[\s\S]{0,800}?startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);[\s\S]{0,200}?\}\s*\}/.test(block);
-    assert.ok(legacyDirectForm || newDeferredForm || hotfix12TripleForm,
-        'the Silence Timeout must remain gated to only start when this response had no function_call (Tool round-trip window must never be counted as silence); FAST TURN EMERGENCY HOTFIX 10/12 legitimately added further conditions inside that same gate, which the new-form patterns above account for, while the final fallback must still call startSilenceTimerIfNeeded(callGeneration, ...) exactly as before');
+    // FAST TURN EMERGENCY HOTFIX 13（今回追加）: HOTFIX13が、HOTFIX12の
+    // AI_WORKING継続分岐に続けて、もう1つのelse-if分岐（incomplete lead-in
+    // 継続）を同じif/else-ifチェーンに追加したことで、チェーンの形が
+    // 「if → else if → else」（HOTFIX12まで）から「if → else if → else if →
+    // else」（HOTFIX13以降）へ変わった。単発の追加パターンを都度足していく
+    // のではなく、「最初のdeferSilenceTimerForToolContinuationRateLimit分岐の
+    // 後に、任意個数（1個以上）のelse-if分岐が続き、最終的に必ずelse節で
+    // startSilenceTimerIfNeeded(callGeneration, ...)が呼ばれる」という、より
+    // 一般化した形を許容する正規表現に更新する。これはHOTFIX12までに
+    // 検証済みの安全契約（(1) 外側の!responseHasFunctionCallゲートは無変更、
+    // (2) 最終フォールバックとして必ずstartSilenceTimerIfNeededが呼ばれる）を
+    // 一切緩めておらず、その間に挟まる正当なelse-if分岐の個数を1個から
+    // 可変長へ一般化しただけである（将来また1個増えても、都度このテストを
+    // 壊さずに済む設計）。
+    const hotfix13FlexibleChainForm = /if\s*\(!responseHasFunctionCall\)\s*\{\s*if\s*\(deferSilenceTimerForToolContinuationRateLimit\)\s*\{[\s\S]{0,400}?\}\s*(?:else\s+if\s*\([\s\S]{0,400}?\)\s*\{[\s\S]{0,6000}?\}\s*){1,5}else\s*\{[\s\S]{0,2500}?startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);[\s\S]{0,400}?\}\s*\}/.test(block);
+    assert.ok(legacyDirectForm || newDeferredForm || hotfix12TripleForm || hotfix13FlexibleChainForm,
+        'the Silence Timeout must remain gated to only start when this response had no function_call (Tool round-trip window must never be counted as silence); FAST TURN EMERGENCY HOTFIX 10/12/13 legitimately added further conditions inside that same gate, which the new-form patterns above account for, while the final fallback must still call startSilenceTimerIfNeeded(callGeneration, ...) exactly as before');
 });
 
 await test('M: FAST TURN 3.6B/STEP17重複防止) create_reservationが同一call_idで2回呼ばれても、実際のTool実行は1回だけに保たれる（二重予約防止の既存動作を明示的に確認）', async () => {

@@ -1747,6 +1747,57 @@
             // VISIT_REASON/SHORT_ANSWER）と誤って重複判定しないよう、既存の
             // 優先順位チェーンが確定した後にのみ評価する。
             lastResponseTranscriptWasProcessNarrationOnly = (type === 'NONE') && AI_WORKING_NARRATION_ONLY_RE.test(t);
+            // FAST TURN EMERGENCY HOTFIX 13（今回追加・最重要）: 「AIが本当に
+            // ユーザーへ回答可能な質問を完了した場合だけUSER_WAITに入る」という
+            // 原則にもとづき、AI_WORKING（上記・HOTFIX12）とは別に、「話題は
+            // 切り出したが実際の質問を言い切らずに発話を終えてしまった」ケース
+            // （incomplete lead-in）を検出する。
+            //
+            // 実機証拠（推測ではない）:
+            //   CASE A: 「AI電話の佐藤です。」（名乗りのみで終わり、お名前を
+            //           尋ねない。この応答は通話冒頭の第一声=greeting応答）。
+            //   CASE B: 「続いてお電話番号の確認ですが…」（PHONEという語自体は
+            //           含むため既存優先順位どおりtype='PHONE'になるが、実際の
+            //           質問（「お電話番号をお願いします」等）までは言い切って
+            //           いない）。
+            //
+            // 単発フレーズのregexを積み上げるのではなく、既存のPHONE/NAME/
+            // YES_NO/SHORT_CHOICE/SHORT_ANSWER判定と同じ「発話の形だけを見る・
+            // 内容は保持しない」設計方針を踏襲し、「発話末尾が実際に回答可能な
+            // 質問/依頼の完了形（…ですか／…でしょうか／…ますか／…ください／
+            // …お願いします／…お願いいたします、で終わる）になっているか」
+            // だけを見る（COMPLETE_QUESTION_ENDING_REは既存テストコード内の
+            // 実在する質問フレーズを確認した上で設計。憶測ではない）。
+            //
+            // 判定は以下の2パターンのみ:
+            //   (a) 既に何らかの実質問キーワードを検出した(type!=='NONE')が、
+            //       発話が質問/依頼の完了形で終わっていない場合（CASE B相当。
+            //       「電話番号を確認します」のような予告文もここに含まれる）。
+            //   (b) この応答が通話冒頭の第一声（挨拶）応答
+            //       （lastResponseReasonCategoryForDiag==='greeting'）であり、
+            //       かつ本当の質問パターンに一切一致しなかった場合
+            //       （type==='NONE'。CASE A相当。お名前の質問パターンに一致
+            //       していれば type==='NAME' となりこの分岐には来ない）。
+            // AI_WORKING（narration）判定と排他にする（HOTFIX12の挙動・
+            // 既存テストのアサーションは一切変更しない。「電話番号を確認
+            // します」はtype='PHONE'・narration=false のまま変わらないが、
+            // このHOTFIX13判定では(a)によりincomplete扱いとなる＝narration
+            // 経由ではなくincomplete_ai_turn経由で同じ「ユーザーの相槌を待たず
+            // 自動継続する」結果に至る。両フラグが同時にtrueになることはない）。
+            if (lastResponseTranscriptWasProcessNarrationOnly) {
+                lastResponseTranscriptWasIncompleteAiTurn = false;
+            } else if (type !== 'NONE') {
+                lastResponseTranscriptWasIncompleteAiTurn = !COMPLETE_QUESTION_ENDING_RE.test(t);
+            } else if (lastResponseReasonCategoryForDiag === 'greeting') {
+                lastResponseTranscriptWasIncompleteAiTurn = true;
+            } else {
+                lastResponseTranscriptWasIncompleteAiTurn = false;
+            }
+            // PII-free診断マーカー（ユーザー指示12）: transcript本文は一切含めず、
+            // 分類結果の型文字列とincomplete判定結果のみを記録する。
+            pushTimelineEvent('AI_TURN_CLASSIFIED (type=' + type
+                + ', narrationOnly=' + lastResponseTranscriptWasProcessNarrationOnly
+                + ', incompleteAiTurn=' + lastResponseTranscriptWasIncompleteAiTurn + ')');
             // PHASE O5.9.1（ユーザー指示8）: classifyExpectedAnswerType()が
             // 呼ばれるたび（＝AIの発話が1回完了するたび）に、その分類結果を
             // 無条件で記録する診断専用イベント。既存のEXPECTED_ANSWER_SETは
@@ -2489,6 +2540,36 @@
         // ToolContinuationRateLimitと全く同じ設計方針）。
         let deferSilenceTimerForAiWorkingContinuation = false;
 
+        // FAST TURN EMERGENCY HOTFIX 13（今回追加・最重要）: INCOMPLETE AI TURN
+        // （不完全なAIターン）の検出・自動継続。
+        //
+        // 実機証拠: HOTFIX12でAI_WORKING（処理宣言のみ）は自動継続するように
+        // なったが、それとは別に「AIが次の質問へ進む途中の発話だけをして
+        // responseを終了してしまう」ケースが実機で観測された（CASE A:
+        // 「AI電話の佐藤です。」で名乗りだけ終わる／CASE B: 「続いてお電話
+        // 番号の確認ですが…」で話題を切り出しただけで終わる）。いずれも
+        // ユーザーは何を答えればよいか分からず沈黙し、silence timer
+        // （約30秒後にsilence_warning）が誤って発火する（実機ログの
+        // input_tokens≈6,426/6,480がその証拠）。
+        //
+        // COMPLETE_QUESTION_ENDING_RE: 「発話の末尾が、実際に回答可能な質問/
+        // 依頼の完了形になっているか」だけを見る（内容は一切見ない・保持
+        // しない）。既存app/services/realtime_voice_ai.py・既存テストコード内の
+        // 実在する質問フレーズ（「お願いします」「お願いいたします」「教えて
+        // ください」「〜ですか」「〜でしょうか」「〜ますか」等）を確認した
+        // 上で設計しており、新しい判定基準を推測で作ってはいない。
+        const COMPLETE_QUESTION_ENDING_RE = /(ですか|でしょうか|ますか|ください|お願いします|お願いいたします)[。！!？?、…\s]*$/;
+        // classifyExpectedAnswerType()がAIの発話完了ごとに更新する。
+        // response.createdの時点で必ずfalseへリセットする（前の応答の判定を
+        // 次の応答へ持ち越さない。既存のnarration/responseHasFunctionCallと
+        // 同じリセット規律）。
+        let lastResponseTranscriptWasIncompleteAiTurn = false;
+        // INCOMPLETE AI TURN継続のためのresponse.create送信後、その継続応答が
+        // 実際に届く（response.created）まで、または安全網タイムアウトまで、
+        // silence timerの開始を見送るためのフラグ（deferSilenceTimerFor
+        // AiWorkingContinuationと全く同じ設計方針）。
+        let deferSilenceTimerForIncompleteAiTurnContinuation = false;
+
         // ===== PHASE O5.6: Silence Timeout Diagnostics（診断専用・挙動は一切変更しない） =====
         //
         // 目的: 実機症状「2時でお願いします」→約30秒沈黙→AI「何名様ですか？」→
@@ -2552,6 +2633,11 @@
             // 「継続を送った結果の応答が再びAI_WORKINGだった」場合に、
             // 無限ループを防ぐため2回目の継続は送らない判断に使う。
             if (rawReason === 'ai_working_continuation') return 'ai_working_continuation';
+            // FAST TURN EMERGENCY HOTFIX 13（今回追加）: INCOMPLETE AI TURN継続
+            // （AIが話題を切り出しただけで質問を言い切らずに応答を終えた際、
+            // ユーザーの追加発話を待たず1回だけ送る継続response.create）を、
+            // ai_working_continuationと同じ理由で専用カテゴリとして識別する。
+            if (rawReason === 'incomplete_ai_turn_continuation') return 'incomplete_ai_turn_continuation';
             return 'unknown';
         }
 
@@ -5759,6 +5845,9 @@
                 // 実際の判定はこの新しい応答のresponse.output_audio_transcript.done
                 // （classifyExpectedAnswerType）で改めて行われる。
                 lastResponseTranscriptWasProcessNarrationOnly = false;
+                // FAST TURN EMERGENCY HOTFIX 13（今回追加）: 同じ理由で
+                // INCOMPLETE AI TURN判定も新しい応答サイクルへ持ち越さない。
+                lastResponseTranscriptWasIncompleteAiTurn = false;
                 // 'waiting'（通常の無言計測中）であればAIが新たに話し始める/
                 // 生成を始めるためキャンセルする。'warned'/'goodbye'中に発生する
                 // response.createdは本機構自身が発行したアナウンスの応答である
@@ -6069,7 +6158,19 @@
                     if (deferSilenceTimerForToolContinuationRateLimit) {
                         pushTimelineEvent('SILENCE_TIMER_START_DEFERRED (reason=tool_continuation_rate_limit_fallback_pending)');
                     } else if (lastResponseTranscriptWasProcessNarrationOnly
-                        && lastResponseReasonCategoryForDiag !== 'ai_working_continuation') {
+                        && lastResponseReasonCategoryForDiag !== 'ai_working_continuation'
+                        && lastResponseReasonCategoryForDiag !== 'incomplete_ai_turn_continuation') {
+                        // FAST TURN EMERGENCY HOTFIX 13（今回追加）: HOTFIX12の
+                        // 無限ループ防止条件に、HOTFIX13で新設した
+                        // incomplete_ai_turn_continuationカテゴリも追加する。
+                        // これにより「継続を1回送った直後の応答が、たとえ別の
+                        // 判定（AI_WORKING⇄INCOMPLETE）に化けても、2回目の
+                        // 継続は送らない」という1 response chainあたり最大1回の
+                        // 束縛を、2つの継続機構をまたいで維持する（ユーザー
+                        // 指示§9: 「同じresponse.doneで二重発火しないこと」に
+                        // 加え、連続するresponse.doneをまたいだ無限ループも
+                        // 防止する、より安全側の設計）。
+                        //
                         // FAST TURN EMERGENCY HOTFIX 12（今回追加・最重要）: AIが
                         // 「確認します」「少々お待ちください」等、自分がこれから
                         // 処理することの宣言のみでこのターンを終えた（function_call
@@ -6107,6 +6208,30 @@
                                 startSilenceTimerIfNeeded(callGeneration, 'ai_working_continuation_safety_timeout');
                             }
                         }, 10000);
+                    } else if (lastResponseTranscriptWasIncompleteAiTurn
+                        && lastResponseReasonCategoryForDiag !== 'ai_working_continuation'
+                        && lastResponseReasonCategoryForDiag !== 'incomplete_ai_turn_continuation') {
+                        // FAST TURN EMERGENCY HOTFIX 13（今回追加・最重要）: AIが
+                        // 話題を切り出しただけで実際の質問を言い切らずにこの
+                        // ターンを終えた（function_callを伴わない）場合、
+                        // HOTFIX12のAI_WORKING継続と全く同じ設計・同じ
+                        // sendResponseCreate()一元化ラッパーを使い、ユーザーの
+                        // 追加発話を待たず1回だけ継続のresponse.createを送る。
+                        // ループ防止は上のAI_WORKING分岐と対称（このカテゴリ
+                        // またはai_working_continuationの結果であれば送らない）。
+                        deferSilenceTimerForIncompleteAiTurnContinuation = true;
+                        const incompleteAiTurnLine = 'INCOMPLETE_AI_TURN_CONTINUATION_SENT (previousCategory=' + lastResponseReasonCategoryForDiag + ')';
+                        pushTimelineEvent(incompleteAiTurnLine);
+                        console.log('[' + incompleteAiTurnLine + ']');
+                        sendResponseCreate('incomplete_ai_turn_continuation');
+                        // 安全網（HOTFIX10/12と全く同じ設計方針・同じ10秒値）。
+                        setTimeout(() => {
+                            if (deferSilenceTimerForIncompleteAiTurnContinuation) {
+                                deferSilenceTimerForIncompleteAiTurnContinuation = false;
+                                pushTimelineEvent('INCOMPLETE_AI_TURN_CONTINUATION_SILENCE_DEFER_RELEASED (reason=safety_timeout)');
+                                startSilenceTimerIfNeeded(callGeneration, 'incomplete_ai_turn_continuation_safety_timeout');
+                            }
+                        }, 10000);
                     } else {
                         // FAST TURN EMERGENCY HOTFIX 12（今回追加・観測専用）: 継続
                         // response.createを送った後もAIが再びAI_WORKING判定の
@@ -6116,6 +6241,13 @@
                         if (lastResponseTranscriptWasProcessNarrationOnly
                             && lastResponseReasonCategoryForDiag === 'ai_working_continuation') {
                             pushTimelineEvent('AI_WORKING_CONTINUATION_LOOP_PREVENTED (reason=continuation_still_narration_only)');
+                        }
+                        // FAST TURN EMERGENCY HOTFIX 13（今回追加・観測専用）: 同じ
+                        // 理由でINCOMPLETE AI TURN側のループ防止も記録する。
+                        if (lastResponseTranscriptWasIncompleteAiTurn
+                            && (lastResponseReasonCategoryForDiag === 'ai_working_continuation'
+                                || lastResponseReasonCategoryForDiag === 'incomplete_ai_turn_continuation')) {
+                            pushTimelineEvent('INCOMPLETE_AI_TURN_CONTINUATION_LOOP_PREVENTED (reason=continuation_still_incomplete)');
                         }
                         startSilenceTimerIfNeeded(callGeneration, 'response_done_no_function_call');
                     }
@@ -6701,6 +6833,10 @@
             // （前回通話のAI_WORKING判定・defer状態を持ち越さない）。
             lastResponseTranscriptWasProcessNarrationOnly = false;
             deferSilenceTimerForAiWorkingContinuation = false;
+            // FAST TURN EMERGENCY HOTFIX 13: 同じ理由でINCOMPLETE AI TURN側の
+            // 状態も新しい通話ごとに必ずリセットする。
+            lastResponseTranscriptWasIncompleteAiTurn = false;
+            deferSilenceTimerForIncompleteAiTurnContinuation = false;
             // PHASE O5.6診断: 新しい通話ごとに診断専用の状態も必ずリセットする
             // （前回通話の診断値を持ち越さない。挙動には無関係・観測値のみ）。
             silenceStateEnteredAt = null;

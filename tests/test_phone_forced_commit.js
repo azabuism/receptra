@@ -85,6 +85,12 @@ const FN = {
 
 const ANSWER_WINDOW_LIMITS_MS_EXPR = extractConstExpr(SRC, 'ANSWER_WINDOW_LIMITS_MS');
 const ANSWER_WINDOW_LIMITS_MS = eval('(' + ANSWER_WINDOW_LIMITS_MS_EXPR + ')');
+// FAST TURN EMERGENCY HOTFIX 13（今回追加）: classifyExpectedAnswerType()が
+// 呼び出し末尾で参照するCOMPLETE_QUESTION_ENDING_RE（関数の外側で宣言される
+// 定数）を、他の定数と同じ方法でソースから抽出してサンドボックスへ注入する
+// （抽出しないとReferenceErrorになる。挙動には無関係・PHONE Forced Commit
+// ロジック自体は一切変更していない）。
+const COMPLETE_QUESTION_ENDING_RE_EXPR = extractConstExpr(SRC, 'COMPLETE_QUESTION_ENDING_RE');
 
 assert.strictEqual(ANSWER_WINDOW_LIMITS_MS.PHONE, 10000, 'PHONE limit must be 10000ms (~10 second safety ceiling)');
 assert.strictEqual(ANSWER_WINDOW_LIMITS_MS.NAME, 5000, 'NAME limit must remain 5000ms (unchanged)');
@@ -145,6 +151,13 @@ function buildSandbox(overrides) {
         debugMode: false,
         shopId: 'normal-production-shop-id-xxxx', // 通常の本番店舗（PoC店舗ではない）
         dc: { readyState: 'open', sent: [], send(payload) { this.sent.push(JSON.parse(payload)); } },
+        // FAST TURN EMERGENCY HOTFIX 12/13（今回追加）: classifyExpectedAnswerType()の
+        // 末尾でAI_WORKING/INCOMPLETE AI TURN判定結果を書き込む先・greeting判定に
+        // 使う値。このファイルの対象ではないが、未定義だとReferenceErrorになるため
+        // 用意する（観測用の付随フラグで、PHONE Forced Commitロジックには影響しない）。
+        lastResponseTranscriptWasProcessNarrationOnly: false,
+        lastResponseTranscriptWasIncompleteAiTurn: false,
+        lastResponseReasonCategoryForDiag: 'unknown',
     }, overrides || {});
     Object.assign(context, state);
     context.setTimeout = (fn, delay) => {
@@ -157,6 +170,7 @@ function buildSandbox(overrides) {
     vm.createContext(context);
     vm.runInContext(
         'const ANSWER_WINDOW_LIMITS_MS = ' + ANSWER_WINDOW_LIMITS_MS_EXPR + ';\n' +
+        'const COMPLETE_QUESTION_ENDING_RE = ' + COMPLETE_QUESTION_ENDING_RE_EXPR + ';\n' +
         Object.values(FN).join('\n\n'),
         context
     );
