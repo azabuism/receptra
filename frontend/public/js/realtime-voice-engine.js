@@ -7236,7 +7236,7 @@
 
             // 重要: クリック直後の「ユーザー操作」が有効なうちに、他の非同期処理
             // (トークン取得のfetch等)より先にgetUserMediaを呼び出す。
-            // 先にawaitを挟んでからgetUserMediaを呼ぶと、ブラウザによっては
+            // 先に非同期の待ち合わせ処理を挟んでからgetUserMediaを呼ぶと、ブラウザによっては
             // （特にiOS Safari）ユーザー操作から時間が空きすぎたと判断され、
             // マイク許可ダイアログ自体が出ないまま静かに失敗することがある。
             try {
@@ -7264,7 +7264,27 @@
                 // （Production defaultはこれまでと完全に同じ）。
                 const requestedAutoGainControl = !noAgcMode;
                 const micConstraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: requestedAutoGainControl } };
+                // FAST TURN HOTFIX 17（今回追加・§22診断・PART B調査用）: 実機で
+                // 通話開始直後に「お電話（ブツッ）ありがとうございます」のような
+                // 固定位置のclick/popノイズが報告されている。startZeroWaitGreeting()
+                // （Zero-Wait音声のplay()呼び出し）はこの直前、同じ同期実行チェーン
+                // の中で既に呼ばれており（間に非同期の待ち合わせ処理を挟まない設計）、この直後の
+                // getUserMedia呼び出し（echoCancellation:true等の制約付き）がブラウザ側で音声
+                // 出力デバイス/オーディオセッションの再初期化を伴い、それが
+                // ちょうど再生中のZero-Wait音声に可聴のグリッチとして現れている
+                // 可能性を調査中（コード監査のみで断定はできず、実機での波形/
+                // タイムスタンプ相関が必要なため、挙動は変更せず診断ログのみ
+                // 追加する）。zeroWaitAudioEl.currentTimeはPIIを含まない再生位置
+                // （秒）の数値のみ。
+                pushTimelineEvent('GET_USER_MEDIA_REQUESTED (elapsedSinceCallStartMs='
+                    + Math.round(performance.now() - greetingTiming.callStart)
+                    + ', zeroWaitCurrentTimeMs=' + (zeroWaitAudioEl ? Math.round(zeroWaitAudioEl.currentTime * 1000) : 'n/a')
+                    + ', zeroWaitState=' + zeroWaitState + ')');
                 localStream = await navigator.mediaDevices.getUserMedia(micConstraints);
+                pushTimelineEvent('GET_USER_MEDIA_RESOLVED (elapsedSinceCallStartMs='
+                    + Math.round(performance.now() - greetingTiming.callStart)
+                    + ', zeroWaitCurrentTimeMs=' + (zeroWaitAudioEl ? Math.round(zeroWaitAudioEl.currentTime * 1000) : 'n/a')
+                    + ', zeroWaitState=' + zeroWaitState + ')');
             } catch (e) {
                 const friendly = describeGetUserMediaError(e);
                 logEvent('getUserMediaエラー: ' + e.name + ' - ' + e.message);

@@ -120,11 +120,23 @@ def test_e_protected_templates_not_relengthened():
     # handoff_wording.pyの厳密な文言契約テストを壊さないため、意図的に
     # スコープ外とした）。実測でchar delta=+416（3175→3591、測定は
     # tests/test_fast_turn_hotfix16_callback_single_terminal.js参照）。
-    # この意図的な増分を許容するため、このテンプレートのみベースラインを
-    # HOTFIX16後の実測値（3591）+5%へ更新する（他の3テンプレートはHOTFIX16
-    # で一切変更していないため据え置き）。
+    #
+    # FAST TURN HOTFIX 17（2026年9月・意図的な追記）: 実機で「折り返し希望が
+    # 既に確定しているのに、AIが『折り返しのご連絡いたしますか？』と再度
+    # Yes/No確認してくる」症状が報告された。手順1の例文が「いくつかお伺いして
+    # もよろしいでしょうか」という許可を求める質問形になっていたこと、および
+    # request_callbackツール自体の説明文が既に確定した折り返し希望を再確認
+    # しないことを明示していなかったことをroot causeと判断し、手順1の例文を
+    # 質問形でない言い切り（「担当者へお伝えいたします。」）へ変更し、
+    # 「折り返し希望が既に確定している場合は改めて確認し直さない」ことを
+    # 明示する一文を追加した（ユーザー指示§4/§5/§7。手順5-1/5-2/5-3・6は
+    # 今回も一切変更していない）。実測でchar delta=+181（3591→3772、測定は
+    # tests/test_fast_turn_hotfix17_callback_no_reconfirm_zero_wait_audio.js
+    # 参照）。この意図的な増分を許容するため、このテンプレートのみベース
+    # ラインをHOTFIX17後の実測値（3772）+5%へ更新する（他の3テンプレートは
+    # HOTFIX17で一切変更していないため据え置き）。
     baselines_after_phase2 = {
-        "_HUMAN_HANDOFF_TEMPLATE": (_HUMAN_HANDOFF_TEMPLATE, round(3591 * 1.05)),
+        "_HUMAN_HANDOFF_TEMPLATE": (_HUMAN_HANDOFF_TEMPLATE, round(3772 * 1.05)),
         "_BOOKING_SAFETY_TEMPLATE": (_BOOKING_SAFETY_TEMPLATE, round(2077 * 1.05)),
         "_TIME_AMBIGUITY_TEMPLATE": (_TIME_AMBIGUITY_TEMPLATE, round(2061 * 1.05)),
         "_INTENT_CLASSIFICATION_TEMPLATE": (_INTENT_CLASSIFICATION_TEMPLATE, round(1908 * 1.05)),
