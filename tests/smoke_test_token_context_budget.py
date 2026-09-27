@@ -185,7 +185,26 @@ import httpx
 # （-593文字、-2.9%）。tools schemaは変更なし（14277文字のまま）。
 # 残るTIME_AMBIGUITY/INTENT_CLASSIFICATIONはHOTFIX 8 Phase 2の後続
 # ステップで段階的に圧縮予定。
-BASELINE_INSTRUCTIONS_CHARS = 20205
+#
+# FAST TURN HOTFIX 8 PHASE 2更新（2026-09-27、Step 3の次のコミット、
+# Step 4: _TIME_AMBIGUITY_TEMPLATE圧縮）: 最小構成の店舗でinstructions中
+# 11.2%（2640文字）を占めていた_TIME_AMBIGUITY_TEMPLATEを圧縮した。
+# 圧縮前にtests/smoke_test_time_ambiguity_contract.pyを新設し、本文を
+# 読んで洗い出した12項目の挙動（午前/午後が明確な言い方は確認不要／
+# 一意に決まらない場合の4分岐＝片方だけ営業時間内なら確認省略だが必ず
+# 一度は口頭で伝える安全網・両方営業時間内ならニュートラルに尋ねる・
+# どちらも営業時間外なら決め打ちせず実際の営業時間を伝える・営業時間
+# 未登録も同様にニュートラルに尋ねる／AM/PM判定と過去判定は別物で現在
+# 時刻は相対時刻計算にのみ使う（Tool側判定が唯一の権威）／Tool結果が
+# time_in_pastの場合はAM/PM解釈をやり直さない／機械的な数字変換・
+# 「12時=正午」の決め打ちの禁止／解釈した時刻を一度も伝えないまま進む
+# ことの禁止／時刻確認への返事は予約全体の同意にならず変更時はやり直す、
+# 等）が、圧縮前の原文に対して全項目PASSすることを確認した上で圧縮した。
+# 実測: _TIME_AMBIGUITY_TEMPLATE 2640→2061文字（-579文字、-21.9%）。
+# instructions全体（最小構成の新規登録店舗）20205→19627文字
+# （-578文字、-2.9%）。tools schemaは変更なし（14277文字のまま）。
+# 残るINTENT_CLASSIFICATIONはHOTFIX 8 Phase 2の後続ステップで圧縮予定。
+BASELINE_INSTRUCTIONS_CHARS = 19627
 BASELINE_TOOLS_JSON_CHARS = 14277
 ALLOWED_GROWTH_RATIO = 1.10  # 10%までの増加は許容し、それを超えたら気づけるようにする
 
