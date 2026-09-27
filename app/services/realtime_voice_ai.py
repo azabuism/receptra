@@ -2485,17 +2485,58 @@ _PHASE1_NAME_ROLE_TEMPLATE = """\
 """
 
 _PHASE2_ROUTING_ROLE_TEMPLATE = """\
-# あなたの今の役割（Phase 2: ご用件の受け止め）
-直前でお客様のお名前とご用件の確認を始めています。お客様がご用件（ご予約・
-折り返し・お問い合わせなど、どのような内容でも構いません）を話したら、その
-内容を否定せず、短く自然に受け止めてください（例:「承知しました。少々
-お待ちください。」「かしこまりました。」）。
+# あなたの今の役割（Phase 2: ご用件の把握と振り分け）
+直前でお客様のお名前を伺いました。まだご用件を伺えていない場合は、
+「本日はどのようなご用件でしょうか？」と尋ねてください。すでにご用件を
+お客様が自発的に話していた場合は、その内容を否定せず、短く自然に受け止めて
+ください（例:「承知しました。少々お待ちください。」「かしこまりました。」）。
 
-まだご用件を伺えていない場合は、「本日はどのようなご用件でしょうか？」と
-尋ねてください。
+## ご用件が「ご予約」または「担当者への取り次ぎ・折り返し」だとはっきり分かったら
+上記のような短い相槌の中で、必ず classify_intent ツールを呼び出してください。
+日時・人数などの詳しい内容がまだ揃っていなくても、ご用件の種類そのものが
+分かった時点で構いません。呼び出し自体はお客様に説明する必要はありません
+（内部的な振り分けのための処理です）。それ以上、用件の種類自体を繰り返し
+確認する必要はありません。
 
-この時点では、空き状況の確認・予約の確定・折り返しの登録・料金や店舗情報の
-詳しい案内は行わないでください。詳しい対応はこの直後の会話で行います。
+## まだご用件がはっきりしない場合
+classify_intent は呼び出さないでください。「すみません、一度確認させて
+ください。」のように前置きしてから、二択程度の短い確認質問をしてください
+（例:「ご予約についてでしょうか？それとも担当者からの折り返しをご希望
+でしょうか？」）。お客様がまだ話している内容を無理に遮ったり、経過時間だけを
+理由に話を急かしたりすることは絶対にしないでください。
+
+## この時点ではまだ行わないこと
+空き状況の確認・予約の確定・折り返しの登録・料金や店舗情報の詳しい案内は、
+この時点ではまだ行わないでください。詳しい対応はこの直後の会話で行います。
+"""
+
+# Realtime Token Architecture Phase 2（今回追加）: ROUTING→RESERVATION/CALLBACK
+# の役割説明。NAME/ROUTINGと同じく最小限の役割説明のみとし、実際の手順
+# （日時確認・電話番号確認等）は既存のFast Reservation Flow/Human Handoff
+# テンプレートへそのまま委ねる（重複して書き直さない）。
+_PHASE2A_RESERVATION_ROLE_TEMPLATE = """\
+# あなたの今の役割（Phase 2A: ご予約の受付）
+お客様は既にご予約をご希望であることが分かっています。お名前は既に
+伺っています。改めてお名前を尋ねないでください。
+
+これまでの会話の中で、来店希望の日時・人数など、既にお客様が話している
+内容があれば、それを再度尋ねないでください。まだ分かっていない項目だけを、
+このすぐ後の「Fast Reservation Flow」セクションに従って確認してください。
+"""
+
+_PHASE2B_CALLBACK_ROLE_TEMPLATE = """\
+# あなたの今の役割（Phase 2B: 折り返し・取り次ぎの受付）
+お客様は既に担当者からの折り返し、または取り次ぎをご希望であることが
+分かっています。お名前は既に伺っています。改めてお名前を尋ねないでください。
+
+まだ伺っていなければ、「折り返し先のお電話番号をお願いします。」と
+尋ねてください。電話番号は必ず1桁ずつ読み上げて復唱し、間違いがないか
+確認してください（推測や聞き取れなかった桁の補完は絶対にしないでください）。
+
+お問い合わせ内容や、該当する場合は来店・予約希望の日時・人数についても、
+既にお客様が話している内容があれば再度尋ねず、まだ分かっていない範囲で
+簡潔に確認してください。必要な情報が揃ったら、このすぐ後の「折り返し対応」
+セクションの手順に従って request_callback ツールを呼び出してください。
 """
 
 
@@ -2540,25 +2581,197 @@ def _build_phase_minimal_instructions(
     return "\n\n".join(sections)
 
 
+def _build_reservation_phase_instructions(
+    shop: Shop,
+    staff_settings: Optional["AIStaffSettings"],
+    ai_languages: list,
+    staff_languages: Optional[list],
+    hours_block: str,
+) -> str:
+    """
+    Realtime Token Architecture Phase 2: RESERVATION contextのinstructions。
+
+    legacy_full（build_realtime_instructions）から、予約成立に本当に必要な
+    セクションだけを抜き出して再利用する（意味を変えず、字句もそのまま
+    再利用することでテンプレート改変によるルール劣化リスクを避ける）。
+
+    含めるセクション（順序はlegacy_fullでの相対順序を踏襲）:
+      1. Core Rules（話し方・言語ルール）
+      2. Phase 2A役割説明（お名前は聞き直さない、既知slotは聞き直さない）
+      3. Fast Reservation Flow（日時・人数確認の進め方）
+      4. Shop Information（営業時間・相対日付）
+      5. Time Ambiguity（午前/午後解釈）
+      6. Relative Date（相対日付の絶対日付変換ルール）
+      7. Customer Memory Rules（find_customer運用ルール。Toolを含めたため）
+      8. Customer Context Rules（confirm_customer_identity/get_customer_context
+         運用ルール。Toolを含めたため）
+      9. Booking Safety（予約成立宣言の絶対ルール。常に最後）
+
+    含めないもの: Scope/Intent Classification（ROUTINGで既に判定済み）、
+    Shop Knowledge Rules・get_shop_info関連（RESERVATIONにget_shop_infoは
+    含めない）、Human Handoff全文（check_availability/create_reservation/
+    request_callbackの各Tool説明文自体に必要な案内が既に含まれているため、
+    重複させない）、_MINIMAL_EARLY_HANDOFF_SAFETY_TEMPLATE（request_callback
+    という実際のHuman Handoff手段が使えるため、NAME/ROUTING用の早期
+    ブリッジ文言は不要と判断）。
+    """
+    sections = [
+        _CORE_RULES_TEMPLATE.format(
+            shop_name=shop.name,
+            language_rules_section=_build_language_rules_section(ai_languages, staff_languages),
+        ),
+        _PHASE2A_RESERVATION_ROLE_TEMPLATE,
+        _FAST_RESERVATION_FLOW_TEMPLATE.format(
+            party_size_guidance=_build_party_size_guidance(shop.business_type)
+        ),
+        _SHOP_INFO_TEMPLATE.format(hours_block=hours_block, relative_dates_block=_relative_dates_block_jst()),
+        _TIME_AMBIGUITY_TEMPLATE,
+        _RELATIVE_DATE_TEMPLATE,
+        _CUSTOMER_MEMORY_RULES_TEMPLATE,
+        _CUSTOMER_CONTEXT_RULES_TEMPLATE,
+        _BOOKING_SAFETY_TEMPLATE,
+    ]
+    return "\n\n".join(sections)
+
+
+def _build_callback_phase_instructions(
+    shop: Shop,
+    staff_settings: Optional["AIStaffSettings"],
+    ai_languages: list,
+    staff_languages: Optional[list],
+) -> str:
+    """
+    Realtime Token Architecture Phase 2: CALLBACK contextのinstructions。
+
+    _HUMAN_HANDOFF_TEMPLATE（2,791文字）を全文そのまま再利用する。
+    「折り返しが必要な場面」の判定基準部分はROUTING（classify_intent）で
+    既に判定済みのため本来重複だが、折り返し手順・電話番号確認・
+    確約禁止表現などの安全ルールと一体の1つのテンプレートであり、
+    字句を分割・書き換えて安全ルールの文言を壊すリスクを避けるため、
+    あえて全文をそのまま再利用する（この場合の重複は許容する）。
+    """
+    sections = [
+        _CORE_RULES_TEMPLATE.format(
+            shop_name=shop.name,
+            language_rules_section=_build_language_rules_section(ai_languages, staff_languages),
+        ),
+        _PHASE2B_CALLBACK_ROLE_TEMPLATE,
+        _HUMAN_HANDOFF_TEMPLATE,
+    ]
+    return "\n\n".join(sections)
+
+
+def _select_realtime_tools(names: list) -> list:
+    """
+    _REALTIME_TOOLS（唯一の正典・全8個のTool定義）から、名前を指定して
+    そのままの定義を抜き出す。Phase別のtools配列を作る際、Tool定義
+    （descriptionやparameters）を重複してコピー・書き直さないための
+    唯一の経路とする（定義のズレ・食い違いを防ぐ）。
+    """
+    by_name = {t["name"]: t for t in _REALTIME_TOOLS}
+    return [by_name[n] for n in names]
+
+
+# Realtime Token Architecture Phase 2（今回追加）: RESERVATION/CALLBACK
+# それぞれのPhaseで実際に使うToolの名前一覧。
+#
+# RESERVATION（目標2〜4個だったが、監査の結果6個。理由は各行のコメント参照。
+# 正確性を壊してまでtool数を減らさない、というユーザーの明示的指示に基づく）:
+#   - check_availability / create_reservation: 予約成立に必須のコアTool。
+#   - find_customer / confirm_customer_identity / get_customer_context:
+#     _CUSTOMER_MEMORY_RULES_TEMPLATE・_CUSTOMER_CONTEXT_RULES_TEMPLATEが
+#     「常に固定」として既存のbuild_realtime_instructions()に含まれており、
+#     電話番号を伺うタイミングで必ずfind_customerを呼ぶという既存の常連客
+#     認識機能を、Phase2でこのフローを実際に使う電話でも維持するために必要。
+#   - request_callback: check_availability/create_reservationの各Tool説明文
+#     自体が、staff_not_identified/staff_name_ambiguous/business_hours_not_
+#     configured/reservation_not_enabled等のケースでrequest_callback
+#     （reason_code指定）へのHuman Handoffを前提として書かれているため、
+#     このTool無しではその既存の安全なエスカレーション経路が失われる。
+# 意図的に含めなかったもの:
+#   - get_shop_info: QUESTION/INFORMATION intent専用（ROUTINGで
+#     RESERVATIONへ分岐した通話は既にご予約用件と判明済みのため）。
+#   - set_conversation_language: create_reservationのsession_id経由で
+#     Customer Memoryへの「ソフトなヒント」として使われるのみの内部記録用
+#     Toolであり、呼ばれなくても予約自体の成立・安全性には影響しない
+#     （既知の意図的な省略。本レポートで報告する）。
+_RESERVATION_TOOL_NAMES = [
+    "check_availability",
+    "create_reservation",
+    "find_customer",
+    "confirm_customer_identity",
+    "get_customer_context",
+    "request_callback",
+]
+
+# CALLBACK（目標1個どおり）: request_callbackのみ。
+_CALLBACK_TOOL_NAMES = ["request_callback"]
+
+# Realtime Token Architecture Phase 2（今回追加）: ROUTING phase専用の
+# 最小Tool。ROUTINGはNAME phaseと同じく他の7 Toolを一切持たないが、
+# 「予約」「折り返し」のいずれかだとお客様の発話から判断できた時点で、
+# その判断結果だけをクライアント側へ伝えるための、副作用の無い最小限の
+# 1関数のみを追加する。これは新しいNLU/別AIの追加ではなく、既存の
+# Realtimeモデル自身の自然言語理解の結果を、tool callingという既存の
+# 仕組みでクライアントへ伝えるだけであり、ユーザー指示の§6（他Toolと同じ
+# パターンの範囲内）に沿う。
+_ROUTING_TOOLS = [
+    {
+        "type": "function",
+        "name": "classify_intent",
+        "description": (
+            "お客様のご用件が「ご予約」または「担当者への取り次ぎ・折り返し」の"
+            "いずれかだとはっきり判断できた時点で、必ずこの関数を呼び出して"
+            "ください。日時・人数などの詳しい内容がまだ揃っていなくても、"
+            "ご用件の種類そのものが分かった時点で構いません。まだ判断できない"
+            "場合は呼び出さず、確認質問を続けてください。呼び出し自体はお客様に"
+            "説明する必要はありません（内部的な振り分けのための処理です）。\n"
+            "intent=reservationは、来店・来院等の予約をしたい場合です。\n"
+            "intent=callbackは、担当者からの折り返しを希望する場合、特定の"
+            "スタッフに用がある場合、または担当者でないと判断できない内容の"
+            "場合です。\n"
+            "この関数は1回の通話につき一度だけ呼び出してください。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "intent": {
+                    "type": "string",
+                    "enum": ["reservation", "callback"],
+                    "description": "お客様のご用件の分類。予約=reservation、折り返し・担当者への取り次ぎ=callback",
+                },
+            },
+            "required": ["intent"],
+        },
+    },
+]
+
+
 async def build_realtime_phase_contexts(
     db: AsyncSession, shop: Shop, staff_settings: Optional["AIStaffSettings"]
 ) -> dict:
     """
-    Realtime Token Architecture Phase 1: NAME / ROUTING / legacy_full の
-    3つのsession context（instructions・tools）を組み立てて返す。
+    Realtime Token Architecture Phase 1/2: NAME / ROUTING / RESERVATION /
+    CALLBACK / legacy_full の5つのsession context（instructions・tools）を
+    組み立てて返す。
 
     - "name" は最初のclient_secrets.create()自体に使う（巨大contextで
       セッションを開始してからPhase 1へ縮小する、という順序は禁止されて
       いるため。create_realtime_session()参照）。
     - "routing" はNAME→ROUTING境界でフロントエンドが送るsession.updateに
-      使う。
-    - "legacy_full" はROUTING→legacy_full境界のsession.updateに使う。中身は
-      既存のbuild_realtime_instructions() + _REALTIME_TOOLSと完全に同一
-      （Reservation/Callback Phase自体を新規実装するのではなく、既存の
-      本番実績のあるフローへ無条件フォールバックする設計のため）。
+      使う。Phase 2（今回）でclassify_intent Toolを1つだけ持つように
+      なった（tools=[]から変更）。
+    - "reservation" / "callback"（Phase 2で今回新規追加）はROUTINGで
+      classify_intentが呼ばれた場合にのみ、フロントエンドが送る
+      session.updateに使う。
+    - "legacy_full" は、ROUTINGでclassify_intentが呼ばれなかった場合
+      （OTHER/UNKNOWN・お問い合わせ等）の既存の安全なフォールバック先
+      として引き続き使う。中身は既存のbuild_realtime_instructions() +
+      _REALTIME_TOOLSと完全に同一（変更なし）。
 
-    tools は name/routing とも意図的に空リスト（[]）にする。OpenAI公式
-    Python SDK (openai==1.109.1) のRealtimeSessionCreateRequest.tools型定義
+    tools は name/routing とも意図的に最小に保つ（NAME=[]、
+    ROUTING=[classify_intentのみ]）。OpenAI公式Python SDK
+    (openai==1.109.1) のRealtimeSessionCreateRequest.tools型定義
     （Optional[List[RealtimeToolsConfigUnion]]、/usr/local/lib/python3.11/
     dist-packages/openai/types/realtime/realtime_session_create_request.py
     にて直接確認済み）では、空リストは型上有効な値であり、Tool自体が
@@ -2576,11 +2789,26 @@ async def build_realtime_phase_contexts(
         shop, staff_settings, ai_languages, staff_languages,
         _PHASE2_ROUTING_ROLE_TEMPLATE, include_greeting=False,
     )
+    hours_block = await _build_hours_block(db, shop.id)
+    reservation_instructions = _build_reservation_phase_instructions(
+        shop, staff_settings, ai_languages, staff_languages, hours_block,
+    )
+    callback_instructions = _build_callback_phase_instructions(
+        shop, staff_settings, ai_languages, staff_languages,
+    )
     legacy_full_instructions = await build_realtime_instructions(db, shop, staff_settings)
 
     return {
         "name": {"instructions": name_instructions, "tools": []},
-        "routing": {"instructions": routing_instructions, "tools": []},
+        "routing": {"instructions": routing_instructions, "tools": _ROUTING_TOOLS},
+        "reservation": {
+            "instructions": reservation_instructions,
+            "tools": _select_realtime_tools(_RESERVATION_TOOL_NAMES),
+        },
+        "callback": {
+            "instructions": callback_instructions,
+            "tools": _select_realtime_tools(_CALLBACK_TOOL_NAMES),
+        },
         "legacy_full": {"instructions": legacy_full_instructions, "tools": _REALTIME_TOOLS},
     }
 

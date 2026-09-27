@@ -158,9 +158,26 @@ async def main():
                 assert "お名前" in name_instructions, "Phase1 instructionsにお名前を尋ねる内容が含まれていません"
                 print("H. Phase1のinstructionsがお名前を尋ねる内容を含む: OK")
 
-                # ===== Routingフェーズの検証（tool数0・大きなテンプレートを含まない） =====
+                # ===== Routingフェーズの検証（tool数・大きなテンプレートを含まない） =====
+                # Realtime Token Architecture Phase 2（今回の仕様変更に伴う更新）:
+                # 以前は「ROUTINGのtool数は常に0」だったが、これはPhase 1が
+                # 「ROUTINGのack応答完了直後、無条件でlegacy_fullへ自動フォール
+                # バックする」設計だったためであり、tool自体が一切不要だった。
+                # 今回のPhase 2はROUTING自身が「予約」「折り返し」を実際に
+                # 判定してRESERVATION/CALLBACKへ直接分岐する設計に変わった
+                # ため、判定結果をクライアントへ伝えるための副作用の無い最小限の
+                # 1関数（classify_intent）だけをROUTINGへ追加した。したがって
+                # 「tools==[]」から「tools内にclassify_intentのみ（他の7つの
+                # 予約/折り返し関連Toolは含まれない）」へ更新する。これは仕様
+                # そのものの変更であり、テストを通すための恣意的な緩和ではない
+                # （tests/smoke_test_realtime_phase2_reservation_callback.pyの
+                # 契約テストF/Gで、classify_intent以外のToolがROUTINGに一切
+                # 含まれないことを別途検証する）。
                 routing_ctx = phase_contexts["routing"]
-                assert routing_ctx["tools"] == [], f"Routingのtool数が0ではありません: {routing_ctx['tools']}"
+                routing_tool_names = [t["name"] for t in routing_ctx["tools"]]
+                assert routing_tool_names == ["classify_intent"], (
+                    f"RoutingのtoolsがPhase2仕様（classify_intentのみ）と一致しません: {routing_tool_names}"
+                )
                 routing_instructions = routing_ctx["instructions"]
                 for big_template_name in [
                     "_FAST_RESERVATION_FLOW_TEMPLATE", "_BOOKING_SAFETY_TEMPLATE",
@@ -171,7 +188,7 @@ async def main():
                     assert big_template not in routing_instructions, (
                         f"Routing instructionsに{big_template_name}全文が含まれています"
                     )
-                print("Routing: tool数0、既存の大きなテンプレート全文を含まない: OK")
+                print("Routing: tools=[classify_intent]のみ、既存の大きなテンプレート全文を含まない: OK")
 
                 # ===== legacy_fullフェーズは既存build_realtime_instructions()と完全一致（回帰確認） =====
                 legacy_ctx = phase_contexts["legacy_full"]

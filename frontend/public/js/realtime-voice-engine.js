@@ -4644,6 +4644,50 @@
             }
         }
 
+        // Realtime Token Architecture Phase 2（今回追加）: classify_intentは
+        // ROUTING phaseにのみ宣言される、副作用のない「内部振り分け専用」の
+        // Tool（set_conversation_languageと同じ設計方針＝バックエンドへの
+        // HTTP呼び出しは行わない）。分類の判断自体は既存のRealtimeモデル自身の
+        // 自然言語理解結果であり、classify_intentはその結果をこちらが読み取れる
+        // 形（自由文ではなく構造化されたTool呼び出し）にするためだけの合図。
+        // 新しいNLU・別モデル・regexは一切追加しない。
+        //
+        // 呼び出されたら、Phase 1から存在する既存のarmPhaseTransitionAfterResponse()
+        // をそのまま呼ぶだけでよい（NAME→ROUTING遷移と全く同じ仕組みの再利用。
+        // この関数自体は無変更）。sendRealtimePhaseSessionUpdate()が'routing'
+        // context送信時に無条件でpendingPhaseTransitionTarget='legacy_full'を
+        // 予約している（既存のOTHER/UNKNOWN安全網）ため、ここで
+        // armPhaseTransitionAfterResponse('reservation'|'callback')を呼ぶことは、
+        // その予約値を安全に「上書き」することを意味する（armPhaseTransitionAfterResponseの
+        // 3つの早期returnガードのいずれもこの上書きを妨げない。既に確認済み）。
+        // モデルがclassify_intentを一度も呼ばなかった場合はこの上書きが起こらず、
+        // 既存のlegacy_fullフォールバックがそのまま機能する＝OTHER/UNKNOWNの
+        // 安全な既定動作を維持する。
+        //
+        // 引数はintent: "reservation" | "callback"の1つのみ（Tool定義のenumで
+        // 制限済み）。想定外の値（空・null・未知の文字列）が来た場合は何もarmせず、
+        // 既存のlegacy_fullフォールバック予約をそのまま残す（安全側）。
+        async function callClassifyIntentTool(args) {
+            const intent = args && args.intent;
+            if (intent === 'reservation' || intent === 'callback') {
+                armPhaseTransitionAfterResponse(intent);
+                // PIIなし（intentはenum値（'reservation'|'callback'）のみ。
+                // 顧客の発話内容・氏名・電話番号等は一切含まない）。
+                try {
+                    const line = 'REALTIME_INTENT_CLASSIFIED (intent=' + intent + ')';
+                    pushTimelineEvent(line);
+                    console.log('[' + line + ']');
+                } catch (diagErr) {
+                    pushTimelineEvent('REALTIME_INTENT_CLASSIFIED_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
+                }
+            } else {
+                logEvent('classify_intent: 未知のintent値のためarmせず、既存のlegacy_fullフォールバック予約を維持します: ' + JSON.stringify(intent));
+            }
+            // このToolには副作用が無く、AIに「内部振り分け処理を受け付けた」こと
+            // だけを伝えればよい（他Toolのavailable/status等の形は模倣しない）。
+            return { success: true };
+        }
+
         async function handleFunctionCallItem(item) {
             const callId = item.call_id;
             if (!callId) return;
@@ -4728,11 +4772,18 @@
                 // の直前のコメント参照）。
                 logEvent('Tool呼び出し受信: request_callback ' + JSON.stringify(args));
                 output = await callRequestCallbackTool(args || {}, callId);
+            } else if (item.name === 'classify_intent') {
+                // Realtime Token Architecture Phase 2（今回追加）: ROUTING phaseに
+                // のみ宣言される内部振り分け専用Tool（詳細はcallClassifyIntentTool
+                // の直前のコメント参照）。バックエンドへのHTTP呼び出しは無いため
+                // 引数のログもJSON.stringify(args)のみ（PIIを含まないenum値のみ）。
+                logEvent('Tool呼び出し受信: classify_intent ' + JSON.stringify(args));
+                output = await callClassifyIntentTool(args || {});
             } else {
                 // 現在宣言しているToolはcheck_availability / create_reservation /
                 // get_shop_info / find_customer / confirm_customer_identity /
                 // get_customer_context / set_conversation_language /
-                // request_callbackの8つ。
+                // request_callback / classify_intentの9つ。
                 // 未知の関数名が来た場合も、応答せずに放置するとAIが待ち続けて
                 // しまうため、安全側の失敗として返す。
                 logEvent('未知のTool呼び出し: ' + item.name);
@@ -4812,8 +4863,31 @@
             // ことだけは避けられる。dc自体が閉じている場合はsendResponseCreate()
             // 側のRESPONSE_CREATE_SKIPPEDが記録され、挙動は変化しない。
             pushToolContinuationTrace('T5_CONTINUATION_RESPONSE_CREATE_ATTEMPT (tool=' + (item.name || '(不明)') + ')');
-            const toolContinuationResponseCreateSent = sendResponseCreate('tool_result:' + (item.name || 'unknown') + (functionCallOutputSendFailed ? ':output_send_failed' : ''));
-            pushTimelineEvent('TOOL_CONTINUATION_REQUESTED (tool=' + (item.name || '(不明)') + ')');
+            // Realtime Token Architecture Phase 2（今回追加・classify_intentのみの
+            // 例外。他の既存8個のToolは全てこの直後で無条件にsendResponseCreate()
+            // を呼ぶ従来どおりの挙動のまま変更しない）:
+            // classify_intentはこの時点でarmPhaseTransitionAfterResponse()により
+            // Phase遷移(reservation/callback)を「予約」しただけであり、実際の
+            // session.update送信はまだ行われていない（この直後のresponse.done
+            // 境界にある既存の消費ブロックで初めて送信される）。もしここで他Tool
+            // と同じく無条件にsendResponseCreate()を呼ぶと、まだ古い（ROUTING）
+            // instructions/toolsのままモデルが次の応答生成を開始してしまい、
+            // その直後に割り込むsession.updateとの間で二重応答・競合が生じる
+            // リスクがある（sendResponseCreate()自体はresponseState==='active'
+            // でも送信をブロックせず、警告ログを出すだけで送信を続行する実装の
+            // ため、このリスクは実際にあり得る）。この1Tool（classify_intent）
+            // だけ自動継続のresponse.create送信をスキップする。会話の継続は
+            // 既存のresponse.done境界＋forceFollowUpの仕組み（session.updated
+            // 確定後、必要な場合のみ追加のresponse.createを送る）がそのまま
+            // 引き継ぐため、ここで送らなくても無応答にはならない。
+            let toolContinuationResponseCreateSent;
+            if (item.name === 'classify_intent') {
+                toolContinuationResponseCreateSent = false;
+                pushTimelineEvent('TOOL_CONTINUATION_SKIPPED_INTENTIONAL (tool=classify_intent)');
+            } else {
+                toolContinuationResponseCreateSent = sendResponseCreate('tool_result:' + (item.name || 'unknown') + (functionCallOutputSendFailed ? ':output_send_failed' : ''));
+                pushTimelineEvent('TOOL_CONTINUATION_REQUESTED (tool=' + (item.name || '(不明)') + ')');
+            }
             // sendResponseCreate()の戻り値（dc.readyState === 'open'だった場合のみ
             // trueで、実際にresponse.createを送信したことを意味する。false＝
             // dc未接続によりRESPONSE_CREATE_SKIPPEDで既にログ済み、送信していない）

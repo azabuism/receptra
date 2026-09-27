@@ -287,7 +287,17 @@ async def _test_session_endpoint_transmits_new_section(client, shop_id):
             "レスポンスにrealtime_phase_contextsが含まれていません"
             "（Phase1のクライアント主導session.update設計が壊れている可能性）"
         )
-        assert set(phase_contexts.keys()) == {"name", "routing", "legacy_full"}
+        # 【仕様変更（Realtime Token Architecture Phase 2・今回）】
+        # 以前はROUTINGのack応答完了直後、無条件でlegacy_fullへフォールバック
+        # するのみだったため、phase_contextsは{"name", "routing", "legacy_full"}の
+        # 3つだけだった。今回、ROUTINGが「予約」「折り返し・取り次ぎ」を
+        # classify_intent Tool経由で分類し、legacy_fullへ戻さずにRESERVATION/
+        # CALLBACKという専用の最小contextへ直接遷移できるようになったため、
+        # phase_contextsに"reservation"/"callback"の2つが新たに加わった
+        # （legacy_full自体はOTHER/UNKNOWN・fallback/debug用として引き続き残る。
+        # tests/smoke_test_realtime_phase2_reservation_callback.pyのE/F/G/H/P参照）。
+        # これは仕様そのものの変更であり、テストを通すための恣意的な緩和ではない。
+        assert set(phase_contexts.keys()) == {"name", "routing", "reservation", "callback", "legacy_full"}
 
     assert "session" in captured, "OpenAIへ送信されたsession_configを捕捉できませんでした"
     session_config = captured["session"]
