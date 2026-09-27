@@ -204,7 +204,34 @@ import httpx
 # instructions全体（最小構成の新規登録店舗）20205→19627文字
 # （-578文字、-2.9%）。tools schemaは変更なし（14277文字のまま）。
 # 残るINTENT_CLASSIFICATIONはHOTFIX 8 Phase 2の後続ステップで圧縮予定。
-BASELINE_INSTRUCTIONS_CHARS = 19627
+#
+# FAST TURN HOTFIX 8 PHASE 2更新（2026-09-27、Step 4の次のコミット、
+# Step 5: _INTENT_CLASSIFICATION_TEMPLATE圧縮）: 最小構成の店舗で
+# instructions中約11.3%（2215文字）を占めていた
+# _INTENT_CLASSIFICATION_TEMPLATEを圧縮した。圧縮前に
+# tests/smoke_test_intent_classification_contract.pyを新設し、既存の
+# tests/smoke_test_intent_classification.py・
+# tests/smoke_test_guidance_unit_acknowledgement.pyでは直接検証されて
+# いなかった5項目の挙動（ご用件把握後は症状等を深掘りする質問を重ねない／
+# お客様の発話を無理に遮ったり急かしたりしない／4分類それぞれに既存
+# セクション・既存Toolへの導線が明記されている／一度把握したご用件は
+# お客様の発言が変わらない限り判定し直さない／他ファイルのセクション
+# 順序チェックが依存する見出しの保持）が、圧縮前の原文に対して全項目
+# PASSすることを確認した上で圧縮した。圧縮は、同じ内容を繰り返していた
+# 説明文（5秒目安の理由説明、症状の深掘り禁止の理由説明、分類ごとの
+# 進め方の前置き文言等）を簡潔化する形で行い、4分類のラベル・5秒/2秒/
+# 3秒の具体的な数値・禁止プロトコル文言の非混入・既存8Tool名への言及・
+# 来店理由との混同禁止・「5秒間は待たなければならない」という否定表現
+# （tests/smoke_test_guidance_unit_acknowledgement.pyが原文のまま要求
+# する連続した部分文字列）は全て一言一句保持した。
+# 実測: _INTENT_CLASSIFICATION_TEMPLATE 2215→1908文字（-307文字、-13.9%）。
+# instructions全体（最小構成の新規登録店舗）19627→19320文字
+# （-307文字、-1.6%）。tools schemaは変更なし（14277文字のまま）。
+# これでHOTFIX 8 Phase 2が定めた4セクション
+# （HUMAN_HANDOFF→BOOKING_SAFETY→TIME_AMBIGUITY→INTENT_CLASSIFICATION）
+# の段階的圧縮が全て完了。累計: instructions全体 23015→19320文字
+# （-3695文字、-16.1%。Phase 1のtools schema圧縮とは別枠）。
+BASELINE_INSTRUCTIONS_CHARS = 19320
 BASELINE_TOOLS_JSON_CHARS = 14277
 ALLOWED_GROWTH_RATIO = 1.10  # 10%までの増加は許容し、それを超えたら気づけるようにする
 
