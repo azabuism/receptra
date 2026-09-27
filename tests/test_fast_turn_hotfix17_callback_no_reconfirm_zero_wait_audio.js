@@ -376,13 +376,13 @@ test('X) [回帰: Zero-Wait/greeting follow-up関連の既存HOTFIX14テスト�
 // §26/§27: response.create/dc.send/setTimeout回帰ガード、char delta
 // ============================================================
 
-test('Y) [response.create/dc.send/setTimeoutの不要な増加が無いこと] HOTFIX17は診断ログ(pushTimelineEvent)のみを追加しており、sendResponseCreate(/dc.send(JSON.stringify(/setTimeout(の出現数はHOTFIX16時点から不変（25/10/19）', () => {
+test('Y) [response.create/dc.sendの不要な増加が無いこと] HOTFIX17は診断ログ(pushTimelineEvent)のみを追加しており、sendResponseCreate(/dc.send(JSON.stringify(の出現数はHOTFIX16時点から不変（25/10）。setTimeout(はHOTFIX18でCALLBACK FINAL専用のbounded tail grace 1個分のみ意図的に+1（19→20、詳細はtests/test_fast_turn_hotfix18_callback_audio_tail.js参照）', () => {
     const sendResponseCreateCount = (SRC.match(/sendResponseCreate\(/g) || []).length;
     const dcSendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
     const setTimeoutCount = (SRC.match(/setTimeout\(/g) || []).length;
     assert.strictEqual(sendResponseCreateCount, 25);
     assert.strictEqual(dcSendCount, 10);
-    assert.strictEqual(setTimeoutCount, 19);
+    assert.strictEqual(setTimeoutCount, 20);
 });
 
 test('Z) [char delta: CALLBACK/legacy_fullのみ] _HUMAN_HANDOFF_TEMPLATE=3772文字, _PHASE2B_CALLBACK_ROLE_TEMPLATE=608文字（実測値。smoke_test_name_first_contract.pyのベースラインと一致していることを確認）', () => {

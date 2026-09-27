@@ -2510,6 +2510,28 @@
         // Armedとは別に、response.doneのたびにconsumeされず通話全体で保持する）。
         // request_callbackの二重実行（重複した折り返し作成）を防ぐために使う。
         let callbackAlreadyConfirmedThisCall = false;
+        // FAST TURN HOTFIX 18（今回追加・CALLBACK FINAL AUDIO TAIL ONLY）:
+        // 実機で「担当者から折り返しお電話いたし・・・」の途中で通話が切れる
+        // 症状が報告された。コード監査（cleanupConnection()直上の既存コメント
+        // 「ブチッ」調査を参照）で確認した事実: output_audio_buffer.stopped
+        // （Realtime APIのサーバー側イベント）はサーバー側の送出バッファが
+        // 空になったことを示すのみで、その時点でブラウザ側のWebRTC受信/
+        // 再生パイプライン（jitter buffer等）に残っている音声が実際に
+        // スピーカーから鳴り終わったことを保証しない。現状はこのイベントを
+        // 検知した直後にendCall()→cleanupConnection()内でpc.close()と
+        // <audio>要素の除去を行っており、残っていた末尾の音声が強制的に
+        // 破棄され得る。これはCALLBACK terminal（このタイマー）にのみ適用し、
+        // maybeHangUpAfterSilenceGoodbye（無言タイムアウトのclosing発話）には
+        // 一切触れない（ユーザー指示§1で明示的にスコープ外）。
+        let callbackFinalTailGraceTimerId = null;
+        // 値の根拠（実測ではなくエンジニアリング判断。実機での波形計測は
+        // ネットワーク遮断のため今回もできなかった）: 一般的なWebRTC音声の
+        // jitter buffer/デコード遅延は数十〜数百ms程度だが、実機症状では
+        // 「ありがとうございました」という末尾の1フレーズ全体（体感1秒前後）
+        // が失われていたため、より安全側に長めの値を採用する。同時に、
+        // デモ環境での不自然に長い無音（発話終了後の間延び）を避けるため、
+        // 人間の会話で違和感のない「発話後の短い間」の範囲に収める。
+        const CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS = 1500;
         const SILENCE_TIMEOUT_MS = 30000; // 約30秒間、有効な発話が無ければ予告（PHASE O5.6: 値は無変更。挙動を変えない）
         const SILENCE_WARNING_GRACE_MS = 8000; // 予告後、約5〜10秒の猶予（中間値を採用）（PHASE O5.6: 値は無変更）
 
@@ -2886,14 +2908,55 @@
             // response.doneの遅延fallback経由でも呼ばれ得るため、ここに
             // 到達した時点＝最終案内の音声完了（または安全網によるみなし完了）
             // を意味する。
+            pushTimelineEvent('CALLBACK_FINAL_AUDIO_STOP_EVENT (source=' + source + ')');
+            console.log('[CALLBACK_FINAL_AUDIO_STOP_EVENT]');
             pushTimelineEvent('CALLBACK_FINAL_AUDIO_DONE (source=' + source + ')');
             console.log('[CALLBACK_FINAL_AUDIO_DONE]');
             if (isStaleCallEvent(myGeneration)) return;
-            pushTimelineEvent('CALLBACK_TERMINAL_END_CALL_REQUESTED (source=' + source + ')');
-            console.log('[CALLBACK_TERMINAL_END_CALL]');
-            pushTimelineEvent('CALLBACK_FINAL_END_CALL');
-            console.log('[CALLBACK_FINAL_END_CALL]');
-            endCall('お電話ありがとうございました。', 'callback_terminal');
+            // FAST TURN HOTFIX 18（今回追加・CALLBACK FINAL AUDIO TAIL ONLY）:
+            // ここに到達した時点＝サーバー側output_audio_buffer.stopped（または
+            // 安全網fallback）だが、上のCALLBACK_FINAL_AUDIO_TAIL_GRACE_MS
+            // コメントの通り、これはブラウザ側で実際に音が鳴り終わったことを
+            // 保証しない。即endCall()する代わりに、bounded tail graceだけ
+            // 挟んでからendCall()する（新しいresponse.create・final再生成は
+            // 一切行わない。既に生成済みの音声を最後まで鳴らすための猶予のみ）。
+            // pendingCallbackTerminalHangupは既にこの関数の先頭でfalseに
+            // 消費済みのため、この関数への再入（重複したoutput_audio_buffer.
+            // stoppedや10秒fallbackとの競合）は既存のガードでno-opになり、
+            // タイマーが重複して作られることはない。
+            if (callbackFinalTailGraceTimerId !== null) {
+                clearTimeout(callbackFinalTailGraceTimerId);
+                callbackFinalTailGraceTimerId = null;
+            }
+            pushTimelineEvent('CALLBACK_FINAL_TAIL_GRACE_STARTED (grace_ms=' + CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS + ')');
+            console.log('[CALLBACK_FINAL_TAIL_GRACE_STARTED]');
+            callbackFinalTailGraceTimerId = setTimeout(() => {
+                callbackFinalTailGraceTimerId = null;
+                pushTimelineEvent('CALLBACK_FINAL_TAIL_GRACE_COMPLETED');
+                console.log('[CALLBACK_FINAL_TAIL_GRACE_COMPLETED]');
+                // grace待機中に別経路（手動終了・接続断・新しい通話開始等）で
+                // 既にこの世代が古くなっていないか、endCall()直前に再確認する。
+                if (isStaleCallEvent(myGeneration)) return;
+                pushTimelineEvent('CALLBACK_TERMINAL_END_CALL_REQUESTED (source=' + source + ')');
+                console.log('[CALLBACK_TERMINAL_END_CALL]');
+                pushTimelineEvent('CALLBACK_FINAL_END_CALL');
+                console.log('[CALLBACK_FINAL_END_CALL]');
+                endCall('お電話ありがとうございました。', 'callback_terminal');
+            }, CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS);
+        }
+
+        // FAST TURN HOTFIX 18（今回追加・§13/§15: race protection）: 手動終了・
+        // 接続断・新しい通話開始など、tail grace待機中にendCall()以外の経路で
+        // 通話が終わる/次の通話が始まる場合に、残っている待機中のtail grace
+        // タイマーを安全に破棄する。既存のdisconnectGraceTimer等の他タイマーと
+        // 全く同じ場所・同じパターンで呼ばれる想定（cleanupConnection()内、
+        // および次回startCall()の状態リセット箇所）。
+        function cancelCallbackFinalTailGrace(reason) {
+            if (callbackFinalTailGraceTimerId === null) return;
+            clearTimeout(callbackFinalTailGraceTimerId);
+            callbackFinalTailGraceTimerId = null;
+            pushTimelineEvent('CALLBACK_FINAL_TAIL_GRACE_CANCELLED (reason=' + (reason || '不明') + ')');
+            console.log('[CALLBACK_FINAL_TAIL_GRACE_CANCELLED]');
         }
 
         // PHASE4（重要・response.create重複防止調査）: response.create送信の
@@ -7082,6 +7145,11 @@
             callbackTerminalArmed = false;
             pendingCallbackTerminalHangup = false;
             callbackAlreadyConfirmedThisCall = false;
+            // FAST TURN HOTFIX 18（今回追加・§13）: 前回通話のtail graceタイマーが
+            // 万一残っていた場合の防御的cleanup（通常はcleanupConnection()側で
+            // 既に破棄されているはずだが、二重の安全網として新しい通話開始時にも
+            // 確認する）。
+            cancelCallbackFinalTailGrace('new_call_setup');
             // PHASE O5.6診断: 新しい通話ごとに診断専用の状態も必ずリセットする
             // （前回通話の診断値を持ち越さない。挙動には無関係・観測値のみ）。
             silenceStateEnteredAt = null;
@@ -7914,6 +7982,14 @@
             // 二重endCall()やnullアクセスにつながり得る。cleanup時は必ず解除する。
             // （failureSnapshot自体はここではクリアしない＝失敗直後も画面に残す）
             if (disconnectGraceTimer) { clearTimeout(disconnectGraceTimer); disconnectGraceTimer = null; }
+            // FAST TURN HOTFIX 18（今回追加・§13/§15: 手動終了・接続断・
+            // beforeunloadを含む全てのcleanupConnection()呼び出し経路で、
+            // 待機中のCALLBACK FINAL tail graceタイマーを確実に破棄する。
+            // このtail grace自体はここでのpc.close()/audio除去より先に
+            // endCall()経由で既に済んでいるはずだが（tail grace完了後に
+            // endCall()を呼ぶ設計のため）、手動終了等でtail grace待機中に
+            // 別経路からcleanupConnection()が呼ばれた場合に備えた安全網。
+            cancelCallbackFinalTailGrace('cleanup_connection(' + (source || '不明') + ')');
             // Expected Answer Window / Silence Timeout: 通話終了経路によらず、
             // 残存タイマーが遅延発火してログを汚さないよう防御的に解除する
             // （isStaleCallEventガードにより誤動作はしないが、タイマー自体は

@@ -432,6 +432,13 @@ function buildIntegrationContext(overrides) {
         responseHasFunctionCall: false,
         callbackTerminalArmed: false,
         pendingCallbackTerminalHangup: false,
+        // FAST TURN HOTFIX 18（今回追加）: maybeHangUpAfterCallbackTerminal()
+        // が新しく参照するようになったモジュールレベルのtail grace state。
+        // 実際のコードではmoduleスコープのlet/constだが、この関数だけを
+        // 抜き出して評価するVMサンドボックスでは、既存のcallbackTerminal
+        // Armed等と同じく「グローバル変数」として明示的に用意する必要がある。
+        callbackFinalTailGraceTimerId: null,
+        CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS: 1500,
         deferSilenceTimerForToolContinuationRateLimit: false,
         lastResponseTranscriptWasProcessNarrationOnly: false,
         lastResponseTranscriptWasIncompleteAiTurn: false,
@@ -482,6 +489,12 @@ test('R) [T: 音声停止でendCall] 主経路発火でendCall()が1回だけ呼
     vm.runInContext(GATE_SNIPPET, built.context);
     vm.runInContext(DEFERRED_FALLBACK_SNIPPET, built.context);
     vm.runInContext('maybeHangUpAfterCallbackTerminal', built.context)(1, 'ai_audio_stopped');
+    // FAST TURN HOTFIX 18（今回更新）: 主経路発火の直後は、endCall()の前に
+    // bounded tail grace（setTimeout）が1つ挟まるようになったため、即座には
+    // endCallCallsに積まれない。既存のfireAllScheduled()でこのタイマーを
+    // 明示的に発火させてから確認する（S/Tの既存テストと同じパターン）。
+    assert.strictEqual(built.endCallCalls.length, 0, 'HOTFIX18: endCall must not fire synchronously before the tail grace timer');
+    fireAllScheduled(built);
     assert.strictEqual(built.endCallCalls.length, 1);
     assert.strictEqual(built.endCallCalls[0].reason, 'callback_terminal');
     assert.ok(built.events.includes('CALLBACK_FINAL_AUDIO_DONE (source=ai_audio_stopped)'));
@@ -598,13 +611,13 @@ test('AB) bounded: HOTFIX16の変更はループ構文を一切含まない（�
 // §22: response.create/dc.send呼び出し箇所数の回帰ガード（AM/AN）
 // ============================================================
 
-test('AC) [AM/AN: 呼び出し箇所数の不要な増加が無いこと] sendResponseCreate(の総出現数=25、dc.send(JSON.stringify(の総出現数=10、setTimeout(の総出現数=19（HOTFIX15時点の実測ベースラインと完全一致。HOTFIX16は新しいresponse.create経路もdc.send経路も一切追加していない＝診断ログ追加のみ）', () => {
+test('AC) [AM/AN: 呼び出し箇所数の不要な増加が無いこと] sendResponseCreate(の総出現数=25、dc.send(JSON.stringify(の総出現数=10（HOTFIX15時点の実測ベースラインと完全一致。HOTFIX16は新しいresponse.create経路もdc.send経路も一切追加していない＝診断ログ追加のみ）。setTimeout(はHOTFIX18でCALLBACK FINAL専用のbounded tail grace 1個分のみ意図的に+1（19→20、詳細はtests/test_fast_turn_hotfix18_callback_audio_tail.js参照）', () => {
     const sendResponseCreateCount = (SRC.match(/sendResponseCreate\(/g) || []).length;
     const dcSendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
     const setTimeoutCount = (SRC.match(/setTimeout\(/g) || []).length;
     assert.strictEqual(sendResponseCreateCount, 25, 'sendResponseCreate( occurrence count must be unchanged from the HOTFIX15 baseline');
     assert.strictEqual(dcSendCount, 10, 'dc.send(JSON.stringify( occurrence count must be unchanged from the HOTFIX15 baseline');
-    assert.strictEqual(setTimeoutCount, 19, 'setTimeout( occurrence count must be unchanged from the HOTFIX15 baseline (no new timer-based response.create path)');
+    assert.strictEqual(setTimeoutCount, 20, 'setTimeout( occurrence count must be exactly +1 from the HOTFIX15/16/17 baseline of 19 (HOTFIX18: one bounded tail grace timer for CALLBACK FINAL only)');
 });
 
 // ============================================================

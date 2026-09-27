@@ -453,12 +453,18 @@ test('T) 回帰: callbackTerminalArmed=falseの通常ターンはHOTFIX12/13の�
     assert.deepStrictEqual(rNormal.startSilenceTimerCalls, [{ gen: 1, reason: 'response_done_no_function_call' }]);
 });
 
-test('U) maybeHangUpAfterCallbackTerminal: pendingフラグを消費し、staleでなければendCall()を1回だけ呼ぶ', () => {
+test('U) maybeHangUpAfterCallbackTerminal: pendingフラグを消費し、staleでなければbounded tail grace経由でendCall()を1回だけ呼ぶ', () => {
     const events = [];
     const logs = [];
     const endCallCalls = [];
+    const timeouts = [];
     const context = {
         pendingCallbackTerminalHangup: true,
+        // FAST TURN HOTFIX 18（今回更新）: maybeHangUpAfterCallbackTerminal()が
+        // 新しく参照するようになったモジュールレベルのtail grace state/setTimeout。
+        callbackFinalTailGraceTimerId: null,
+        CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS: 1500,
+        setTimeout: (fn, ms) => { const id = timeouts.length; timeouts.push({ fn, ms, fired: false }); return id; },
         isStaleCallEvent: () => false,
         pushTimelineEvent: (t) => events.push(t),
         console: { log: (l) => logs.push(l) },
@@ -468,6 +474,11 @@ test('U) maybeHangUpAfterCallbackTerminal: pendingフラグを消費し、stale�
     vm.runInContext(MAYBE_HANGUP_CALLBACK_TERMINAL_FN, context);
     vm.runInContext('maybeHangUpAfterCallbackTerminal', context)(1, 'ai_audio_stopped');
     assert.strictEqual(context.pendingCallbackTerminalHangup, false);
+    // HOTFIX18: endCall()はbounded tail grace（setTimeout）を挟んでから呼ばれる
+    // ため、この時点ではまだ呼ばれていない。
+    assert.strictEqual(endCallCalls.length, 0, 'HOTFIX18: endCall must not fire synchronously before the tail grace timer');
+    assert.strictEqual(timeouts.length, 1, 'exactly one tail grace timer must be scheduled');
+    for (const t of timeouts) { if (!t.fired) { t.fired = true; t.fn(); } }
     assert.strictEqual(endCallCalls.length, 1);
     assert.strictEqual(endCallCalls[0].reason, 'callback_terminal');
     assert.ok(events.some((e) => e.indexOf('CALLBACK_TERMINAL_END_CALL_REQUESTED') === 0));

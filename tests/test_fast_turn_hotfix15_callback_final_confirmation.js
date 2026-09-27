@@ -184,6 +184,10 @@ function buildIntegrationContext(overrides) {
         responseHasFunctionCall: false,
         callbackTerminalArmed: false,
         pendingCallbackTerminalHangup: false,
+        // FAST TURN HOTFIX 18（今回更新）: maybeHangUpAfterCallbackTerminal()
+        // が新しく参照するようになったモジュールレベルのtail grace state。
+        callbackFinalTailGraceTimerId: null,
+        CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS: 1500,
         deferSilenceTimerForToolContinuationRateLimit: false,
         lastResponseTranscriptWasProcessNarrationOnly: false,
         lastResponseTranscriptWasIncompleteAiTurn: false,
@@ -240,13 +244,16 @@ test('2) 主経路(output_audio_buffer.stopped)がsetTimeoutより先に発火�
 
     // 主経路: この応答自身の音声再生完了(output_audio_buffer.stopped)を模擬。
     vm.runInContext('maybeHangUpAfterCallbackTerminal', built.context)(1, 'ai_audio_stopped');
-    assert.strictEqual(built.endCallCalls.length, 1, 'primary path must end the call once its own audio finishes');
-    assert.strictEqual(built.endCallCalls[0].reason, 'callback_terminal');
+    // FAST TURN HOTFIX 18（今回更新）: endCall()の前にbounded tail grace
+    // （setTimeout）が挟まるようになったため、この時点ではまだ呼ばれない。
+    assert.strictEqual(built.endCallCalls.length, 0, 'HOTFIX18: endCall must not fire synchronously before the tail grace timer');
 
-    // 時間経過後、遅延フォールバックが発火しても、二重にendCall()しない
-    // （pendingCallbackTerminalHangupは既に主経路でfalseに消費済み）。
+    // 時間経過後、遅延フォールバック「と」新しいtail graceタイマーの両方が
+    // 発火する（fireAllScheduledは新たにscheduledへ積まれたタイマーも
+    // 拾って発火する）。それでもendCall()は1回だけ。
     fireAllScheduled(built);
-    assert.strictEqual(built.endCallCalls.length, 1, 'deferred fallback must be a no-op once the primary path already consumed the flag — no double endCall');
+    assert.strictEqual(built.endCallCalls.length, 1, 'primary path must end the call once its own audio finishes (after its tail grace), deferred fallback must not double it');
+    assert.strictEqual(built.endCallCalls[0].reason, 'callback_terminal');
 });
 
 test('3) 主経路が(既知のOpenAI側イベント遅延/欠落バグにより)全く発火しなかった場合でも、10秒後の遅延フォールバックが確実にendCall()する（無期限に通話を保持しない＝ユーザー指示§12）', () => {
