@@ -3820,6 +3820,51 @@
             usageResponses.push(entry);
             // 会話内容・音声・個人情報は一切含めない、数値とresponse.idのみ。
             console.log('[Phase2.6 usage]', entry);
+            // FAST TURN HOTFIX 9（今回追加・観測専用）: 実機で
+            //   input_tokens=20190（tool continuation直前の正常response）→
+            //   直後のtool continuation responseがrate_limit_exceededで失敗→
+            //   rate limit回復後の次の正常responseはinput_tokens=7380
+            // という大きな差が観測された。recordUsageEvent()自体は既に
+            // input_token_details.text_tokens/audio_tokens/cached_tokensを
+            // entryのフラットなフィールド（input_text_tokens/
+            // input_audio_tokens/input_cached_tokens）として保持し
+            // console.log(entry)にも渡していたが、(a) Consoleでオブジェクトを
+            // 展開しないと内訳が見えない、(b) Copy Debug Log/#diagTimeline
+            // （pushTimelineEventの対象）には内訳もresponse_id/
+            // toolContinuationActive/responseCreateCategoryとの相関も一切
+            // 出ていなかった、という2点の不足があったため、既存のentryの値
+            // ・既存の相関用変数（toolContinuationTraceActive・
+            // lastResponseReasonCategoryForDiag。新しい二重traceは作らない）
+            // をそのまま使い、1行にまとめた診断専用markerを追加する。
+            // APIに存在しないfieldを捏造しない（値が無い場合は既存のentryと
+            // 同じ0扱い、cached_ratioはinput_tokensが0の場合のみnull）。
+            // PII厳禁: transcript・氏名・電話番号・予約内容は一切含めない
+            // （数値とresponse_idの末尾8文字のみ）。挙動変更は一切なし
+            // （観測のみ。retry gate・prompt/toolsは今回変更していない）。
+            try {
+                const idTailForBreakdown = (entry.response_id || '').slice(-8);
+                const cachedRatio = entry.input_tokens > 0
+                    ? (entry.input_cached_tokens / entry.input_tokens).toFixed(3)
+                    : 'null';
+                const breakdownLine = 'REALTIME_USAGE_BREAKDOWN (response_id_tail=' + idTailForBreakdown
+                    + ', status=' + (entry.status || 'null')
+                    + ', input_tokens=' + entry.input_tokens
+                    + ', output_tokens=' + entry.output_tokens
+                    + ', total_tokens=' + entry.total_tokens
+                    + ', input_text_tokens=' + entry.input_text_tokens
+                    + ', input_audio_tokens=' + entry.input_audio_tokens
+                    + ', input_cached_tokens=' + entry.input_cached_tokens
+                    + ', output_text_tokens=' + entry.output_text_tokens
+                    + ', output_audio_tokens=' + entry.output_audio_tokens
+                    + ', cached_ratio=' + cachedRatio
+                    + ', toolContinuationActive=' + toolContinuationTraceActive
+                    + ', responseCreateCategory=' + (lastResponseReasonCategoryForDiag || 'unknown')
+                    + ')';
+                pushTimelineEvent(breakdownLine);
+                console.log('[' + breakdownLine + ']');
+            } catch (breakdownErr) {
+                pushTimelineEvent('REALTIME_USAGE_BREAKDOWN_MARKER_ERROR (' + ((breakdownErr && breakdownErr.message) || '不明') + ')');
+            }
             renderUsageSummary();
             if (usageLogEl) {
                 const idTail = (entry.response_id || '').slice(-8);
@@ -5373,11 +5418,41 @@
                     if (Array.isArray(rl)) {
                         const tokensEntry = rl.find((e) => e && e.name === 'tokens');
                         if (tokensEntry) {
+                            // HOTFIX 9（詳細は下のtryブロック直前のコメント参照）
+                            const previousRemainingForDelta = lastKnownRateLimitRemainingTokens;
                             if (typeof tokensEntry.remaining === 'number') {
                                 lastKnownRateLimitRemainingTokens = tokensEntry.remaining;
                             }
                             if (typeof tokensEntry.reset_seconds === 'number') {
                                 lastKnownRateLimitResetSeconds = tokensEntry.reset_seconds;
+                            }
+                            // FAST TURN HOTFIX 9（今回追加・観測専用）: 「直前の
+                            // remainingと今回のremainingの差」と「直前に成功した
+                            // response.usage.input_tokens」を並べて比較できるように
+                            // する（consumedSinceLastUpdateとresponse.input_tokensが
+                            // 同じとは仮定せず、実測して比較するための材料。ユーザー
+                            // 指示5参照）。previousRemainingForDeltaを保持するだけで、
+                            // 新しい状態変数は追加しない（lastKnownRateLimitRemaining
+                            // Tokens自体が既存のstartCall()/cleanupConnection()の
+                            // リセット対象のため、通話をまたいだ古い値が混入する
+                            // こともない）。
+                            try {
+                                const consumedSinceLastUpdate = (previousRemainingForDelta !== null
+                                    && typeof tokensEntry.remaining === 'number')
+                                    ? (previousRemainingForDelta - tokensEntry.remaining)
+                                    : null;
+                                const deltaLine = 'RATE_LIMIT_TOKEN_DELTA (limit='
+                                    + (typeof tokensEntry.limit === 'number' ? tokensEntry.limit : 'null')
+                                    + ', previousRemaining=' + (previousRemainingForDelta === null ? 'null' : previousRemainingForDelta)
+                                    + ', currentRemaining=' + (typeof tokensEntry.remaining === 'number' ? tokensEntry.remaining : 'null')
+                                    + ', consumedSinceLastUpdate=' + (consumedSinceLastUpdate === null ? 'null' : consumedSinceLastUpdate)
+                                    + ', resetSeconds=' + (typeof tokensEntry.reset_seconds === 'number' ? tokensEntry.reset_seconds : 'null')
+                                    + ', lastObservedResponseInputTokens=' + (lastObservedResponseInputTokens === null ? 'null' : lastObservedResponseInputTokens)
+                                    + ')';
+                                pushTimelineEvent(deltaLine);
+                                console.log('[' + deltaLine + ']');
+                            } catch (deltaErr) {
+                                pushTimelineEvent('RATE_LIMIT_TOKEN_DELTA_MARKER_ERROR (' + ((deltaErr && deltaErr.message) || '不明') + ')');
                             }
                         }
                     }
