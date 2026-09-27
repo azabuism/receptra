@@ -1,0 +1,136 @@
+"""
+RECEPTRA — FAST TURN HOTFIX 10: NAME-FIRST CACHE WARM-UP実験 契約テスト
+（CONTRACT TEST）
+
+背景: 「電話に出た直後にお客様のお名前を先に伺い、その後にご用件
+（本日はどのようなご用件でしょうか）を尋ねる」よう会話順序を変更した
+（_NAME_FIRST_TEMPLATE、build_realtime_instructions()内でScopeの直後・
+Intent Classificationの直前に挿入）。これは「Tool継続チェーンの最初の
+大きな応答が呼ばれるまでの時間を後ろにずらすと、OpenAI Realtime APIの
+プロンプトキャッシュがwarm-upする時間ができ、rate_limit_exceededが
+減るかもしれない」という未検証の仮説を実機で検証するための変更であり、
+本テストは「rate limit問題が解決した」ことを検証するものではない
+（それは実機のusage実測でしか判断できない）。本テストが検証するのは
+あくまで、意図した順序変更・重複のない正典化・既存の保護対象セクション
+（HOTFIX 8 Phase 2で圧縮した4テンプレート）を再度肥大化させていないこと、
+の3点のみ。
+
+実行: python3 tests/smoke_test_name_first_contract.py
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app.services.realtime_voice_ai import (
+    _NAME_FIRST_TEMPLATE,
+    _SCOPE_TEMPLATE,
+    _INTENT_CLASSIFICATION_TEMPLATE,
+    _FAST_RESERVATION_FLOW_TEMPLATE,
+    _HUMAN_HANDOFF_TEMPLATE,
+    _BOOKING_SAFETY_TEMPLATE,
+    _TIME_AMBIGUITY_TEMPLATE,
+)
+
+
+def _normalized(s):
+    return s.replace("\n", "").replace(" ", "").replace("　", "")
+
+
+def test_a_name_first_template_exists_and_asks_name_before_intent():
+    n = _normalized(_NAME_FIRST_TEMPLATE)
+    assert "お名前" in n
+    assert "伺って" in n or "伺い" in n
+    assert "ご用件把握" in n, "Intent Classificationセクションへの導線が必要"
+    print("A. NAME-FIRSTセクションが存在し、ご用件把握より前にお名前を伺う指示を含む: OK")
+
+
+def test_b_purpose_question_text_present_exactly_once():
+    phrase = "本日はどのようなご用件でしょうか"
+    n = _normalized(_NAME_FIRST_TEMPLATE)
+    assert n.count(phrase) == 1, (
+        "「本日はどのようなご用件でしょうか」はNAME_FIRSTセクション内に厳密に1回だけ"
+        "含まれているべき（他セクションでの重複導入を防ぐ。改行による分断を無視する"
+        "ため正規化した文字列で比較する）"
+    )
+    # 他の保護対象テンプレートに同一文言が漏れ出して重複していないことも確認する。
+    for tmpl in (
+        _INTENT_CLASSIFICATION_TEMPLATE,
+        _FAST_RESERVATION_FLOW_TEMPLATE,
+        _HUMAN_HANDOFF_TEMPLATE,
+        _BOOKING_SAFETY_TEMPLATE,
+        _TIME_AMBIGUITY_TEMPLATE,
+    ):
+        assert phrase not in _normalized(tmpl), "ご用件質問の文言が他セクションに複製されている"
+    print("B. ご用件質問「本日はどのようなご用件でしょうか」の文言重複なし: OK")
+
+
+def test_c_preemption_clause_present():
+    n = _normalized(_NAME_FIRST_TEMPLATE)
+    assert "自発的に" in n
+    assert "優先" in n or "そのまま使って" in n
+    assert "聞き直さない" in n or "重ねて聞き直さない" in n
+    print("C. お客様が先に情報を話した場合の先取り対応（プリエンプション）が明記されている: OK")
+
+
+def test_d_fast_reservation_flow_no_longer_lists_name_mid_sequence():
+    n = _normalized(_FAST_RESERVATION_FLOW_TEMPLATE)
+    # 旧: 「...来店理由→お名前→電話番号...」の並び。名前はNAME-FIRSTへ移設されたため、
+    # 基本順序の矢印チェーンからは外れ、代わりに「通話冒頭で既に伺っている」という
+    # 参照文になっているべき。
+    assert "来店理由→電話番号" in n or "人数→電話番号" in n or "NAME-FIRST" in n, (
+        "基本順序の矢印チェーンから「お名前」が外れ、NAME-FIRSTセクションへの参照に"
+        "置き換わっているはず"
+    )
+    assert "通話冒頭" in n and ("NAME-FIRST" in n or "既に伺っている" in n), (
+        "お名前は通話冒頭で確認済みである旨の短い参照が必要（重複して書き直さない）"
+    )
+    print("D. Fast Reservation Flowの基本順序からお名前が外れ、NAME-FIRSTへの短い参照に置換されている: OK")
+
+
+def test_e_protected_templates_not_relengthened():
+    # HOTFIX 8 Phase 2で圧縮した4テンプレートの見出しが変わらず残っており、
+    # HOTFIX 10によって大幅に再肥大化していないことを確認する（絶対値の厳密一致
+    # ではなく、明らかな再肥大化＝圧縮前水準への逆行が無いことを確認する趣旨）。
+    # 実測値（2026-09-27、HOTFIX 10着手時点。このHOTFIXではこれら4テンプレートの
+    # 本文を一切変更していないため、実測値そのまま + 5%の許容枠を上限とする）:
+    # _HUMAN_HANDOFF_TEMPLATE=2791, _BOOKING_SAFETY_TEMPLATE=2077,
+    # _TIME_AMBIGUITY_TEMPLATE=2061, _INTENT_CLASSIFICATION_TEMPLATE=1908文字。
+    baselines_after_phase2 = {
+        "_HUMAN_HANDOFF_TEMPLATE": (_HUMAN_HANDOFF_TEMPLATE, round(2791 * 1.05)),
+        "_BOOKING_SAFETY_TEMPLATE": (_BOOKING_SAFETY_TEMPLATE, round(2077 * 1.05)),
+        "_TIME_AMBIGUITY_TEMPLATE": (_TIME_AMBIGUITY_TEMPLATE, round(2061 * 1.05)),
+        "_INTENT_CLASSIFICATION_TEMPLATE": (_INTENT_CLASSIFICATION_TEMPLATE, round(1908 * 1.05)),
+    }
+    for name, (tmpl, rough_ceiling) in baselines_after_phase2.items():
+        assert len(tmpl) <= rough_ceiling, (
+            f"{name}がHOTFIX 8 Phase 2圧縮後の水準から明らかに再肥大化している "
+            f"(len={len(tmpl)}, ceiling={rough_ceiling})。HOTFIX 10はこれらの"
+            "テンプレートを再度肥大化させてはいけない（NAME_FIRSTは独立した"
+            "新セクションとして追加し、既存テンプレートは最小限の1文差し替えのみ）。"
+        )
+    print("E. HOTFIX 8 Phase 2で圧縮した保護対象テンプレートが再肥大化していない: OK")
+
+
+def test_f_name_first_is_standalone_new_section_not_merged_into_protected_templates():
+    # 正典ルールは_NAME_FIRST_TEMPLATE内にのみ存在し、_INTENT_CLASSIFICATION_
+    # TEMPLATE自体の本文は変更されていない（このHOTFIXでは触っていない）ことを、
+    # HOTFIX 8 Phase 2 Step 5終了時点の既知の見出し文言が保たれているかで確認する。
+    assert _INTENT_CLASSIFICATION_TEMPLATE.startswith(
+        "# 通話冒頭のご用件把握（Conversation Opening / Intent Classification）"
+    ), "_INTENT_CLASSIFICATION_TEMPLATE自体の本文は変更していないはず"
+    print("F. _INTENT_CLASSIFICATION_TEMPLATE自体は変更されておらず、NAME_FIRSTは独立した新セクション: OK")
+
+
+def main():
+    test_a_name_first_template_exists_and_asks_name_before_intent()
+    test_b_purpose_question_text_present_exactly_once()
+    test_c_preemption_clause_present()
+    test_d_fast_reservation_flow_no_longer_lists_name_mid_sequence()
+    test_e_protected_templates_not_relengthened()
+    test_f_name_first_is_standalone_new_section_not_merged_into_protected_templates()
+    print("\n=== ALL smoke_test_name_first_contract.py CHECKS PASSED ===")
+
+
+if __name__ == "__main__":
+    main()

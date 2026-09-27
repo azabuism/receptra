@@ -60,6 +60,10 @@ function extractConstExpr(src, name) {
 const FN = {
     isStaleCallEvent: extractFunctionSource(SRC, 'isStaleCallEvent'),
     classifyExpectedAnswerType: extractFunctionSource(SRC, 'classifyExpectedAnswerType'),
+    // FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・今回追加）: classifyExpectedAnswerType
+    // がNAME/VISIT_REASON判定時に直接呼び出すため、抽出しないとReferenceErrorに
+    // なる（観測専用・挙動には無関係）。
+    pushNameFirstFlowEvent: extractFunctionSource(SRC, 'pushNameFirstFlowEvent'),
     startAnswerWindowIfNeeded: extractFunctionSource(SRC, 'startAnswerWindowIfNeeded'),
     maybeSendNameCommitPoc: extractFunctionSource(SRC, 'maybeSendNameCommitPoc'),
     maybeLogPocReactionElapsed: extractFunctionSource(SRC, 'maybeLogPocReactionElapsed'),
@@ -130,6 +134,11 @@ function buildSandbox(overrides) {
         takeoverCommitCallGeneration: null,
         takeoverCommitPendingEvents: { committed: false, item: false, responseCreated: false, aiAudioStarted: false },
 
+        // ---- FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・今回追加）: ----
+        // pushNameFirstFlowEventが参照する最小限の状態（観測専用）。
+        nameFirstFlowState: { hasName: false, hasPurpose: false, hasDate: false, hasTime: false, hasPartySize: false },
+        nameFirstStageLogged: { opening_question: false, name_answer_received: false, purpose_question: false, purpose_answer_received: false, before_first_tool_call: false },
+
         // ---- gating（テストごとに指定するshopId/debugModeから決まる） ----
         debugMode: false,
         shopId: 'normal-shop-id-xxxx',
@@ -149,6 +158,7 @@ function buildSandbox(overrides) {
         clearTimeout: (id) => { timers.delete(id); },
         pushTimelineEvent: (text) => { events.push(text); },
         console: console,
+        callStartedAt: Date.now(),
     };
     Object.assign(sandbox, state);
 
@@ -182,6 +192,7 @@ function buildSandbox2(overrides) {
         performance: { now: () => Date.now() },
         pushTimelineEvent: (text) => { events.push(text); },
         console: console,
+        callStartedAt: Date.now(),
     };
     const state = Object.assign({
         callGeneration: 1,
@@ -189,6 +200,10 @@ function buildSandbox2(overrides) {
         expectedAnswerType: 'NONE',
         answerWindowTimerId: null,
         answerWindowType: null,
+        // FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・今回追加）: pushNameFirstFlowEvent
+        // が参照する最小限の状態（観測専用）。
+        nameFirstFlowState: { hasName: false, hasPurpose: false, hasDate: false, hasTime: false, hasPartySize: false },
+        nameFirstStageLogged: { opening_question: false, name_answer_received: false, purpose_question: false, purpose_answer_received: false, before_first_tool_call: false },
         nameAnswerGeneration: 0,
         pocCommitSentGeneration: null,
         nameTurnNormalCompletionSeen: false,

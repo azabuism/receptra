@@ -95,6 +95,10 @@ const FN = {
     isStaleCallEvent: extractFunctionSource(SRC, 'isStaleCallEvent'),
     msSince: extractFunctionSource(SRC, 'msSince'),
     classifyExpectedAnswerType: extractFunctionSource(SRC, 'classifyExpectedAnswerType'),
+    // FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・今回追加）: classifyExpectedAnswerType
+    // がNAME/VISIT_REASON判定時に呼ぶため、単体実行できるよう併せて抽出する
+    // （観測専用・pushTimelineEventを呼ぶのみで挙動には無関係）。
+    pushNameFirstFlowEvent: extractFunctionSource(SRC, 'pushNameFirstFlowEvent'),
     startAnswerWindowIfNeeded: extractFunctionSource(SRC, 'startAnswerWindowIfNeeded'),
     maybeSendNameCommitPoc: extractFunctionSource(SRC, 'maybeSendNameCommitPoc'),
     maybeLogPocReactionElapsed: extractFunctionSource(SRC, 'maybeLogPocReactionElapsed'),
@@ -137,6 +141,7 @@ function buildSandbox(overrides) {
         performance: { now: () => Date.now() },
         pushTimelineEvent: (text) => { events.push(text); },
         console: console,
+        callStartedAt: Date.now(),
     };
     const state = Object.assign({
         callGeneration: 1,
@@ -146,6 +151,10 @@ function buildSandbox(overrides) {
         answerWindowType: null,
         lastSpeechStartedAt: null,
         lastSpeechStoppedAt: null,
+        // FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・今回追加）: pushNameFirstFlowEvent
+        // が参照する最小限の状態（観測専用。既存のForced Commit判定には無関係）。
+        nameFirstFlowState: { hasName: false, hasPurpose: false, hasDate: false, hasTime: false, hasPartySize: false },
+        nameFirstStageLogged: { opening_question: false, name_answer_received: false, purpose_question: false, purpose_answer_received: false, before_first_tool_call: false },
         nameAnswerGeneration: 0,
         pocCommitSentGeneration: null,
         nameTurnNormalCompletionSeen: false,

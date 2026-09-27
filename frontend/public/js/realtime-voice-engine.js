@@ -510,6 +510,61 @@
         // おり、今回一切変更していない（O5.8スコープ外）。
         const ANSWER_WINDOW_LIMITS_MS = { NAME: 5000, PHONE: 10000, YES_NO: 3000, SHORT_CHOICE: 3000, VISIT_REASON: 30000 };
 
+        // ===== FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・今回追加・観測専用） =====
+        // 通話冒頭でお名前→ご用件の順に伺うNAME-FIRST実験の進行状況を、PIIを
+        // 一切含まない形（bool状態とtype文字列のみ）で記録するための最小限の
+        // 状態。既存のForced Commit機構・Answer Window機構へは一切書き込まず、
+        // それらの結果（expectedAnswerType・speech_stopped等の既存イベント）を
+        // 読み取り専用で観測するだけ（新しい二重traceは作らない）。
+        let nameFirstFlowState = { hasName: false, hasPurpose: false, hasDate: false, hasTime: false, hasPartySize: false };
+        // SHORT_ANSWER（TIME/DATE/PARTY_SIZEを区別せず一括分類。
+        // classifyExpectedAnswerType参照）のうち、直前のAI発話にどのキーワードが
+        // 含まれていたかを、transcript本文は保存せずboolとしてのみ一時的に
+        // 覚えておく（次のspeech_stoppedでnameFirstFlowStateへ反映したら
+        // 役目を終える一時変数）。
+        let lastAiTranscriptHadDateKeyword = false;
+        let lastAiTranscriptHadTimeKeyword = false;
+        let lastAiTranscriptHadPartySizeKeyword = false;
+        // 各stageは通話中に1回だけ記録する（同じ種類の質問が繰り返された場合の
+        // 重複ログ防止。挙動には一切影響しない診断専用フラグ）。
+        let nameFirstStageLogged = { opening_question: false, name_answer_received: false, purpose_question: false, purpose_answer_received: false, before_first_tool_call: false };
+
+        function maybeRecordNameFirstAnswer() {
+            // FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・今回追加・観測専用）:
+            // 呼び出し元は複数（input_audio_buffer.committed /
+            // conversation.item.created / input_audio_buffer.speech_stopped、
+            // いずれも既存のphoneTurnNormalCompletionSeen等と同じ「正常に
+            // ターンが終了した」ことを示すイベント）だが、判定ロジック自体は
+            // ここ1箇所にのみ書く（重複しない）。各stageはpushNameFirstFlowEvent
+            // 内のnameFirstStageLoggedガードにより通話中1回しか記録されない
+            // ため、複数イベントから呼ばれても二重記録・二重書き込みはしない。
+            if (expectedAnswerType === 'NAME') {
+                nameFirstFlowState.hasName = true;
+                pushNameFirstFlowEvent('name_answer_received');
+            } else if (expectedAnswerType === 'VISIT_REASON') {
+                nameFirstFlowState.hasPurpose = true;
+                pushNameFirstFlowEvent('purpose_answer_received');
+            } else if (expectedAnswerType === 'SHORT_ANSWER') {
+                if (lastAiTranscriptHadDateKeyword) nameFirstFlowState.hasDate = true;
+                if (lastAiTranscriptHadTimeKeyword) nameFirstFlowState.hasTime = true;
+                if (lastAiTranscriptHadPartySizeKeyword) nameFirstFlowState.hasPartySize = true;
+            }
+        }
+
+        function pushNameFirstFlowEvent(stage) {
+            if (nameFirstStageLogged[stage]) return;
+            nameFirstStageLogged[stage] = true;
+            const msSinceCallStart = callStartedAt ? (Date.now() - callStartedAt) : null;
+            pushTimelineEvent('NAME_FIRST_FLOW (stage=' + stage +
+                ', msSinceCallStart=' + msSinceCallStart +
+                ', expectedAnswerType=' + expectedAnswerType +
+                ', hasName=' + nameFirstFlowState.hasName +
+                ', hasPurpose=' + nameFirstFlowState.hasPurpose +
+                ', hasDate=' + nameFirstFlowState.hasDate +
+                ', hasTime=' + nameFirstFlowState.hasTime +
+                ', hasPartySize=' + nameFirstFlowState.hasPartySize + ')');
+        }
+
         // ===== NAME Forced Commit Observation PoC: 追加の最小状態（今回追加） =====
         // 有効化条件・目的はファイル冒頭のnameCommitPocEnabled定義を参照。
         // 大きな状態機械は作らず、「NAME質問1回（世代）につき手動commitは
@@ -1433,12 +1488,22 @@
                 // 既存YES_NO（よろしいですか等の確認質問）の判定を優先させる
                 // ため、このelse ifはYES_NO判定より後に置いている。
                 type = 'SHORT_CHOICE';
-            } else if (/ご来店の目的|ご来店について|ご希望やお悩み|ご相談内容|どのようなことでのご予約|来店理由/.test(t)) {
+            } else if (/ご来店の目的|ご来店について|ご希望やお悩み|ご相談内容|どのようなことでのご予約|来店理由|ご用件/.test(t)) {
                 // 追加要件（Conversation Time Control）: 来店理由確認の問いかけを
                 // 検出する。NAME/PHONE/YES_NO/SHORT_CHOICEより優先度を下げている
                 // （自由回答の来店理由の中に偶然「よろしいですか」等の語が
                 // 含まれていても誤ってYES_NO等に上書きされないよう、
                 // 既存のいずれにも一致しなかった場合にのみ判定する）。
+                //
+                // FAST TURN HOTFIX 10（NAME-FIRST cache warm-up実験・今回追加）:
+                // 「ご用件」を検出語に追加した。通話冒頭でお名前を伺った直後に
+                // 尋ねる新しい質問「本日はどのようなご用件でしょうか？」を、
+                // 新しいtype文字列を追加せず、既存のVISIT_REASON（自由回答・
+                // 30秒のAnswer Window）にそのまま乗せるための最小限の拡張。
+                // ANSWER_WINDOW_LIMITS_MS・Forced Commit系関数はいずれも
+                // VISIT_REASONを個別に参照していないため、この拡張によって
+                // 新しい強制commit経路は一切生まれない（観測目的の
+                // NAME_FIRST_FLOWマーカーのみがこの型を参照する）。
                 type = 'VISIT_REASON';
             } else if (/何時|何日|何名|いつをご希望|いつがよろしい|いつでしょうか|別のお?時間|ご希望のお?時間|ご希望の日(にち)?|お?時間.{0,6}(ご希望|いかが|ございます|よろしい)/.test(t)) {
                 // SHORT_ANSWER（今回追加。FAST ANSWER TURN / CUSTOMER-FIRST
@@ -1465,6 +1530,15 @@
                 // YES_NO/SHORT_CHOICE用のForced Commit関数）と紛らわしいため、
                 // 意図的に別の接頭辞「quickAnswer」を使う（下記参照）。
                 type = 'SHORT_ANSWER';
+                // FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・今回追加・観測専用）:
+                // SHORT_ANSWERはTIME/DATE/PARTY_SIZEを区別せず一括分類するため、
+                // NAME_FIRST_FLOWのhasDate/hasTime/hasPartySize用に、AI自身の
+                // 発話に含まれるキーワードだけを軽量に見て一時変数へ記録する
+                // （transcript本文は保存しない。既存の分類優先順位・
+                // Forced Commit挙動には一切影響しない）。
+                lastAiTranscriptHadDateKeyword = /日にち|ご希望の日|いつ/.test(t);
+                lastAiTranscriptHadTimeKeyword = /時間|何時/.test(t);
+                lastAiTranscriptHadPartySizeKeyword = /人数|何名/.test(t);
             }
             // PHASE O5.9.1（ユーザー指示8）: classifyExpectedAnswerType()が
             // 呼ばれるたび（＝AIの発話が1回完了するたび）に、その分類結果を
@@ -1485,6 +1559,12 @@
                     // フラグもここでリセットする。
                     nameAnswerGeneration += 1;
                     nameTurnNormalCompletionSeen = false;
+                    // FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・今回追加・観測専用）:
+                    // 通話中で最初のNAME質問＝NAME-FIRSTセクションが意図する
+                    // 「通話冒頭の質問」とみなし、1回だけ記録する。
+                    if (nameAnswerGeneration === 1) {
+                        pushNameFirstFlowEvent('opening_question');
+                    }
                 }
                 if (type === 'PHONE') {
                     // PHONE Forced Commit（今回追加）: NAMEと同じく、型が変化して
@@ -1493,6 +1573,13 @@
                     phoneAnswerGeneration += 1;
                     phoneTurnNormalCompletionSeen = false;
                     pushTimelineEvent('PHONE_TURN_DETECTED (generation=' + phoneAnswerGeneration + ')');
+                }
+                if (type === 'VISIT_REASON') {
+                    // FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・今回追加・観測専用）:
+                    // NAME-FIRSTセクションが意図する「本日はどのようなご用件
+                    // でしょうか？」もこのVISIT_REASON型に乗るため、通話中最初の
+                    // VISIT_REASON質問を1回だけ記録する。
+                    pushNameFirstFlowEvent('purpose_question');
                 }
                 pushTimelineEvent('EXPECTED_ANSWER_SET (type=' + type + ')');
             }
@@ -4797,6 +4884,7 @@
                 // はもう不要。
                 userTurnFallbackNormalCompletionSeen = true;
                 cancelUserTurnFallbackTimer('committed');
+                maybeRecordNameFirstAnswer(); // HOTFIX10観測専用
             } else if (type === 'conversation.item.created' && msg.item && msg.item.role === 'user') {
                 // PHASE8（会話停止調査・最重要）: ユーザー発話が会話アイテムとして
                 // 確定したことを示すイベント。「名前を答えた後に止まる」等の症状で、
@@ -4819,6 +4907,7 @@
                 // PHONE Forced Commit（今回追加。全店舗適用・独立）
                 phoneTurnNormalCompletionSeen = true;
                 maybeLogPhoneReactionElapsed('item', 'conversation.item.created');
+                maybeRecordNameFirstAnswer(); // FAST TURN HOTFIX 10（観測専用）
                 // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）
                 quickAnswerTurnNormalCompletionSeen = true;
                 maybeLogQuickAnswerReactionElapsed('item', 'conversation.item.created');
@@ -4959,6 +5048,7 @@
                 // キャンセル済み（PHONE/NAME/YES_NO/SHORT_CHOICEで共有している
                 // 同一のanswerWindowTimerIdのため、専用のキャンセル関数は不要）。
                 phoneTurnNormalCompletionSeen = true;
+                maybeRecordNameFirstAnswer(); // FAST TURN HOTFIX 10（観測専用）
                 // PHASE O5.10（SHORT_ANSWER — SEMANTIC VAD PRIMARY TURN
                 // COMPLETION。O5.9.2 Auditの結論を採用）: O5.8では、ここで
                 // Finalization Grace（1.2秒）をarmし、猶予後にmanual
@@ -5387,6 +5477,9 @@
                 handleFunctionCallItem(msg.item).catch((e) => {
                     logEvent('Tool処理中にエラー: ' + e.message);
                 });
+                // FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・観測専用）: 通話中で
+                // 最初のTool呼び出し確定時点を1回だけ記録する。
+                pushNameFirstFlowEvent('before_first_tool_call');
             } else if (type === 'rate_limits.updated') {
                 // FAST TURN HOTFIX 6（今回追加・観測専用）: 実機でTool継続response
                 // がerror_type=tokens, error_code=Rate_limit_exceededで失敗した
@@ -5932,6 +6025,15 @@
             // FAST TURN HOTFIX（FIRST ANSWER MUST COUNT・今回追加）: 前回通話の
             // ミュート解除タイムスタンプを持ち越さない（診断専用値のリセット）。
             lastAiSpeakingEndAt = null;
+            // FAST TURN HOTFIX 10（NAME-FIRST FLOW診断・今回追加）: 前回通話の
+            // NAME-FIRST進行状況・stage記録済みフラグを持ち越さない
+            // （観測専用状態のリセット。既存のForced Commit系リセットとは
+            // 完全に独立した状態のため個別にリセットする）。
+            nameFirstFlowState = { hasName: false, hasPurpose: false, hasDate: false, hasTime: false, hasPartySize: false };
+            lastAiTranscriptHadDateKeyword = false;
+            lastAiTranscriptHadTimeKeyword = false;
+            lastAiTranscriptHadPartySizeKeyword = false;
+            nameFirstStageLogged = { opening_question: false, name_answer_received: false, purpose_question: false, purpose_answer_received: false, before_first_tool_call: false };
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。

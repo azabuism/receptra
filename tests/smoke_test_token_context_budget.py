@@ -242,7 +242,18 @@ import httpx
 # 修正した（BASELINE_INSTRUCTIONS_CHARSの値・各Stepごとの実測値・テストの
 # 合否判定には一切影響なし。この訂正はコメントの記述ミスのみを直す
 # ドキュメント修正）。
-BASELINE_INSTRUCTIONS_CHARS = 19320
+#
+# 【2026-09-27・FAST TURN HOTFIX 10（NAME-FIRST cache warm-up実験）】
+# 通話冒頭で先にお名前を伺い、その後にご用件を尋ねるよう順序変更する
+# _NAME_FIRST_TEMPLATE（新規・独立セクション）を追加し、
+# _FAST_RESERVATION_FLOW_TEMPLATEの「情報を集める基本順序」からは
+# お名前をNAME-FIRSTへの短い参照に置き換えた（重複して書き直していない）。
+# 実測: instructions全体（最小構成の新規登録店舗） 19320→19753文字
+# （+433文字、+2.2%。ALLOWED_GROWTH_RATIO=1.10の許容枠内）。tools schemaは
+# 変更なし（14277文字のまま）。この変更は「rate limit問題を解決した」もの
+# ではなく、あくまで会話順序変更の実測用の変更である（実機のusage実測は
+# ユーザー側で別途実施）。
+BASELINE_INSTRUCTIONS_CHARS = 19753
 BASELINE_TOOLS_JSON_CHARS = 14277
 ALLOWED_GROWTH_RATIO = 1.10  # 10%までの増加は許容し、それを超えたら気づけるようにする
 

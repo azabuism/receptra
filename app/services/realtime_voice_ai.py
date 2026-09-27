@@ -1141,6 +1141,48 @@ _SCOPE_TEMPLATE = """\
 #   「一度把握したご用件はお客様自身が話を変えない限り判定し直さない」という
 #   一文をこのテンプレート内の指示として含めることで対応する（実機テストで
 #   崩れが確認された場合に軽量なstate導入を再検討する）。
+# FAST TURN HOTFIX 10（NAME-FIRST cache warm-up実験・今回追加）:
+# 「電話に出た直後にお客様のお名前を先に伺い、その後にご用件を尋ねる」よう
+# 順序を変更する、単一の実験用セクション。build_realtime_instructions()の
+# セクション挿入順ルールに従い、_SCOPE_TEMPLATEの直後・
+# _INTENT_CLASSIFICATION_TEMPLATEの直前に配置する。
+#
+# 目的（実装側の内部事情。この文言自体はプロンプトには含めない）: OpenAI
+# Realtime APIのToolを伴う最初の大きな応答（Tool Continuation）が呼ばれる
+# までの時間を後ろにずらすことで、プロンプトキャッシュのwarm-upに時間を
+# 与えられるかもしれない、という未検証の仮説を実機で検証するため。
+# 「rate limit問題が解決した」等の断定はこのファイル・関連テストのどこにも
+# 含めない（実機のusage実測でのみ判断する）。
+#
+# 設計方針（重要）:
+# - 単一の正典ルールとしてここにのみ書き、他セクション
+#   （_FAST_RESERVATION_FLOW_TEMPLATEの「情報を集める基本順序」等）では、
+#   このセクションを短く参照するだけで重複して書き直さない。
+# - お客様が挨拶直後やお名前を伺っている最中に、ご予約の詳細・ご用件・
+#   お名前などを自発的にまとめて話した場合は、この順序に固執せず、既に
+#   話された内容をそのまま使う（他の全セクションと共通の「速さのために
+#   情報を勝手に作らない・既に分かっている情報を聞き直さない」という
+#   既存の絶対ルールと矛盾しないよう、ここでも明記する）。
+# - classifyExpectedAnswerType()（フロントエンド）は「お名前」という語を
+#   既に検出できるため、この新しいNAME質問もFIRST ANSWER MUST COUNT等の
+#   既存の汎用機構（質問内容に依存しない、音声レベルベースのマイク保護）で
+#   引き続き保護される（監査済み。JS側の新規変更は「本日はどのような
+#   ご用件でしょうか」を既存のVISIT_REASON判定に含める最小限の追加のみ）。
+_NAME_FIRST_TEMPLATE = """\
+# 通話冒頭でお名前を先に伺う（NAME-FIRST）（重要・必ず守ってください）
+挨拶の直後、この後の「通話冒頭のご用件把握」セクションでご用件を分類する
+前に、まず自然にお名前を伺ってください（例:「恐れ入りますが、お名前を
+教えいただけますか？」）。お名前を伺えたら、次に「本日はどのようなご用件
+でしょうか？」と尋ね、その回答をもとに「通話冒頭のご用件把握」セクションの
+4分類に進んでください。
+
+## お客様が先に情報を話した場合はそれを優先する（重要）
+お客様が挨拶の直後や、お名前を伺っている間に、ご予約の詳細・ご用件・
+お名前などを自発的にまとめて話した場合は、この順序に固執せず、既に
+話された内容をそのまま使ってください。同じ情報を確認のためであっても
+重ねて聞き直さないでください。
+"""
+
 _INTENT_CLASSIFICATION_TEMPLATE = """\
 # 通話冒頭のご用件把握（Conversation Opening / Intent Classification）（重要・必ず守ってください）
 電話に出たら、お客様が話し終わるのを黙って待ち続けるのではなく、人間の
@@ -1251,11 +1293,13 @@ _FAST_RESERVATION_FLOW_TEMPLATE = """\
 受付を終えるAI」です。
 
 ## 情報を集める基本順序
-来店希望日時 → （必要な場合のみ）人数 → （設定でONの場合のみ）来店理由 →
-お名前 → 電話番号（原則として最後） → check_availability → 予約全体の
-最終確認 → create_reservation、という順序を基本にしてください。ただし、
-お客様が自発的に複数の情報をまとめて話した場合は、この順序に固執せず、
-既に得られている情報から自然に会話を進めてください。
+お名前は通話冒頭（NAME-FIRSTセクション）で既に伺っているはずです。伺えて
+いない場合はこの時点で自然に伺ってください。その上で、来店希望日時 →
+（必要な場合のみ）人数 → （設定でONの場合のみ）来店理由 → 電話番号
+（原則として最後） → check_availability → 予約全体の最終確認 →
+create_reservation、という順序を基本にしてください。ただし、お客様が
+自発的に複数の情報をまとめて話した場合は、この順序に固執せず、既に
+得られている情報から自然に会話を進めてください。
 
 ## 既に分かっている情報を聞き直さない（重要）
 お客様が一度の発言でまとめて複数の情報を教えてくれた場合
@@ -2294,6 +2338,14 @@ async def build_realtime_instructions(
       Intent保持用state（クライアント側変数・サーバー側DB）の追加も、
       いずれも行っていない（監査の結果、既存4Toolと会話履歴のみで十分と
       判断したため）。
+
+    NAME-FIRST追記（FAST TURN HOTFIX 10・cache warm-up実測実験）:
+    - _NAME_FIRST_TEMPLATEはScopeの直後・Intent Classificationの直前に、
+      常に固定文言として挿入する。単一の正典ルールとしてここにのみ内容を
+      持ち、_FAST_RESERVATION_FLOW_TEMPLATEの「情報を集める基本順序」からは
+      お名前を外し、このセクションを短く参照するだけに留めた（重複して
+      書き直さない）。新規Tool・新規state（クライアント側/サーバー側とも）
+      は追加していない。
     """
     hours_block = await _build_hours_block(db, shop.id)
 
@@ -2306,6 +2358,7 @@ async def build_realtime_instructions(
             language_rules_section=_build_language_rules_section(ai_languages, staff_languages),
         ),
         _SCOPE_TEMPLATE,
+        _NAME_FIRST_TEMPLATE,
         _INTENT_CLASSIFICATION_TEMPLATE,
         _FAST_RESERVATION_FLOW_TEMPLATE.format(
             party_size_guidance=_build_party_size_guidance(shop.business_type)
