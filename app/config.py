@@ -103,6 +103,21 @@ class Settings(BaseSettings):
     # reasoning.effort: 上げるほどレイテンシ・トークン使用量が増えると
     # 公式ドキュメントに明記されているため、単純な受付対話向けに低めに設定。
     OPENAI_REALTIME_REASONING_EFFORT: str = "low"
+    # Realtime Token Architecture（2026年9月）: session.truncation。
+    # 実機で「cached_ratio 99.2%でもrate_limit_exceededが発生する」ことが
+    # 確認されたため、instructionsの圧縮（HOTFIX 8-10）だけでは対処できない
+    # 「通話が進むにつれて肥大化する会話履歴そのもの」を、OpenAI公式ドキュメント
+    # （developers.openai.com/api/docs/guides/realtime-conversations、および
+    # OpenAI Realtime API公式ブログ developers.openai.com/blog/realtime-api）が
+    # 明記しているsession.truncation（retention_ratio戦略）で自動的に間引く。
+    # 公式ブログが「キャッシュ効率を保つため、少しずつではなく一度に約20%を
+    # 間引く」推奨値として挙げているretention_ratio=0.8をデフォルトとする
+    # （0.8 = 閾値到達時に古い会話アイテムの直近80%を残し、約20%をまとめて
+    # 間引く設定。値の意味自体は公式ドキュメントの記述に基づくが、RECEPTRA本番
+    # トラフィックでの実際の削減効果・cache miss発生時の挙動は未検証であり、
+    # 実機のREALTIME_USAGE_BREAKDOWN/RATE_LIMIT_TOKEN_DELTA診断マーカーでの
+    # 実測が必要。環境変数で無効化（空文字）・比率変更ができるようにする）。
+    OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO: str = "0.8"
 
     # ===== OpenAI TTS（Phase3C.1: Zero-Wait Greeting PoC用の事前生成音声）=====
     # 通常の会話音声(Realtime API)とは別物。第一声だけを通話開始前に

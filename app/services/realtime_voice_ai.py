@@ -2495,6 +2495,39 @@ async def create_realtime_session(db: AsyncSession, shop: Shop) -> dict:
             "effort": settings.OPENAI_REALTIME_REASONING_EFFORT,
         }
 
+    # Realtime Token Architecture（2026年9月）: session.truncation。
+    # 実機で「cached_ratio 99.2%でもrate_limit_exceededが発生する」ことが
+    # 確認された。instructionsの圧縮（HOTFIX 8-10）は固定の
+    # システムプロンプト部分にしか効かないため、「通話が進むにつれて肥大化する
+    # 会話履歴そのもの」を減らす手段として、OpenAIの公式Python SDK
+    # (openai==1.109.1)のRealtimeSessionCreateRequest型定義で確認済みの
+    # truncationフィールド（デフォルトは"auto"。今回"retention_ratio"戦略に
+    # 明示変更する）を設定する。
+    #
+    # 重要な留保（推測ではなく実測が必要な点。断定しない）:
+    # SDKの型定義コメントには「conversation exceeds the input token limit」の
+    # 時にのみ発動するとあり、このinput token limit自体を下げる設定項目は
+    # 現行のSDK型定義には存在しない（実装時に確認済み。max_tokens/
+    # context_window/token_limit等のフィールド名で該当箇所を検索したが
+    # 見つからなかった）。つまり実機で観測されたinput_tokens=20,524が、
+    # そもそもこのtruncation発動閾値を下回っている場合、retention_ratioへ
+    # 変更してもそのターン自体のトークン数は変わらない可能性がある。
+    # 「rate limitはモデル自身のcontext truncation閾値とは別物の、組織単位の
+    # tokens-per-minute（今回の実測ではlimit=40000）」であるため、本設定が
+    # 今回観測されたrate_limit_exceededを解消するかどうかは実機の
+    # REALTIME_USAGE_BREAKDOWN/RATE_LIMIT_TOKEN_DELTA診断マーカーでの実測でしか
+    # 判断できない。ここでは「解消した」と断定しない。
+    if settings.OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO:
+        try:
+            retention_ratio = float(settings.OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO)
+        except ValueError:
+            retention_ratio = None
+        if retention_ratio is not None and 0.0 < retention_ratio <= 1.0:
+            session_config["truncation"] = {
+                "type": "retention_ratio",
+                "retention_ratio": retention_ratio,
+            }
+
     client = _get_client()
     secret = await client.realtime.client_secrets.create(
         expires_after={
