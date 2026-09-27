@@ -80,8 +80,38 @@ import httpx
 # create_reservationのdescriptionはreason_code別の固有ロジックであり、
 # 過去の実機バグ修正に直結する内容のため、安全に削れる重複が見つからず、
 # 今回は見送った。詳細はFAST TURN HOTFIX 7の最終報告を参照）。
+#
+# FAST TURN HOTFIX 8更新（2026-09-26、commit 447488a時点からの変更）:
+# 実機で「check_availability後に30秒近く無音になり通話が切断される」
+# 症状が継続していることが確認されたのを受け、HOTFIX 7では見送った
+# tool schema（特にcheck_availability/create_reservationのdescription、
+# tools schema全体16490文字中6843文字＝約41%を占める）の圧縮に踏み込んだ
+# （Section 9 TOP PRIORITY）。
+# 圧縮方針: reason_code別の案内内容・Named Staff Safe Resolution・
+# Generic Resource Foundationの安全ルールは一切削らず（全項目を
+# tests/smoke_test_tool_description_contract.pyで契約テスト化した上で
+# 圧縮前後ともPASSすることを確認済み）、(1)「Toolを呼び出す前に許可を
+# 求めない」という、_FAST_RESERVATION_FLOW_TEMPLATE/_CONSTRAINTS_TEMPLATE
+# 側に既に存在する指示の全文再掲を1行の参照に短縮、(2) 長い説明文を
+# 「reason_code=意味→対応」という密な箇条書き形式に変換、
+# (3) create_reservationのstaff_name/resource_type関連の説明を
+# 「check_availabilityと同じ」という参照に置き換え（両descriptionとも
+# 同じtools配列の中で毎回一緒にモデルへ渡されるため、内容が完全に重複して
+# いた分は実質的に無駄なtoken消費だった）、(4) staff_name/resource_type
+# パラメータの説明文（両Toolに一字一句同一の文言が重複していた）を短縮、
+# という4種類の圧縮のみを行った。文言の言い換え・要約であり、reason_code・
+# 禁止表現・エスカレーション先（request_callback等）はすべて維持している。
+# 実測: tools schema 16490→14277文字（-2213文字、-13.4%）。
+# 内訳: check_availability description 3534→2312（-1222）、
+# create_reservation description 3309→2535（-774）、
+# staff_name/resource_typeパラメータ（両Tool計4箇所） 計-217。
+# instructions側（system prompt本体）は今回のcommitでは変更していない
+# （FAST_RESERVATION_FLOW/BOOKING_SAFETY/TIME_AMBIGUITY等の圧縮は、
+# 実機検証済みの安全ルールを壊すリスクが高く、本フェーズで新設した
+# 契約テストの範囲を超えるため見送った。詳細はFAST TURN HOTFIX 8の
+# 最終報告を参照）。
 BASELINE_INSTRUCTIONS_CHARS = 23549
-BASELINE_TOOLS_JSON_CHARS = 16490
+BASELINE_TOOLS_JSON_CHARS = 14277
 ALLOWED_GROWTH_RATIO = 1.10  # 10%までの増加は許容し、それを超えたら気づけるようにする
 
 
