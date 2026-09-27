@@ -608,6 +608,11 @@
         // REALTIME_SESSION_UPDATED診断用: 直近のsession.update送信時刻
         // （performance.now()）。
         let phaseTransitionSessionUpdateSentAt = null;
+        // HOTFIX（今回追加）: REALTIME_PHASE_TRANSITION_CONFIRMED診断用に、
+        // 直近に送信したsession.updateのinstructions_chars/tool_countを
+        // session.updated受信まで保持する（PIIなし。文字数・件数のみ）。
+        let phaseTransitionInstructionsChars = null;
+        let phaseTransitionToolCount = null;
 
         // maybeRecordNameFirstAnswer()のNAME判定時に呼び出す。「NAME質問への
         // 回答が終わった」タイミングで、次のresponse.done（＝この直後にサーバーが
@@ -673,9 +678,20 @@
             }
 
             try {
+                // HOTFIX（今回追加・root cause修正）: OpenAI Realtime API SDK型定義
+                // （realtime_session_create_request_param.py /
+                // session_update_event_param.py）で確認済みの通り、
+                // session.updateイベントのsessionフィールドは session作成時と
+                // 同一スキーマ（RealtimeSessionCreateRequestParam）を使い、その
+                // 先頭フィールド type: Required[Literal["realtime"]] は必須。
+                // 既存のsession作成側（realtime_voice_ai.py）は既に
+                // "type": "realtime" を送っており成功しているのに対し、
+                // ここ（session.update側）ではtypeが欠落しており、これが実機で
+                // 観測されたmissing_required_parameterの直接の原因と確認した
+                // （推測ではなくSDK型定義＋自コードの比較による確認）。
                 dc.send(JSON.stringify({
                     type: 'session.update',
-                    session: { instructions: ctx.instructions, tools: tools },
+                    session: { type: 'realtime', instructions: ctx.instructions, tools: tools },
                 }));
             } catch (e) {
                 pushTimelineEvent('REALTIME_PHASE_TRANSITION_SEND_FAILED (target=' + targetPhase + '): ' + e.message);
@@ -690,6 +706,11 @@
             phaseTransitionSessionUpdateSentAt = performance.now();
             pendingPhaseTransitionForceFollowUp = forceFollowUp;
             pendingPhaseTransitionReasonForFollowUp = 'phase_transition_to_' + targetPhase;
+            // HOTFIX（今回追加）: REALTIME_PHASE_TRANSITION_CONFIRMED用に、この
+            // transitionが対象とするinstructions_chars/tool_countを保持しておく
+            // （上で既に計算済みのinstructionsChars/toolCountをそのまま流用）。
+            phaseTransitionInstructionsChars = instructionsChars;
+            phaseTransitionToolCount = toolCount;
 
             // 楽観的更新（上のコメント参照: event_idが成功時にエコーされない仕様のため）。
             currentRealtimePhase = targetPhase;
@@ -4978,6 +4999,23 @@
                 } catch (diagErr) {
                     pushTimelineEvent('REALTIME_SESSION_UPDATED_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
                 }
+                // HOTFIX（今回追加・§15）: session.updateがOpenAI側に正式に
+                // 受理されたことを示す新しい成功markerを追加する（PIIなし。
+                // phase/経過時間/文字数/tool数のみ）。既存のREALTIME_SESSION_UPDATED
+                // は変更せず、その直後に独立して追加するだけ。
+                try {
+                    const msSinceCallStartConfirmed = callStartedAt ? (Date.now() - callStartedAt) : null;
+                    const confirmedLine = 'REALTIME_PHASE_TRANSITION_CONFIRMED (phase=' + currentRealtimePhase
+                        + ', ms_since_call_start=' + msSinceCallStartConfirmed
+                        + ', instructions_chars=' + (phaseTransitionInstructionsChars === null ? '不明' : phaseTransitionInstructionsChars)
+                        + ', tool_count=' + (phaseTransitionToolCount === null ? '不明' : phaseTransitionToolCount) + ')';
+                    pushTimelineEvent(confirmedLine);
+                    console.log('[' + confirmedLine + ']');
+                } catch (diagErr) {
+                    pushTimelineEvent('REALTIME_PHASE_TRANSITION_CONFIRMED_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
+                }
+                phaseTransitionInstructionsChars = null;
+                phaseTransitionToolCount = null;
                 phaseTransitionInProgress = false;
                 phaseTransitionSessionUpdateSentAt = null;
                 const shouldForceFollowUp = pendingPhaseTransitionForceFollowUp;
@@ -5764,15 +5802,48 @@
                 // 自動再送は一切行わない。既存のerrorハンドラ本体＝
                 // showErrorBanner/responseState='error'は変更しない）。
                 if (phaseTransitionInProgress) {
+                    // HOTFIX（今回追加・§3）: OpenAI Realtime API SDK型定義
+                    // （realtime_error.py）でmessage/type/code/event_id/paramが
+                    // 実在フィールドと確認済み。error.paramは「エラーに関連する
+                    // パラメータ名」（スキーマ上のフィールド名であり、会話内容や
+                    // 個人情報を含み得ない）と公式docstringで確認済みのため、
+                    // 常時・診断markerへ含めて安全。一方error.messageは要約や
+                    // ユーザー発話内容を含む可能性を否定できないため、既存の
+                    // RESPONSE_DONE_FAILED_ERROR_MESSAGE_DEBUG_ONLYと同じ方針で
+                    // Copy Debug Log/#diagTimelineには一切含めず、debugMode
+                    // （?debug=1）時のみconsole.logへ直接出す。
+                    const errParam = (msg.error && msg.error.param) || '不明';
                     const failedLine2 = 'REALTIME_PHASE_TRANSITION_FAILED (phase=' + currentRealtimePhase
                         + ', error_type=' + ((msg.error && msg.error.type) || '不明')
-                        + ', error_code=' + ((msg.error && msg.error.code) || '不明') + ')';
+                        + ', error_code=' + ((msg.error && msg.error.code) || '不明')
+                        + ', error_param=' + errParam + ')';
                     pushTimelineEvent(failedLine2);
                     console.log('[' + failedLine2 + ']');
+                    if (debugMode && msg.error && msg.error.message) {
+                        console.log('[REALTIME_PHASE_TRANSITION_FAILED_ERROR_MESSAGE_DEBUG_ONLY]', msg.error.message);
+                    }
                     phaseTransitionInProgress = false;
                     phaseTransitionSessionUpdateSentAt = null;
+                    phaseTransitionInstructionsChars = null;
+                    phaseTransitionToolCount = null;
                     pendingPhaseTransitionForceFollowUp = null;
                     pendingPhaseTransitionReasonForFollowUp = null;
+                    // HOTFIX（今回追加・§9 root cause修正）: Phase遷移送信処理は
+                    // targetPhase==='routing'を送信した「時点」で（session.updatedを
+                    // 待たずに）楽観的にpendingPhaseTransitionTarget='legacy_full'を
+                    // armしている。そのroutingへのsession.updateがここで失敗した場合、
+                    // このarm済みlegacy_full遷移をクリアしないと、次のresponse.done
+                    // 境界でROUTINGが未確定のままlegacy_fullへ遷移してしまう
+                    // （実機で観測された危険な挙動そのもの）。「現在のtransitionが
+                    // session.updatedで確定するまで次のtransitionを開始しない」
+                    // という原則を守るための最小限のstate guard。
+                    if (pendingPhaseTransitionTarget !== null) {
+                        const clearedLine = 'REALTIME_PHASE_TRANSITION_PENDING_CLEARED (cleared_target='
+                            + pendingPhaseTransitionTarget + ', reason=previous_transition_failed)';
+                        pushTimelineEvent(clearedLine);
+                        console.log('[' + clearedLine + ']');
+                        pendingPhaseTransitionTarget = null;
+                    }
                 }
                 // FAST TURN 3.6B（Tool Continuation Proof・STEP9）: Tool継続
                 // チェーンのトレース中にRealtime側からerrorイベントが届いた場合、

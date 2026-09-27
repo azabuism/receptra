@@ -124,6 +124,13 @@ function buildSandbox(overrides) {
         callStartedAt: Date.now() - 1234,
         dc: { readyState: 'open', send: (payload) => { dcSendCalls.push(payload); } },
         sendResponseCreate: () => true,
+        // HOTFIX（今回追加）: ERROR_PHASE_HOOK_SRC・SESSION_UPDATED_PHASE_BLOCK_SRC
+        // をvm.runInContextで直接実行するテスト用に、実ファイルのモジュール
+        // スコープ変数debugMode・msgをサンドボックスにも用意しておく
+        // （未定義のままだとReferenceErrorがtry/catchに飲み込まれ、テストが
+        // 「静かに何も検証していない」状態になってしまうのを防ぐ）。
+        debugMode: false,
+        msg: {},
     };
     const state = Object.assign({
         expectedAnswerType: 'NONE',
@@ -151,6 +158,10 @@ function buildSandbox(overrides) {
         pendingPhaseTransitionForceFollowUp: null,
         pendingPhaseTransitionReasonForFollowUp: null,
         phaseTransitionSessionUpdateSentAt: null,
+        // HOTFIX（今回追加）: REALTIME_PHASE_TRANSITION_CONFIRMED診断が参照する
+        // 実ファイル側のモジュールスコープ変数。既定値はnull（実ファイルと同じ）。
+        phaseTransitionInstructionsChars: null,
+        phaseTransitionToolCount: null,
     }, overrides || {});
     Object.assign(context, state);
     vm.createContext(context);
@@ -217,10 +228,32 @@ test('K: sendRealtimePhaseSessionUpdate sends exactly one session.update over dc
     assert.strictEqual(dcSendCalls.length, 1);
     const payload = JSON.parse(dcSendCalls[0]);
     assert.strictEqual(payload.type, 'session.update');
+    // HOTFIX（今回追加・root cause回帰防止・§14）: OpenAI Realtime API SDK型定義
+    // （RealtimeSessionCreateRequestParam.type: Required[Literal["realtime"]]、
+    // SessionUpdateEventParam.session: Required[Session]がsession作成時と
+    // 同一スキーマを使う）で確認済みの通り、session.updateのsessionオブジェクトは
+    // type: 'realtime'が必須。この欠落が実機で観測されたmissing_required_parameter
+    // の直接の原因だったため、実際にdc.send(JSON.stringify(...))へ渡される
+    // 最終objectをJSON.parseした結果に対して明示的にassertする
+    // （ソーステキストに'type'という文字列が含まれているかではなく、実際の
+    // 送信payloadの形を検証する。§14の要求どおり）。
+    assert.strictEqual(payload.session.type, 'realtime', 'session.update session object must include the required type:"realtime" discriminator (missing_required_parameter root cause)');
     assert.strictEqual(payload.session.instructions, 'ROUTING_PHASE_INSTRUCTIONS_STUB');
     assert.deepStrictEqual(payload.session.tools, []);
     assert.strictEqual(ctx.currentRealtimePhase, 'routing');
     assert.strictEqual(ctx.phaseTransitionInProgress, true);
+    assert.strictEqual(ctx.phaseTransitionInstructionsChars, 'ROUTING_PHASE_INSTRUCTIONS_STUB'.length);
+    assert.strictEqual(ctx.phaseTransitionToolCount, 0);
+});
+
+test('K3: sendRealtimePhaseSessionUpdate to legacy_full also includes session.type="realtime" (schema requirement applies to every phase, not just routing)', () => {
+    const { ctx, dcSendCalls } = buildSandbox({ currentRealtimePhase: 'routing' });
+    vm.runInContext("sendRealtimePhaseSessionUpdate('legacy_full', 'test_reason', true)", ctx);
+    assert.strictEqual(dcSendCalls.length, 1);
+    const payload = JSON.parse(dcSendCalls[0]);
+    assert.strictEqual(payload.session.type, 'realtime');
+    assert.strictEqual(payload.session.instructions, 'LEGACY_FULL_INSTRUCTIONS_STUB');
+    assert.strictEqual(payload.session.tools.length, 1);
 });
 
 test('K2: a second call while a transition is already in-flight sends no additional session.update (no duplicate dc.send)', () => {
@@ -371,6 +404,99 @@ test('T3: REALTIME_PHASE_CONTEXT-style lines produced by the response.done bound
     assert.ok(!allTimelineText.includes(fakePii));
     // NONE!==VISIT_REASON なのでforceFollowUp=trueとなり、routingへ遷移しているはず。
     assert.strictEqual(ctx.currentRealtimePhase, 'routing');
+});
+
+// =======================================================================
+// HOTFIX（今回追加）: session.update missing_required_parameter root cause
+// fix + §9 (legacy_fullを早期送信しない) + §3 (error.param/error.message
+// 診断拡張) の契約テスト。既存のI〜Tのレター体系とは意図的に衝突させず、
+// 目的が分かる名前を付ける（サマリー上の合意事項どおり）。
+// =======================================================================
+
+test('HOTFIX-CONFIRMED: REALTIME_PHASE_TRANSITION_CONFIRMED marker fires on session.updated with correct phase/instructions_chars/tool_count and no PII', () => {
+    const fakePii = 'CUSTOMER_NAME_SHOULD_NEVER_APPEAR_090-0000-0000';
+    const { ctx, timelineEvents, consoleLogs } = buildSandbox({
+        phaseTransitionInProgress: true,
+        currentRealtimePhase: 'routing',
+        phaseTransitionSessionUpdateSentAt: Date.now() - 17,
+        pendingPhaseTransitionForceFollowUp: false,
+        pendingPhaseTransitionReasonForFollowUp: 'phase_transition_to_routing',
+        // 万一実際のinstructions文字列（fakePii相当）がどこかから紛れ込んでも、
+        // このマーカーはinstructions_chars（文字数）・tool_countのみを記録し、
+        // 本文自体は一切含めないことを確認する。
+        phaseTransitionInstructionsChars: fakePii.length,
+        phaseTransitionToolCount: 2,
+    });
+    vm.runInContext("type = 'session.updated'; " + SESSION_UPDATED_PHASE_BLOCK_SRC, Object.assign(ctx, { type: null }));
+    const confirmedLine = timelineEvents.find((e) => e.includes('REALTIME_PHASE_TRANSITION_CONFIRMED'));
+    assert.ok(confirmedLine, 'REALTIME_PHASE_TRANSITION_CONFIRMED must be logged once session.updated is observed for an in-flight transition');
+    assert.ok(new RegExp('phase=routing, ms_since_call_start=\\d+, instructions_chars=' + fakePii.length + ', tool_count=2').test(confirmedLine));
+    assert.ok(!confirmedLine.includes(fakePii), 'the CONFIRMED marker must never include instructions/tools content itself, only counts');
+    const allConsoleText = consoleLogs.map((args) => args.join(' ')).join(' ');
+    assert.ok(!allConsoleText.includes(fakePii));
+    // session.updated消費後は次のtransitionに備えて必ずnullへリセットされる。
+    assert.strictEqual(ctx.phaseTransitionInstructionsChars, null);
+    assert.strictEqual(ctx.phaseTransitionToolCount, null);
+});
+
+test('HOTFIX-FAILED-PARAM: REALTIME_PHASE_TRANSITION_FAILED includes error_param (schema field name; always safe per OpenAI SDK docstring) and never leaks error.message into pushTimelineEvent/Copy Debug Log', () => {
+    const fakeMessage = 'Missing required parameter: session.type. Customer said something unrelated here just in case.';
+    const { ctx, timelineEvents, consoleLogs } = buildSandbox({
+        phaseTransitionInProgress: true,
+        currentRealtimePhase: 'routing',
+        pendingPhaseTransitionTarget: 'legacy_full',
+        debugMode: false,
+        msg: { error: { type: 'invalid_request_error', code: 'missing_required_parameter', param: 'session.type', message: fakeMessage } },
+    });
+    vm.runInContext(ERROR_PHASE_HOOK_SRC, ctx);
+    const failedLine = timelineEvents.find((e) => e.includes('REALTIME_PHASE_TRANSITION_FAILED'));
+    assert.ok(failedLine, 'REALTIME_PHASE_TRANSITION_FAILED must be logged');
+    assert.ok(failedLine.includes('error_param=session.type'), 'error.param (a schema field name, never user content) must appear in the main diagnostic line');
+    const allTimelineText = timelineEvents.join(' ');
+    const allConsoleText = consoleLogs.map((args) => args.join(' ')).join(' ');
+    assert.ok(!allTimelineText.includes(fakeMessage), 'error.message must never reach pushTimelineEvent (Copy Debug Log/#diagTimeline)');
+    // debugMode=falseなので、error.messageはconsole.logへも一切出力されない。
+    assert.ok(!allConsoleText.includes(fakeMessage), 'error.message must not reach console.log when debugMode is false');
+});
+
+test('HOTFIX-FAILED-DEBUG-ONLY: error.message reaches console.log only under the _DEBUG_ONLY marker and only when debugMode=true', () => {
+    const fakeMessage = 'Missing required parameter: session.type.';
+    const { ctx, consoleLogs } = buildSandbox({
+        phaseTransitionInProgress: true,
+        currentRealtimePhase: 'routing',
+        debugMode: true,
+        msg: { error: { type: 'invalid_request_error', code: 'missing_required_parameter', param: 'session.type', message: fakeMessage } },
+    });
+    vm.runInContext(ERROR_PHASE_HOOK_SRC, ctx);
+    const debugOnlyCall = consoleLogs.find((args) => String(args[0]).includes('REALTIME_PHASE_TRANSITION_FAILED_ERROR_MESSAGE_DEBUG_ONLY'));
+    assert.ok(debugOnlyCall, 'when debugMode=true, error.message must still be reachable via console.log for real-device debugging, under a clearly _DEBUG_ONLY-suffixed marker');
+    assert.ok(debugOnlyCall.includes(fakeMessage));
+});
+
+test('HOTFIX-PENDING-CLEARED (§9): a failed routing transition clears the optimistically-armed pendingPhaseTransitionTarget=legacy_full, so a subsequent response.done boundary does not prematurely start legacy_full', () => {
+    // 実機で観測された危険な挙動を再現する: sendRealtimePhaseSessionUpdate('routing', ...)
+    // が送信「時点」でpendingPhaseTransitionTarget='legacy_full'を楽観的にarmし、
+    // その直後にrouting用session.updateがerrorで失敗する、という状況を組み立てる。
+    const { ctx, timelineEvents } = buildSandbox({});
+    vm.runInContext("sendRealtimePhaseSessionUpdate('routing', 'test_reason', false)", ctx);
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, 'legacy_full', 'precondition: routing送信時点でlegacy_fullがarmされている（既存設計どおり）');
+    assert.strictEqual(ctx.phaseTransitionInProgress, true);
+
+    // routingのsession.updateがOpenAI側でmissing_required_parameterとして拒否される。
+    Object.assign(ctx, { msg: { error: { type: 'invalid_request_error', code: 'missing_required_parameter', param: 'session.type' } } });
+    vm.runInContext(ERROR_PHASE_HOOK_SRC, ctx);
+
+    assert.strictEqual(ctx.phaseTransitionInProgress, false);
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, null,
+        'HOTFIX: a failed routing transition must clear the optimistically-armed legacy_full target, otherwise the next response.done boundary would start legacy_full despite routing never having been confirmed');
+    const clearedLine = timelineEvents.find((e) => e.includes('REALTIME_PHASE_TRANSITION_PENDING_CLEARED'));
+    assert.ok(clearedLine && clearedLine.includes('cleared_target=legacy_full'));
+
+    // その後response.done境界が来ても、もう何も送信されない（クリア済みのため）。
+    const { dcSendCalls: sendCallsAfter } = buildSandbox({});
+    Object.assign(ctx, { dc: { readyState: 'open', send: (p) => { sendCallsAfter.push(p); } } });
+    vm.runInContext(RESPONSE_DONE_PHASE_BLOCK_SRC, ctx);
+    assert.strictEqual(sendCallsAfter.length, 0, 'legacy_full must NOT be sent after routing failed and was never confirmed via session.updated');
 });
 
 console.log(`\n${passed} test(s) passed.`);

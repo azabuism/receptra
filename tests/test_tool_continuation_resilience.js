@@ -359,7 +359,12 @@ await test('R: FAST TURN 3.6B/STEP9) 汎用errorハンドラがトレース中�
     // hook（REALTIME_PHASE_TRANSITION_FAILED診断・retry無し）が追加され、
     // T_ERRORマッチ開始位置の実測オフセットが1971文字まで伸びたため、
     // ウィンドウを1200→2400へ拡張（測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 2400);
+    // HOTFIX（今回追加・session.update missing_required_parameter対応）で、
+    // 同hookにerror_param診断フィールド追加・error.message DEBUG_ONLYログ・
+    // pendingPhaseTransitionTarget clear（§9 root cause修正）を追加した結果、
+    // T_ERRORマッチ開始位置の実測オフセットが4081文字まで伸びたため、
+    // ウィンドウを2400→4800へ再拡張（測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 4800);
     assert.ok(block.includes("pushToolContinuationTrace('T_ERROR_REALTIME_ERROR"),
         'a Realtime-level error event arriving mid-trace must be recorded as a broken chain, independent of whether any earlier dc.send() call itself threw');
     assert.ok(/pushToolContinuationTrace\('T_ERROR_REALTIME_ERROR[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
