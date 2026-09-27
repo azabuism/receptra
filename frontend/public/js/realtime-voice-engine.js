@@ -7507,6 +7507,59 @@
                     },
                 });
                 if (!sdpResponse.ok) {
+                    // FAST TURN EMERGENCY DIAGNOSTIC (接続失敗429調査・今回追加): これまで
+                    // sdpResponse.statusのみを見て、response本文・headerを一切読まずに
+                    // 例外を投げていたため、429（や他のエラー）の実際の原因
+                    // （error.type/code/message/param、retry-after等のrate limit情報）が
+                    // 完全に失われていた。ここでは本文と既知の安全なheaderのみを読み取り
+                    // 診断ログに出す（診断専用・retry追加やUI/挙動の変更は一切行わない）。
+                    // 絶対にログしないもの: Authorization header（client_secret）、
+                    // offer.sdp本体、その他PII。存在しないheaderを捏造することもしない
+                    // （取得できたものだけをsafeHeadersに入れる）。
+                    let errBodyText = '';
+                    try {
+                        errBodyText = await sdpResponse.text();
+                    } catch (readErr) {
+                        errBodyText = '(response本文の読み取りに失敗: ' + (readErr && readErr.message) + ')';
+                    }
+                    // OpenAIのエラーレスポンスは通常
+                    // {"error":{"type":...,"code":...,"message":...,"param":...}} 形式。
+                    // JSONとして解釈できた場合のみ構造化フィールドを抽出し、できなければ
+                    // 生本文を安全な長さに切って記録する（誤ったフィールド名を捏造しない）。
+                    let structuredError = null;
+                    try {
+                        const parsedBody = JSON.parse(errBodyText);
+                        if (parsedBody && parsedBody.error) {
+                            structuredError = {
+                                type: parsedBody.error.type || null,
+                                code: parsedBody.error.code || null,
+                                message: parsedBody.error.message || null,
+                                param: parsedBody.error.param || null,
+                            };
+                        }
+                    } catch (parseErr) {
+                        structuredError = null;
+                    }
+                    const SAFE_RATE_LIMIT_HEADER_NAMES = [
+                        'retry-after',
+                        'x-ratelimit-limit-requests', 'x-ratelimit-remaining-requests', 'x-ratelimit-reset-requests',
+                        'x-ratelimit-limit-tokens', 'x-ratelimit-remaining-tokens', 'x-ratelimit-reset-tokens',
+                        'x-request-id',
+                    ];
+                    const safeHeaders = {};
+                    SAFE_RATE_LIMIT_HEADER_NAMES.forEach((headerName) => {
+                        const v = sdpResponse.headers.get(headerName);
+                        if (v !== null) safeHeaders[headerName] = v;
+                    });
+                    const fallbackMessage = errBodyText ? errBodyText.slice(0, 200) : '(本文なし)';
+                    const diagLine = 'REALTIME_CALLS_HTTP_ERROR (status=' + sdpResponse.status
+                        + ', errorType=' + (structuredError && structuredError.type ? structuredError.type : '不明')
+                        + ', errorCode=' + (structuredError && structuredError.code ? structuredError.code : '不明')
+                        + ', errorParam=' + (structuredError && structuredError.param ? structuredError.param : '不明')
+                        + ', errorMessage=' + (structuredError && structuredError.message ? structuredError.message.slice(0, 200) : fallbackMessage)
+                        + ', rateLimitHeaders=' + JSON.stringify(safeHeaders) + ')';
+                    pushTimelineEvent(diagLine);
+                    console.error('[' + diagLine + ']');
                     logEvent('接続確立エラー (HTTP ' + sdpResponse.status + ')');
                     throw new Error('接続の確立に失敗しました');
                 }

@@ -3258,6 +3258,50 @@ _ACK_FALLBACK_TEXT = "確認します。少々お待ちください。"
 _ack_fallback_audio_cache: dict[str, bytes] = {}
 
 
+def _log_tts_fallback_error_diag(context_label: str, e: Exception) -> None:
+    """
+    FAST TURN EMERGENCY DIAGNOSTIC（今回追加）: これまでack-fallback-audio /
+    rate-limit-fallback-audioの生成失敗時、例外を汎用except Exceptionで
+    捕まえて「502・詳細不明」にログしてしまい、OpenAI側が実際に返した
+    status_code / error.type / error.code / error.message / retry-after等の
+    rate limit情報を握りつぶしていた（実機で429起因の502が疑われる事象を
+    診断する手段が無かった）。ここでは例外オブジェクトから安全に取得できる
+    範囲の診断情報のみを抽出してログに残す（挙動は一切変更しない・呼び出し元は
+    引き続き例外をそのまま受け取り、既存のRuntimeError/Exception分岐と
+    502レスポンスは変わらない）。API key・secret・音声内容・PIIは一切含めない
+    （error.message自体はOpenAI側の定型的なrate limit説明文であり、
+    お客様の会話内容・個人情報は構造的に含まれない）。
+    """
+    status_code = getattr(e, "status_code", None)
+    err_body = getattr(e, "body", None)
+    err_type = None
+    err_code = None
+    err_message = None
+    err_param = None
+    if isinstance(err_body, dict):
+        inner = err_body.get("error")
+        if isinstance(inner, dict):
+            err_type = inner.get("type")
+            err_code = inner.get("code")
+            err_message = inner.get("message")
+            err_param = inner.get("param")
+    retry_after = None
+    resp_obj = getattr(e, "response", None)
+    if resp_obj is not None:
+        try:
+            headers = getattr(resp_obj, "headers", None)
+            if headers is not None:
+                retry_after = headers.get("retry-after")
+        except Exception:
+            retry_after = None
+    logger.error(
+        "%s失敗（診断・PII/secretなし） exc_class=%s status_code=%s error_type=%s "
+        "error_code=%s error_param=%s error_message=%s retry_after=%s",
+        context_label, type(e).__name__, status_code, err_type, err_code, err_param,
+        (err_message[:200] if isinstance(err_message, str) else None), retry_after,
+    )
+
+
 async def get_or_generate_ack_fallback_audio(voice: str) -> bytes:
     """PHASE O5.5: Speak-Then-Work安全網用の固定acknowledgement音声を、
     voiceごとにプロセス内メモリでキャッシュしつつ返す。"""
@@ -3270,12 +3314,16 @@ async def get_or_generate_ack_fallback_audio(voice: str) -> bytes:
         raise RuntimeError("OPENAI_API_KEY が設定されていません")
 
     client = _get_client()
-    resp = await client.audio.speech.create(
-        model=settings.OPENAI_TTS_MODEL,
-        voice=voice,
-        input=_ACK_FALLBACK_TEXT,
-        response_format="mp3",
-    )
+    try:
+        resp = await client.audio.speech.create(
+            model=settings.OPENAI_TTS_MODEL,
+            voice=voice,
+            input=_ACK_FALLBACK_TEXT,
+            response_format="mp3",
+        )
+    except Exception as e:
+        _log_tts_fallback_error_diag("Speak-Then-Work ack fallback音声生成", e)
+        raise
     audio_bytes = await resp.aread()
     _ack_fallback_audio_cache[voice] = audio_bytes
     logger.info(
@@ -3328,12 +3376,16 @@ async def get_or_generate_rate_limit_fallback_audio(voice: str) -> bytes:
         raise RuntimeError("OPENAI_API_KEY が設定されていません")
 
     client = _get_client()
-    resp = await client.audio.speech.create(
-        model=settings.OPENAI_TTS_MODEL,
-        voice=voice,
-        input=_RATE_LIMIT_FALLBACK_TEXT,
-        response_format="mp3",
-    )
+    try:
+        resp = await client.audio.speech.create(
+            model=settings.OPENAI_TTS_MODEL,
+            voice=voice,
+            input=_RATE_LIMIT_FALLBACK_TEXT,
+            response_format="mp3",
+        )
+    except Exception as e:
+        _log_tts_fallback_error_diag("Tool continuation rate limit fallback音声生成", e)
+        raise
     audio_bytes = await resp.aread()
     _rate_limit_fallback_audio_cache[voice] = audio_bytes
     logger.info(
