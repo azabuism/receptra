@@ -90,14 +90,25 @@ def test_d_fast_reservation_flow_no_longer_lists_name_mid_sequence():
 
 def test_e_protected_templates_not_relengthened():
     # HOTFIX 8 Phase 2で圧縮した4テンプレートの見出しが変わらず残っており、
-    # HOTFIX 10によって大幅に再肥大化していないことを確認する（絶対値の厳密一致
-    # ではなく、明らかな再肥大化＝圧縮前水準への逆行が無いことを確認する趣旨）。
-    # 実測値（2026-09-27、HOTFIX 10着手時点。このHOTFIXではこれら4テンプレートの
+    # 意図しない再肥大化（圧縮前水準への逆行）が起きていないことを確認する
+    # （絶対値の厳密一致ではなく、明らかな再肥大化が無いことを確認する趣旨。
+    # 意図した・理由のある追記まで永久に禁止する趣旨ではない）。
+    # 実測値（2026-09-27、HOTFIX 10着手時点。HOTFIX10ではこれら4テンプレートの
     # 本文を一切変更していないため、実測値そのまま + 5%の許容枠を上限とする）:
     # _HUMAN_HANDOFF_TEMPLATE=2791, _BOOKING_SAFETY_TEMPLATE=2077,
     # _TIME_AMBIGUITY_TEMPLATE=2061, _INTENT_CLASSIFICATION_TEMPLATE=1908文字。
+    #
+    # FAST TURN HOTFIX 15（2026年9月・意図的な追記）: request_callback成功後の
+    # 最終案内（5-1/5-2）にお礼の一言を追加し、5-3にPRE_CALLBACK_NARRATION
+    # （「最後に...確認しますね」）を最終案内の代わりにしないことを明記した
+    # （ユーザー指示§6/§17。実機で「最終案内が一度も再生されないまま通話が
+    # 切れる」premature hangoutを修正するための一部）。実測でchar delta=+265
+    # （2910→3175）であることを確認済み（測定はtests/test_fast_turn_hotfix15_
+    # callback_final_confirmation.js参照）。この意図的な増分を許容するため、
+    # このテンプレートのみベースラインをHOTFIX15後の実測値（3175）+5%へ更新する
+    # （他の3テンプレートはHOTFIX15で一切変更していないため据え置き）。
     baselines_after_phase2 = {
-        "_HUMAN_HANDOFF_TEMPLATE": (_HUMAN_HANDOFF_TEMPLATE, round(2791 * 1.05)),
+        "_HUMAN_HANDOFF_TEMPLATE": (_HUMAN_HANDOFF_TEMPLATE, round(3175 * 1.05)),
         "_BOOKING_SAFETY_TEMPLATE": (_BOOKING_SAFETY_TEMPLATE, round(2077 * 1.05)),
         "_TIME_AMBIGUITY_TEMPLATE": (_TIME_AMBIGUITY_TEMPLATE, round(2061 * 1.05)),
         "_INTENT_CLASSIFICATION_TEMPLATE": (_INTENT_CLASSIFICATION_TEMPLATE, round(1908 * 1.05)),

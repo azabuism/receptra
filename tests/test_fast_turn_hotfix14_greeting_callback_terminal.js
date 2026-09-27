@@ -509,18 +509,34 @@ test('U3) maybeHangUpAfterCallbackTerminal: stale generationならフラグは�
     assert.strictEqual(endCallCalls.length, 0);
 });
 
-test('V) 構造確認: maybeHangUpAfterCallbackTerminal()は既存のmaybeHangUpAfterSilenceGoodbye()と全く同じ2箇所（ai_audio_stopped / response_done_fallback）から呼ばれている（音声再生完了を待ってから切るという既存パターンの再利用）', () => {
+test('V) 構造確認: maybeHangUpAfterCallbackTerminal()の主経路(output_audio_buffer.stopped)は既存のmaybeHangUpAfterSilenceGoodbye()と同じ箇所から即時に呼ばれている（音声再生完了を待ってから切るという既存パターンの再利用・HOTFIX15でも不変）', () => {
     const stoppedIdx = SRC.indexOf("maybeHangUpAfterSilenceGoodbye(callGeneration, 'ai_audio_stopped');");
     const stoppedCallbackIdx = SRC.indexOf("maybeHangUpAfterCallbackTerminal(callGeneration, 'ai_audio_stopped');", stoppedIdx);
     assert.notStrictEqual(stoppedIdx, -1);
     assert.notStrictEqual(stoppedCallbackIdx, -1);
     assert.ok(stoppedCallbackIdx - stoppedIdx < 400, 'must be hooked in immediately after the existing silence-goodbye hangup call (output_audio_buffer.stopped handler)');
+});
 
+test('V2) FAST TURN HOTFIX 15: response.doneのcallback terminalフォールバックは、もはや同じ同期実行内で即座には呼ばれない（HOTFIX14のroot cause: 主経路(output_audio_buffer.stopped)がこのresponse.done自身の音声再生完了を待つ機会が一度も無いまま、直後の安全網が即時にendCall()してしまっていた）。silence-goodbye側のフォールバックは意図的に変更していない（ユーザー指示§14のスコープ外）。', () => {
     const fallbackIdx = SRC.indexOf("maybeHangUpAfterSilenceGoodbye(callGeneration, 'response_done_fallback');");
-    const fallbackCallbackIdx = SRC.indexOf("maybeHangUpAfterCallbackTerminal(callGeneration, 'response_done_fallback');", fallbackIdx);
-    assert.notStrictEqual(fallbackIdx, -1);
-    assert.notStrictEqual(fallbackCallbackIdx, -1);
-    assert.ok(fallbackCallbackIdx - fallbackIdx < 400, 'must be hooked in immediately after the existing silence-goodbye hangup call (response.done fallback)');
+    assert.notStrictEqual(fallbackIdx, -1, 'silence-goodbye response.done fallback must remain untouched (out of scope)');
+
+    // HOTFIX14の「即時・無条件」呼び出しは、もはやソースに存在しないこと
+    // （存在していればHOTFIX15のroot causeが再発する）。
+    assert.ok(!SRC.includes("maybeHangUpAfterCallbackTerminal(callGeneration, 'response_done_fallback');"),
+        'the old unconditional, same-tick fallback call must no longer exist verbatim (that was HOTFIX14\'s premature-hangup root cause)');
+
+    // 新しい実装: setTimeoutで遅延された呼び出しに置き換わっていること。
+    const deferredIdx = SRC.indexOf("maybeHangUpAfterCallbackTerminal(callGeneration, 'response_done_fallback_deferred');");
+    assert.notStrictEqual(deferredIdx, -1, 'deferred fallback call site not found');
+    const setTimeoutIdx = SRC.lastIndexOf('setTimeout(', deferredIdx);
+    assert.notStrictEqual(setTimeoutIdx, -1);
+    assert.ok(deferredIdx - setTimeoutIdx < 200, 'the callback-terminal fallback call must be wrapped in setTimeout (deferred), not called synchronously');
+    const delayMatch = SRC.slice(deferredIdx, deferredIdx + 400).match(/\},\s*(\d+)\)/);
+    assert.ok(delayMatch, 'could not find the setTimeout delay value near the deferred fallback call');
+    assert.strictEqual(Number(delayMatch[1]), 10000, 'must reuse the existing 10000ms bounded-fallback convention used elsewhere in this file (AI_WORKING_CONTINUATION etc.), not an invented value');
+
+    assert.ok(fallbackIdx < deferredIdx, 'silence-goodbye fallback call must remain textually before the (now-deferred) callback-terminal fallback, i.e. the surrounding structure was not reordered');
 });
 
 test('W) 構造確認: startCall()の通話ごとリセットブロックがcallbackTerminalArmed/pendingCallbackTerminalHangup/callbackAlreadyConfirmedThisCallを初期化している', () => {

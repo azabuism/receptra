@@ -6428,9 +6428,46 @@
                 // Silence Timeout: 終話案内アナウンスの再生完了検知の安全網
                 // （通常はoutput_audio_buffer.stoppedで既に処理済みのはず）。
                 maybeHangUpAfterSilenceGoodbye(callGeneration, 'response_done_fallback');
-                // FAST TURN HOTFIX 14（今回追加・CASE B）: 折り返し確定closing
-                // 発話再生完了検知の安全網（上と全く同じ理由）。
-                maybeHangUpAfterCallbackTerminal(callGeneration, 'response_done_fallback');
+                // FAST TURN HOTFIX 15（今回修正・最重要・root cause fix）:
+                // HOTFIX14はこのフォールバックをここで無条件・即時に呼んでいたが、
+                // これが実機の「最後に担当者の折り返し手配を確認しますね。」直後の
+                // 即時通話終了（折り返し成功後の最終案内が一度も再生されない）の
+                // root causeだったことをコード上で確認した（証拠: この直前の
+                // if (!responseHasFunctionCall) { if (callbackTerminalArmed) {...} }
+                // 分岐で、まさにこの同じresponse.doneハンドラの実行内で初めて
+                // pendingCallbackTerminalHangup=trueにする。output_audio_buffer.
+                // stoppedは通常response.doneより先に来るため（本ファイル内の
+                // 既存コメント参照）、この折り返しclosing応答自身のstoppedは
+                // まだ発生し得ず、その結果、本来「安全網」であるはずのこの直後の
+                // 呼び出しが、間を置かず必ず先にpendingCallbackTerminalHangupを
+                // 消費してendCall()してしまい、主経路（output_audio_buffer.
+                // stopped）が折り返しclosing発話自身の再生完了を待つ機会が
+                // 実質的に一度も無かった＝ユーザー指示§10/§11で懸念されていた
+                // 「response.done直後の即切断」が実際に起きていた)。
+                //
+                // 修正は既存パターン（本ファイル内の他の安全網、例：
+                // AI_WORKING_CONTINUATION/incomplete_ai_turn_continuationの
+                // 10秒setTimeout安全網）を踏襲し、この「安全網」呼び出し自体を
+                // 短時間（10秒）遅延させるだけに留める。新しいstate machineは
+                // 作らない。主経路のoutput_audio_buffer.stopped
+                // （maybeHangUpAfterCallbackTerminal(callGeneration,
+                // 'ai_audio_stopped')、5460行目）が正常に先に発火すれば、
+                // pendingCallbackTerminalHangupは既にfalseになっているため、
+                // この遅延呼び出しはmaybeHangUpAfterCallbackTerminal内の既存
+                // ガード（!pendingCallbackTerminalHangupで即return）により
+                // 自動的にno-opになる（二重endCall・二重通話終了の心配はない）。
+                // 主経路が万一発火しなかった場合（output_audio_buffer.started/
+                // stoppedが本ファイル内の既存コメントにある既知バグにより遅延・
+                // 未着の場合）にのみ、10秒後にこの遅延フォールバックが実際に
+                // endCall()し、無期限に通話を保持したままにはしない
+                // （ユーザー指示§12）。
+                if (pendingCallbackTerminalHangup) {
+                    pushTimelineEvent('CALLBACK_TERMINAL_FALLBACK_DEFERRED (delayMs=10000)');
+                    console.log('[CALLBACK_TERMINAL_FALLBACK_DEFERRED]');
+                    setTimeout(() => {
+                        maybeHangUpAfterCallbackTerminal(callGeneration, 'response_done_fallback_deferred');
+                    }, 10000);
+                }
             } else if (type === 'response.output_audio_transcript.done') {
                 // Expected Answer Window: AI自身の発話内容から、直後にお客様へ
                 // 求めている回答の種類を軽量に推定する（PIIはtype文字列にのみ
