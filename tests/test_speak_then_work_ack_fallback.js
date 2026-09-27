@@ -227,22 +227,13 @@ await test('GREETING-REG: Zero-Wait Greeting関連コードの主要シンボル
 });
 
 await test('配線確認: startCall()内でresetAckFallbackCallState()が呼ばれている（前回通話の再生位置を持ち越さない）', () => {
-    const idx = SRC.indexOf('async function startCall');
-    assert.notStrictEqual(idx, -1, 'startCall not found');
-    // startCall本体はかなり長いため、次のトップレベル関数定義に到達するまでの
-    // 範囲ではなく、十分広いウィンドウで探索する（後発フェーズの状態リセット
-    // 追加分だけ実際の出現位置が後ろへ移動することがあるため、余裕を持たせた
-    // 固定長を使う。実測位置固定ではなく、実測より十分大きい値を使うことで
-    // 将来の追加リセット行にもある程度耐えられるようにする）。
-    // FAST TURN HOTFIX 6で、startCall()内の新規通話セットアップ箇所に
-    // toolContinuationRateLimitRetryUsedForCallId = null; のリセット行が
-    // 追加され、resetAckFallbackCallState();までの実測オフセットが11249
-    // 文字まで伸びたため、ウィンドウを11000→13000へ再拡張（測定値+余裕分）。
-    // さらにRealtime Token Architecture Phase 1（今回追加）で、同じ
-    // リセットブロックにPhase遷移状態（currentRealtimePhase等）のリセット行が
-    // 追加され、実測オフセットが13004文字まで伸びたため、ウィンドウを
-    // 13000→13600へ再拡張（測定値+余裕分）。
-    const window = SRC.slice(idx, idx + 13600);
+    // 過去何度も固定長ウィンドウを再拡張するはめになっていた
+    // （HOTFIX6・Realtime Token Architecture Phase 1で計2回）。FAST TURN
+    // HOTFIX 14でもstartCall()内リセットブロックに3行追加されたことで
+    // 再び同じ問題が発生したため、今回はこの脆弱なパターン自体を解消し、
+    // startCall()の関数本体全体を安全に抽出する（以後の行数変化に一切
+    // 影響されない）。
+    const window = extractFunctionSource(SRC, 'startCall', true);
     assert.ok(window.includes('resetAckFallbackCallState();'), 'startCall() must reset the ack-fallback playback position for each new call');
 });
 

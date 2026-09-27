@@ -591,7 +591,20 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     // 可変長へ一般化しただけである（将来また1個増えても、都度このテストを
     // 壊さずに済む設計）。
     const hotfix13FlexibleChainForm = /if\s*\(!responseHasFunctionCall\)\s*\{\s*if\s*\(deferSilenceTimerForToolContinuationRateLimit\)\s*\{[\s\S]{0,400}?\}\s*(?:else\s+if\s*\([\s\S]{0,400}?\)\s*\{[\s\S]{0,6000}?\}\s*){1,5}else\s*\{[\s\S]{0,2500}?startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);[\s\S]{0,400}?\}\s*\}/.test(block);
-    assert.ok(legacyDirectForm || newDeferredForm || hotfix12TripleForm || hotfix13FlexibleChainForm,
+    // FAST TURN HOTFIX 14（今回追加）: CALLBACK terminal state（request_callback
+    // 成功後の会話終了）を、この同じif/else-ifチェーンの「先頭」に最優先分岐
+    // として追加した（callbackTerminalArmed===trueなら、以降のdefer/AI_WORKING/
+    // incomplete判定を一切評価させず、silence timer開始も一切行わないため）。
+    // これによりチェーンの形が「if (defer) → else if → ... → else」（HOTFIX13
+    // まで）から「if (callbackTerminalArmed) → else if (defer) → else if →
+    // ... → else」へ変わった。HOTFIX13までに検証済みの安全契約（(1) 外側の
+    // !responseHasFunctionCallゲートは無変更、(2) 通常時は最終的にelse節で
+    // startSilenceTimerIfNeededが呼ばれる）は一切緩めておらず、先頭に
+    // 追加された最優先分岐（callbackTerminalArmed===trueの間はtry節自体が
+    // startSilenceTimerIfNeededを呼ばない、既存のdefer分岐と全く同じ設計）の
+    // 存在だけを新たに許容する。
+    const hotfix14FlexibleChainForm = /if\s*\(!responseHasFunctionCall\)\s*\{\s*if\s*\(callbackTerminalArmed\)\s*\{[\s\S]{0,1500}?\}\s*else\s+if\s*\(deferSilenceTimerForToolContinuationRateLimit\)\s*\{[\s\S]{0,400}?\}\s*(?:else\s+if\s*\([\s\S]{0,400}?\)\s*\{[\s\S]{0,6000}?\}\s*){1,5}else\s*\{[\s\S]{0,2500}?startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);[\s\S]{0,400}?\}\s*\}/.test(block);
+    assert.ok(legacyDirectForm || newDeferredForm || hotfix12TripleForm || hotfix13FlexibleChainForm || hotfix14FlexibleChainForm,
         'the Silence Timeout must remain gated to only start when this response had no function_call (Tool round-trip window must never be counted as silence); FAST TURN EMERGENCY HOTFIX 10/12/13 legitimately added further conditions inside that same gate, which the new-form patterns above account for, while the final fallback must still call startSilenceTimerIfNeeded(callGeneration, ...) exactly as before');
 });
 

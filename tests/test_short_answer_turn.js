@@ -694,9 +694,13 @@ test('WIRING: function_call detection handler cancels the SHORT_ANSWER finalize 
 });
 
 test('WIRING: startCall() resets the new O5.8 Finalization Grace state for every new call', () => {
-    const idx = SRC.indexOf('async function startCall');
-    assert.notStrictEqual(idx, -1);
-    const window = SRC.slice(idx, idx + 9500);
+    // FAST TURN HOTFIX 14（今回・回帰修正）: 固定文字数ウィンドウ(9500文字)が
+    // HOTFIX14のstartCall()内リセット追記（callbackTerminalArmed等3行）に
+    // よってこれらの状態リセット行の位置をわずかに後方へ押し出し、たまたま
+    // ウィンドウ境界をまたいでしまっていた（挙動自体は変更されていない・
+    // 既知の「固定ウィンドウの脆弱性」）。startCall()の関数本体全体を安全に
+    // 抽出することで、以後の行数変化にも影響されない形に修正する。
+    const window = extractFunctionSource(SRC, 'startCall');
     ['quickAnswerFinalizeTimerId = null;', 'quickAnswerFinalizeArmedAt = null;', 'quickAnswerFinalizeGeneration = null;'].forEach((snippet) => {
         assert.ok(window.includes(snippet), 'startCall() must reset O5.8 state: ' + snippet);
     });

@@ -335,16 +335,31 @@ await test('E: HOTFIX10で新規追加したrate-limit fallback関連コード�
 });
 
 await test('配線確認: response.doneの一般的なsilence timer開始箇所がdeferSilenceTimerForToolContinuationRateLimitを尊重する', () => {
-    const block = extractBlock(SRC, 'if (!responseHasFunctionCall) {\n                    if (deferSilenceTimerForToolContinuationRateLimit) {');
+    // FAST TURN HOTFIX 14（今回・回帰修正）: HOTFIX14でこのif/else-ifチェーンの
+    // 先頭に`if (callbackTerminalArmed) {`分岐が追加されたため、この
+    // テスト自身が前提としていた完全一致シグネチャ
+    // ('if (!responseHasFunctionCall) {\n                    if
+    // (deferSilenceTimerForToolContinuationRateLimit) {')がもう存在しない
+    // （HOTFIX13が過去に同じ理由で自分のextractGateSnippetを更新したのと
+    // 全く同じ状況）。挙動自体（rate-limit deferが尊重されること）は
+    // HOTFIX14で変更していないため、シグネチャを実際の構造
+    // （`} else if (...)`という位置関係）に合わせて更新するだけで足りる。
+    const block = extractBlock(SRC, 'if (!responseHasFunctionCall) {\n                    if (callbackTerminalArmed) {');
+    assert.ok(block.includes('else if (deferSilenceTimerForToolContinuationRateLimit) {'));
     assert.ok(block.includes("pushTimelineEvent('SILENCE_TIMER_START_DEFERRED"));
     assert.ok(block.includes('startSilenceTimerIfNeeded(callGeneration'));
 });
 
 await test('配線確認: startCall()内でresetRateLimitFallbackCallState()が呼ばれている（前回通話の状態を持ち越さない）', () => {
-    const idx = SRC.indexOf('async function startCall');
-    assert.notStrictEqual(idx, -1, 'startCall not found');
-    const window = SRC.slice(idx, idx + 14000);
-    assert.ok(window.includes('resetRateLimitFallbackCallState();'), 'startCall() must reset the rate-limit fallback playback position/guards for each new call');
+    // FAST TURN HOTFIX 14（今回・回帰修正）: 固定文字数ウィンドウ(14000文字)が
+    // HOTFIX14のstartCall()内リセット追記（callbackTerminalArmed等3行）に
+    // よってresetRateLimitFallbackCallState();の呼び出し位置をわずかに
+    // 後方へ押し出し、たまたまウィンドウ境界をまたいでしまっていた
+    // （挙動自体は変更されていない・既知の「固定ウィンドウの脆弱性」）。
+    // startCall()の関数本体全体を安全に抽出することで、以後の行数変化にも
+    // 影響されない形に修正する。
+    const startCallFn = extractFunctionSource(SRC, 'startCall', true);
+    assert.ok(startCallFn.includes('resetRateLimitFallbackCallState();'), 'startCall() must reset the rate-limit fallback playback position/guards for each new call');
 });
 
 await test('配線確認: preloadRateLimitFallbackAudio()がページ読み込み時に呼ばれている', () => {

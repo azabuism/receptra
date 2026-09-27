@@ -78,7 +78,13 @@ function extractFunctionSource(src, fnName, isAsync) {
 }
 
 function extractGateSnippet(src) {
-    const sig = "if (!responseHasFunctionCall) {\n                    if (deferSilenceTimerForToolContinuationRateLimit) {";
+    // FAST TURN HOTFIX 14（今回・回帰修正）: HOTFIX14でこのif/else-ifチェーンの
+    // 先頭に`if (callbackTerminalArmed) {`分岐が追加されたため、旧シグネチャ
+    // ('if (!responseHasFunctionCall) {\n... if
+    // (deferSilenceTimerForToolContinuationRateLimit) {')が一致しなくなった。
+    // このゲート自体の中身（incomplete_ai_turn_continuation等）はHOTFIX14で
+    // 変更していないため、シグネチャを現在の構造に合わせて更新するだけで足りる。
+    const sig = "if (!responseHasFunctionCall) {\n                    if (callbackTerminalArmed) {";
     const idx = src.indexOf(sig);
     assert.notStrictEqual(idx, -1, 'silence-timeout gate not found (has response.done been restructured?)');
     let depth = 0, i = idx, started = false;
@@ -275,6 +281,10 @@ function buildGateContext(overrides) {
         lastResponseReasonCategoryForDiag: 'normal_conversation',
         deferSilenceTimerForAiWorkingContinuation: false,
         deferSilenceTimerForIncompleteAiTurnContinuation: false,
+        // FAST TURN HOTFIX 14（今回追加）: GATE_SNIPPETが新しく参照するCALLBACK
+        // terminal state側の状態。このHOTFIX13専用テストではデフォルトfalseの
+        // まま（HOTFIX14自身のテストファイルで別途trueにして検証する）。
+        callbackTerminalArmed: false,
         callGeneration: 1,
         pushTimelineEvent: (text) => { events.push(text); },
         console: { log: (line) => { logs.push(line); } },

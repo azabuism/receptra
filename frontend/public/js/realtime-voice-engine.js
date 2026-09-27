@@ -2491,6 +2491,25 @@
         let silenceState = 'idle'; // 'idle' | 'waiting' | 'warned' | 'goodbye'
         let responseHasFunctionCall = false; // 直近のresponse.created〜response.doneの間にfunction_callがあったか
         let pendingSilenceGoodbyeHangup = false; // 終話案内アナウンスの再生完了待ちかどうか
+        // FAST TURN HOTFIX 14（今回追加・CASE B: CALLBACK terminal state）:
+        // request_callbackが成功し、折り返し確定の案内（closing発話）を
+        // これから話す/話している間だけtrueにするフラグ。実機証拠: 折り返し
+        // 確定後もAI_WORKING/incomplete_ai_turn継続や通常のsilence timerが
+        // 引き続き働き、AIが追加の質問・案内を続けてしまう事象が観測された
+        // （既存のcontinuation機構は発話の「形」だけを見て判定しており、
+        // 「この会話は既に完結した」という業務上の状態を一切知らないことが
+        // 根本原因）。response.doneのsilence-timeoutゲート内で最優先に
+        // チェックし、真の間はai_working_continuation/incomplete_ai_turn_
+        // continuation/通常のsilence timerのいずれも新規発火させない。
+        let callbackTerminalArmed = false;
+        // 折り返しclosing発話の音声再生完了（output_audio_buffer.stopped、
+        // または安全網としてresponse.done）を待ってendCall()するためのフラグ。
+        // pendingSilenceGoodbyeHangupと全く同じ設計（音声途中での切断を防ぐ）。
+        let pendingCallbackTerminalHangup = false;
+        // 通話中1回でもrequest_callbackが成功したかどうか（callbackTerminal
+        // Armedとは別に、response.doneのたびにconsumeされず通話全体で保持する）。
+        // request_callbackの二重実行（重複した折り返し作成）を防ぐために使う。
+        let callbackAlreadyConfirmedThisCall = false;
         const SILENCE_TIMEOUT_MS = 30000; // 約30秒間、有効な発話が無ければ予告（PHASE O5.6: 値は無変更。挙動を変えない）
         const SILENCE_WARNING_GRACE_MS = 8000; // 予告後、約5〜10秒の猶予（中間値を採用）（PHASE O5.6: 値は無変更）
 
@@ -2851,6 +2870,21 @@
             if (isStaleCallEvent(myGeneration)) return;
             pushTimelineEvent('SILENCE_END_CALL_REQUESTED (source=' + source + ')');
             endCall(SILENCE_GOODBYE_TEXT, 'silence_timeout');
+        }
+
+        // FAST TURN HOTFIX 14（今回追加・CASE B §9: 音声途中で切断禁止）:
+        // maybeHangUpAfterSilenceGoodbye()と全く同じ設計（pendingフラグを
+        // 消費し、closing発話の音声再生完了を検知したタイミングでのみ
+        // endCall()する）を、CALLBACK terminal state専用に再利用する。
+        // 新しいstate machineではなく、既存の「終話案内の再生完了を待って
+        // 切る」という確立済みパターンをそのままCASE Bに適用するだけ。
+        function maybeHangUpAfterCallbackTerminal(myGeneration, source) {
+            if (!pendingCallbackTerminalHangup) return;
+            pendingCallbackTerminalHangup = false;
+            if (isStaleCallEvent(myGeneration)) return;
+            pushTimelineEvent('CALLBACK_TERMINAL_END_CALL_REQUESTED (source=' + source + ')');
+            console.log('[CALLBACK_TERMINAL_END_CALL]');
+            endCall('お電話ありがとうございました。', 'callback_terminal');
         }
 
         // PHASE4（重要・response.create重複防止調査）: response.create送信の
@@ -3708,6 +3742,15 @@
         let zeroWaitGreetingText = null;  // /realtime-voice/greeting-text で取得した第一声文言（会話履歴通知用）
         let zeroWaitOutcomeResolve = null;
         let zeroWaitOutcomePromise = null; // 通話ごとに作り直す。'success'|'failure'|'not_applicable'|'timeout'に解決
+        // FAST TURN HOTFIX 14（今回追加・CASE A: Greeting Completion）:
+        // Zero-Wait Greeting（事前録音の自己紹介のみ）の再生が実際に完全に
+        // 終わった('ended'イベント）ことを、maybeSendInitialGreeting()側の
+        // 非同期処理から待ち合わせるための、zeroWaitOutcomePromiseと対称の
+        // 別のPromise（'playing'時点で解決するzeroWaitOutcomePromiseとは
+        // 別の、より遅い'ended'時点のマイルストーン）。resetZeroWaitCallState()
+        // で通話ごとに作り直す。
+        let zeroWaitEndedResolve = null;
+        let zeroWaitEndedPromise = null;
         let zeroWaitAwaitingFirstPostGreetingLatency = false; // KPI-5計測用
         // 再調査（第2ラウンド・Audio Element Timeline）: Zero-Wait音声要素
         // そのもののメディア再生状態（アプリ側の判断=zeroWaitStateとは別軸）。
@@ -3743,6 +3786,9 @@
             zeroWaitTiming.realtimeReadyAt = null;
             zeroWaitAwaitingFirstPostGreetingLatency = false;
             zeroWaitOutcomePromise = new Promise((resolve) => { zeroWaitOutcomeResolve = resolve; });
+            // FAST TURN HOTFIX 14（今回追加）: zeroWaitOutcomePromiseと同じ規律で
+            // 通話ごとに作り直す。
+            zeroWaitEndedPromise = new Promise((resolve) => { zeroWaitEndedResolve = resolve; });
         }
 
         // ページ読み込み時（通話開始クリックより前）に音声本体と第一声テキストを
@@ -4147,15 +4193,28 @@
                 } else {
                     bigMic.classList.remove('ai-speaking');
                     subStatusText.textContent = '待機中（お話しください）';
-                    // Silence Timeout: Zero-Wait Greetingは事前録音のローカル音声を
-                    // 再生しているだけでRealtimeのresponse.doneを経由しないため、
-                    // 通常の（response.done起点の）開始経路では最初のターンだけ
-                    // 開始されない。ここで代わりに開始する。ただし再生中に既に
-                    // お客様が話し始めていた場合（userVadState==='speech'）は
-                    // 明らかに無言ではないため開始しない。
-                    if (userVadState !== 'speech') {
-                        startSilenceTimerIfNeeded(myGeneration, 'zero_wait_greeting_ended');
-                    }
+                }
+                // FAST TURN HOTFIX 14（今回追加・CASE A根本原因の修正）: これまで
+                // ここで「Zero-Wait Greeting（事前録音の自己紹介のみ）の再生完了 =
+                // ユーザーの回答待ちに入ってよい」とみなし、直接silence timerを
+                // 開始していた。しかしZero-Wait Greetingの文言は自己紹介のみ
+                // （_resolve_greeting_text）であり、お客様のお名前を伺う質問を
+                // 一切含まない。そのためHOTFIX13のincomplete_ai_turn検出
+                // （response.done起点）が発火する機会すら無いまま、実際には
+                // 何も質問していないのにsilence timerだけが起動してしまう
+                // ことが、HOTFIX13でCASE Aを救えなかった正確な理由である
+                // （response.output_audio_transcript.done/response.doneという
+                // HOTFIX13の前提イベント自体が、このZero-Waitローカル再生
+                // 経路では一切発火しないため）。
+                // 修正: silence timerを直接始めるのではなく、
+                // zeroWaitEndedResolve()でmaybeSendInitialGreeting()側の
+                // 待ち合わせを解決するだけにする。実際に「お名前を伺う」
+                // follow-up response.createを送るかどうかの判断（stale/
+                // userVadState確認を含む）はmaybeSendInitialGreeting()側に
+                // 一本化し、ここでは重複した判定を持たない。
+                if (zeroWaitEndedResolve) {
+                    zeroWaitEndedResolve();
+                    zeroWaitEndedResolve = null;
                 }
             };
             zeroWaitAudioEl.addEventListener('playing', onPlaying, { once: true });
@@ -4224,6 +4283,11 @@
             }
             if (!dc || dc.readyState !== 'open') return;
             initialGreetingSent = true;
+            // FAST TURN HOTFIX 14（今回追加）: 以下の処理はZero-Wait Greeting
+            // 再生完了を非同期でawaitするため、待機中に通話が終了/次の通話が
+            // 開始された場合に備え、既存のisStaleCallEvent()と同じ規律で
+            // このタイミングのcallGenerationを固定して保持する。
+            const myGeneration = callGeneration;
 
             const zeroWaitOutcome = await waitForZeroWaitOutcome();
             if (zeroWaitEnabled) {
@@ -4266,6 +4330,46 @@
                     logEvent('[ZeroWait] 第一声テキスト未取得のため会話履歴通知は省略します（response.createは送信しません）');
                 }
                 zeroWaitAwaitingFirstPostGreetingLatency = true;
+                // FAST TURN HOTFIX 14（今回追加・CASE A修正・最重要）: これまでは
+                // ここでreturnし、以降は何もトリガーしないままだった。Zero-Wait
+                // Greetingの文言は自己紹介のみでお名前を伺う質問を含まないため、
+                // 「名乗りだけで終わり、お客様は何を答えればよいか分からず沈黙する」
+                // という実機症状（CASE A）の直接の原因になっていた。
+                // 二重発話防止のため、音声再生中に割り込んでresponse.createを
+                // 送ることは絶対にしない（section12の既存方針を維持）。
+                // zeroWaitEndedPromiseは、再生が既に終わっていれば即座に、
+                // まだ再生中であれば実際に終わるまで解決しない。
+                await zeroWaitEndedPromise;
+                if (isStaleCallEvent(myGeneration)) {
+                    pushTimelineEvent('ZERO_WAIT_NAME_FOLLOWUP_SKIPPED (reason=stale_call)');
+                    return;
+                }
+                if (userVadState === 'speech') {
+                    // お客様がGreeting再生中に既に話し始めている場合は、既存の
+                    // turn_detectionによる自動応答にそのまま任せる（二重応答防止。
+                    // 変更前、この場合は何もしていなかった挙動をそのまま維持）。
+                    pushTimelineEvent('ZERO_WAIT_NAME_FOLLOWUP_SKIPPED (reason=user_already_speaking)');
+                    return;
+                }
+                // Realtime自身に、既に会話履歴へ記録済みの自己紹介を繰り返さず
+                // お名前を伺う質問だけを続けて話すよう促す（NAME phase
+                // instructions側の対応する追記は_PHASE1_NAME_ROLE_TEMPLATE参照）。
+                // 理由文字列は既存のcategorizeResponseReason()の
+                // `indexOf('initial_greeting') === 0` 判定にそのまま合致するため、
+                // 新しいコード分岐を追加せずcategory='greeting'に分類される
+                // （既存のclassifyExpectedAnswerType()のgreeting分岐が、この
+                // follow-up応答が万一名前質問を言い切らなかった場合でも、
+                // 既存のincomplete_ai_turn_continuation機構でそのまま救済する）。
+                pushTimelineEvent('INITIAL_GREETING_RECOVERY_SENT (reason=zero_wait_greeting_ended)');
+                console.log('[INITIAL_GREETING_RECOVERY_SENT]');
+                const followUpSent = sendResponseCreate('initial_greeting_zero_wait_followup');
+                if (!followUpSent) {
+                    // dc未接続等でfollow-up自体を送れなかった場合の安全網:
+                    // 何も起きないまま無言で放置するよりは、既存のsilence timer
+                    // 機構に委ねる（変更前の挙動への機能的フォールバック）。
+                    pushTimelineEvent('ZERO_WAIT_NAME_FOLLOWUP_SEND_FAILED (fallback=silence_timer)');
+                    startSilenceTimerIfNeeded(myGeneration, 'zero_wait_greeting_ended_followup_send_failed');
+                }
                 return;
             }
 
@@ -5092,8 +5196,32 @@
                 // バグ修正: これまでこの分岐が存在せず、request_callbackが
                 // 常にelse（未知のTool）へ落ちていた（詳細はcallRequestCallbackTool
                 // の直前のコメント参照）。
-                logEvent('Tool呼び出し受信: request_callback ' + JSON.stringify(args));
-                output = await callRequestCallbackTool(args || {}, callId);
+                // FAST TURN HOTFIX 14（今回追加・CASE B §13/§18 T: 二重実行防止）:
+                // 既にこの通話でrequest_callbackが成功済みの場合、実際のTool
+                // （バックエンドへの折り返し作成リクエスト）を再度呼ばず、
+                // 安全な確認済みresultをそのまま返す。terminal armed後に万一
+                // モデルがrequest_callbackを再度呼び出しても、折り返しの重複
+                // 作成（production safety）を防ぐ。
+                if (callbackAlreadyConfirmedThisCall) {
+                    logEvent('request_callback: 既に確定済みのため再実行をスキップします');
+                    pushTimelineEvent('CALLBACK_REQUEST_DEDUPED (reason=already_confirmed)');
+                    output = { success: true, status: 'already_confirmed' };
+                } else {
+                    logEvent('Tool呼び出し受信: request_callback ' + JSON.stringify(args));
+                    output = await callRequestCallbackTool(args || {}, callId);
+                    // FAST TURN HOTFIX 14（今回追加・CASE B §8/§11）: request_callback
+                    // が成功した場合のみ、以降の会話をterminal状態として扱う
+                    // （失敗時は既存の安全なfallback/handoff挙動を一切変更しない。
+                    // 既存のisToolOutputFailure()をそのまま再利用して判定するため、
+                    // 「保存できていないのに成功したと言わせない」という要件を、
+                    // 新しい判定基準を追加せずに満たす）。
+                    if (!isToolOutputFailure(output)) {
+                        callbackAlreadyConfirmedThisCall = true;
+                        callbackTerminalArmed = true;
+                        pushTimelineEvent('CALLBACK_TERMINAL_ARMED');
+                        console.log('[CALLBACK_TERMINAL_ARMED]');
+                    }
+                }
             } else if (item.name === 'classify_intent') {
                 // Realtime Token Architecture Phase 2（今回追加）: ROUTING phaseに
                 // のみ宣言される内部振り分け専用Tool（詳細はcallClassifyIntentTool
@@ -5326,6 +5454,10 @@
                 // Silence Timeout: 終話案内アナウンスの再生完了を検知する主経路
                 // （通常はresponse.doneより先にこちらが来る）。
                 maybeHangUpAfterSilenceGoodbye(callGeneration, 'ai_audio_stopped');
+                // FAST TURN HOTFIX 14（今回追加・CASE B）: 折り返し確定closing
+                // 発話の再生完了を検知する主経路（上と全く同じ理由・同じ
+                // イベントを再利用する）。
+                maybeHangUpAfterCallbackTerminal(callGeneration, 'ai_audio_stopped');
             } else if (type === 'output_audio_buffer.cleared') {
                 lastAiAudioEventAt = performance.now();
                 // 無言化調査用: サーバー側がAIの音声出力バッファを破棄した
@@ -6155,7 +6287,26 @@
                 // その安全網音声の再生完了（またはplay失敗・安全網タイムアウト）
                 // を受けて、上のRESPONSE_DONE_FAILED処理側から改めて行われる。
                 if (!responseHasFunctionCall) {
-                    if (deferSilenceTimerForToolContinuationRateLimit) {
+                    if (callbackTerminalArmed) {
+                        // FAST TURN HOTFIX 14（今回追加・CASE B §8/§13・最優先分岐）:
+                        // request_callbackが成功した直後のこの応答（closing発話）
+                        // では、AI_WORKING/incomplete_ai_turn継続や通常のsilence
+                        // timerのいずれも新規発火させない。既存のcontinuation
+                        // 判定（narration-only/incomplete等）が真であっても、
+                        // この会話は既に業務上完結しているためcontinuation自体を
+                        // 意味の無いものとして無条件に上書きする（他の全ての
+                        // 分岐より先にチェックすることで実現。新しいstate machine
+                        // ではなく、この1つの優先分岐を既存チェーンの先頭に
+                        // 追加するだけ）。
+                        // bounded化: 一度consumeしたら即falseに戻す（このarmed
+                        // フラグが二重に効かないようにする。次にrequest_callback
+                        // が再度成功しても、callbackAlreadyConfirmedThisCallの
+                        // 二重実行防止により実質再armされない）。
+                        callbackTerminalArmed = false;
+                        pendingCallbackTerminalHangup = true;
+                        pushTimelineEvent('CALLBACK_TERMINAL_RESPONSE_DONE');
+                        console.log('[CALLBACK_TERMINAL_RESPONSE_DONE]');
+                    } else if (deferSilenceTimerForToolContinuationRateLimit) {
                         pushTimelineEvent('SILENCE_TIMER_START_DEFERRED (reason=tool_continuation_rate_limit_fallback_pending)');
                     } else if (lastResponseTranscriptWasProcessNarrationOnly
                         && lastResponseReasonCategoryForDiag !== 'ai_working_continuation'
@@ -6277,6 +6428,9 @@
                 // Silence Timeout: 終話案内アナウンスの再生完了検知の安全網
                 // （通常はoutput_audio_buffer.stoppedで既に処理済みのはず）。
                 maybeHangUpAfterSilenceGoodbye(callGeneration, 'response_done_fallback');
+                // FAST TURN HOTFIX 14（今回追加・CASE B）: 折り返し確定closing
+                // 発話再生完了検知の安全網（上と全く同じ理由）。
+                maybeHangUpAfterCallbackTerminal(callGeneration, 'response_done_fallback');
             } else if (type === 'response.output_audio_transcript.done') {
                 // Expected Answer Window: AI自身の発話内容から、直後にお客様へ
                 // 求めている回答の種類を軽量に推定する（PIIはtype文字列にのみ
@@ -6837,6 +6991,12 @@
             // 状態も新しい通話ごとに必ずリセットする。
             lastResponseTranscriptWasIncompleteAiTurn = false;
             deferSilenceTimerForIncompleteAiTurnContinuation = false;
+            // FAST TURN HOTFIX 14: CALLBACK terminal state（CASE B）も同じ理由で
+            // 新しい通話ごとに必ずリセットする（前回通話のterminal armed/
+            // hangup pending状態を持ち越さない）。
+            callbackTerminalArmed = false;
+            pendingCallbackTerminalHangup = false;
+            callbackAlreadyConfirmedThisCall = false;
             // PHASE O5.6診断: 新しい通話ごとに診断専用の状態も必ずリセットする
             // （前回通話の診断値を持ち越さない。挙動には無関係・観測値のみ）。
             silenceStateEnteredAt = null;
