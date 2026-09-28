@@ -175,11 +175,14 @@ async def main():
                     "既存のIntent Classificationセクションがlegacy_full instructionsから失われています"
                 )
                 sent_tool_names = [t["name"] for t in legacy_full.get("tools", [])]
+                # Reservation Intelligence Phase E-1でsuggest_available_timesが
+                # 9個目のToolとして追加された（ユーザー承認済み。本フェーズの
+                # スコープ外の変更）。
                 assert sent_tool_names == [
                     "check_availability", "create_reservation", "get_shop_info", "find_customer",
                     "confirm_customer_identity", "get_customer_context", "set_conversation_language",
-                    "request_callback",
-                ], f"既存8Toolの送信内容が変化しています: {sent_tool_names}"
+                    "request_callback", "suggest_available_times",
+                ], f"既存8Tool+suggest_available_timesという想定からToolの送信内容が変化しています: {sent_tool_names}"
                 print("E. instructions/toolsという既存の送信内容はlegacy_full phaseとして今回の変更でも失われていない: OK")
 
                 # F. voice-preview用セッションにはtruncationを追加していない

@@ -719,3 +719,97 @@ class RequestCallbackToolResponse(BaseModel):
     success: bool
     # success=Falseの場合のみ設定。候補: invalid_request / temporarily_unavailable
     reason_code: Optional[str] = None
+
+
+# ===== Reservation Intelligence Phase E-1: suggest_available_times Tool Calling用 =====
+#
+# 設計方針（重要・必ず守ること。ユーザー承認済み設計）:
+# - AIは絶対に候補時刻を自分で生成・推測しない。このToolが返すcandidatesの時刻
+#   のみをAIは発話してよい（Tool descriptionで明示する）。判定ロジックは
+#   app/routers/reservations.py の _compute_day_availability()
+#   （既存のget_availability()から抽出した唯一のsource of truth。新しい
+#   予約可否判定は一切追加していない）をそのまま再利用し、ここでは一切
+#   重複実装しない。
+# - リクエストの形はCheckAvailabilityRequestと意図的に完全に揃える
+#   （shop_idを含めない・staff_id除外の理由・staff_name/resource_typeの
+#   検証方法まで含め、AIが新しい語彙を覚える必要をなくすため）。timeのみ
+#   「分かる場合のみ」の任意項目とする（希望時刻が無い相談にも対応するため）。
+# - レスポンスのcandidatesは「その時点でavailable=trueと判定された時刻」の
+#   リストのみ（最大3件。並び順は完全に決定論的で、AIが順序を決める余地は
+#   一切ない）。空席が無い日を「他の日なら空いています」と誤解させる文言は
+#   一切含めない（Tool descriptionとAI instructions側で明示）。
+# - candidatesは予約の確約ではない。create_reservation()は既存通り、この
+#   Toolの結果を一切信用せずその場で独立に空き状況を再判定する（Phase3A以来の
+#   既存の二重チェック方針を変更しない）。
+class SuggestedTimeCandidate(BaseModel):
+    """suggest_available_timesが返す候補1件（時刻のみ。予約の確約ではない）"""
+    time: str = Field(..., description="空きがある時刻（HH:MM、24時間表記）")
+
+
+class SuggestAvailableTimesToolRequest(BaseModel):
+    """Realtime AIのsuggest_available_times Toolからの引数（CheckAvailabilityRequestと同じ語彙）"""
+    date: str = Field(..., description="日付（YYYY-MM-DD）")
+    time: Optional[str] = Field(
+        None, description="お客様の希望時刻（HH:MM、24時間表記）。分かっている場合のみ。無い場合は省略"
+    )
+    party_size: int = Field(1, ge=1, le=999, description="人数")
+    service_id: Optional[str] = Field(None, description="サービスID（美容院・クリニック等、サービス単位で予約する業種の場合のみ）")
+    staff_id: Optional[str] = Field(
+        None,
+        description=(
+            "スタッフID（内部ID）。CheckAvailabilityRequestと同じ理由でRealtime AIの"
+            "Tool定義からは除外されている。他の将来の安全な呼び出し元のためにスキーマ上残すのみ。"
+        ),
+    )
+    staff_name: Optional[str] = Field(
+        None,
+        description=(
+            "スタッフ指名がある場合の、お客様が実際に発話した氏名（内部IDではない）。"
+            "CheckAvailabilityRequest.staff_nameと全く同じ意味。"
+        ),
+    )
+    resource_type: Optional[str] = Field(
+        None, description="リソースの種別（部屋・ベッド等が混在する店舗で、自動判定できない場合にのみ指定。通常は省略可）"
+    )
+
+    @field_validator("resource_type")
+    @classmethod
+    def _validate_resource_type(cls, v: Optional[str]) -> Optional[str]:
+        from app.schemas.resource import ALLOWED_RESOURCE_TYPES
+        if v is not None and v not in ALLOWED_RESOURCE_TYPES:
+            raise ValueError(f"resource_typeは次のいずれかである必要があります: {', '.join(ALLOWED_RESOURCE_TYPES)}")
+        return v
+
+
+class SuggestAvailableTimesToolResponse(BaseModel):
+    """Realtime AIへ返す最小レスポンス（DBへの保存は行わない。予約の確約ではない）"""
+    success: bool = True
+    date: str
+    party_size: int
+    # 最大3件。空の場合は「その日は候補が無かった」ことを意味する
+    # （reason_code="no_availability_found"）。他の日が空いているとは
+    # 一切保証しない。
+    candidates: List[SuggestedTimeCandidate] = []
+    # candidatesが空の場合のみ設定。候補:
+    # no_availability_found（その日は営業しているが、空いている時刻が
+    #   1件も見つからなかった） / shop_closed / business_hours_not_configured /
+    # temporary_closure / invalid_request / temporarily_unavailable /
+    # service_unavailable / staff_not_identified / staff_name_ambiguous /
+    # resource_type_required
+    # CheckAvailabilityResponseと同じ語彙をそのまま再利用している
+    # （AIが新しい概念を覚える必要をなくすため）。
+    #
+    # successとの関係（重要）: successはあくまで「Tool呼び出し自体が正常に
+    # 完了し、確定的な回答を返せたか」を表す。上記のうちinvalid_request /
+    # temporarily_unavailableの2つだけがsuccess=False（真の失敗。
+    # check_availabilityのisToolOutputFailure()判定基準と同じ2種類）。
+    # それ以外（no_availability_found含む）は「候補が無い」という確定した
+    # 正常な回答であり、success=Trueのまま返る（check_availabilityの
+    # available=falseが正常な回答であるのと同じ考え方）。
+    reason_code: Optional[str] = None
+    # reason_code=="resource_type_required"の場合のみ設定。CheckAvailabilityResponse
+    # と全く同じ意味・同じ由来（resource_idは一切含まない）。
+    available_resource_types: Optional[List[str]] = None
+    # reason_code=="staff_name_ambiguous"の場合のみ設定。CheckAvailabilityResponse
+    # と全く同じ意味。
+    staff_name_candidates: Optional[List[str]] = None

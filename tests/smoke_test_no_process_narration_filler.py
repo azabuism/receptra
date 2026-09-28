@@ -183,14 +183,16 @@ def _test_existing_tool_call_filler_rules_unchanged():
 def _test_realtime_tools_unchanged():
     from app.services.realtime_voice_ai import _REALTIME_TOOLS
 
+    # Reservation Intelligence Phase E-1でsuggest_available_timesが9個目の
+    # Toolとして追加された（ユーザー承認済み。本フェーズのスコープ外の変更）。
     tool_names = [t["name"] for t in _REALTIME_TOOLS]
     assert tool_names == [
         "check_availability", "create_reservation", "get_shop_info", "find_customer",
         "confirm_customer_identity", "get_customer_context", "set_conversation_language",
-        "request_callback",
-    ], f"8 Tool schemaが変化しています: {tool_names}"
+        "request_callback", "suggest_available_times",
+    ], f"9 Tool schemaが想定と異なります: {tool_names}"
 
-    print("5. 8つのRealtime Tool schema: 無変更 OK（DB/API/Tool変更なしの確認）")
+    print("5. 9つのRealtime Tool schema: 想定通り OK（本フェーズのDB/API/Tool変更なしの確認）")
 
 
 def _assert_section_order(instructions: str):

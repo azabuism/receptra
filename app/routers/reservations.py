@@ -1658,6 +1658,175 @@ async def _release_coupon_usage_if_any(db: AsyncSession, reservation: Reservatio
     coupon.updated_at = datetime.utcnow()
 
 
+class _DayAvailabilityResult:
+    """
+    Reservation Intelligence Phase E-1（Realtime Voice AI suggest_available_times
+    Tool導入に伴う抽出。ユーザー承認済み設計）: 元々get_availability()の内部に
+    直接書かれていた「1日分の空き状況（30分刻みのスロット一覧）を計算する」部分を、
+    入力検証・レスポンス組み立てから切り離して独立させた内部結果オブジェクト。
+    HTTPレスポンスモデルではなく、呼び出し元（get_availability()ルートハンドラと
+    suggest_available_times Tool）がそれぞれ自分の語彙（前者は既存のmessage文言、
+    後者はreason_code）へ変換するための中間表現に過ぎない。
+
+    重要: 判定ロジック自体（営業時間・臨時休業・休憩時間・テーブル/スタッフ/
+    リソースの空き状況、判定順序）は一切変更していない。_compute_day_availability()
+    の内容は、get_availability()に元々あったコードをそのまま移動しただけであり、
+    新しい予約可否判定は一切追加していない（既存のcheck_single_slot_availability()
+    と同じ理由・同じ考え方での抽出。Section36「Single Source of Routing Truth」）。
+    """
+
+    def __init__(
+        self,
+        is_open: bool,
+        slots: Optional[List[AvailabilitySlot]] = None,
+        reason_code: Optional[str] = None,
+        closure_reason_text: Optional[str] = None,
+        available_resource_types: Optional[List[str]] = None,
+        slot_cursors: Optional[List[datetime]] = None,
+    ):
+        self.is_open = is_open
+        self.slots = slots or []
+        # reason_code: None（通常。slotsに実際の計算結果が入っている） |
+        # "temporary_closure" | "business_hours_not_configured" | "shop_closed" |
+        # "resource_type_required" | "no_slots_possible"（営業日だが、所要時間の
+        # 都合で候補となる開始時刻がそもそも1つも存在しない。例: last_order_time
+        # が開店時刻より前になる設定ミス等）
+        self.reason_code = reason_code
+        self.closure_reason_text = closure_reason_text
+        self.available_resource_types = available_resource_types
+        # Reservation Intelligence Phase E-1追加: slotsと同じ順序・同じ件数で
+        # 各スロットの「実際のdatetime」（日跨ぎ営業の場合、target_dateの翌日に
+        # またがることがある）を保持する。slots(AvailabilitySlot)はHTTPレスポンス
+        # 互換のためtime文字列（HH:MM、日付情報を持たない）のみを持つが、
+        # suggest_available_timesの候補選定（希望時刻との近さで並べる）は
+        # 日跨ぎを跨いだ時刻同士を正しく比較する必要があるため、実datetimeを
+        # 別途保持する。get_availability()のレスポンス（slots）には一切影響しない
+        # （既存のAvailabilitySlotスキーマ・既存のmessage文言は変更していない）。
+        self.slot_cursors = slot_cursors or []
+
+
+async def _compute_day_availability(
+    db: AsyncSession,
+    shop: Shop,
+    target_date: date_type,
+    party_size: int,
+    service: Optional[Service],
+    staff_id: Optional[str],
+    resource_type: Optional[str],
+) -> _DayAvailabilityResult:
+    """
+    Reservation Intelligence Phase E-1: 指定日の空き状況（30分刻みのスロット一覧）
+    を計算する共通ロジック。GET /api/v1/shops/{shop_id}/availability
+    （get_availability()、Web予約UI向け）と、Realtime Voice AI向けの
+    suggest_available_times Tool の両方から呼ばれる、唯一のsource of truth
+    （AIに空き時間を推測させないための決定論的判定は、この1関数にのみ存在する）。
+
+    呼び出し前提（get_availability()の既存の検証順序と同じ。本関数はこれらの
+    検証が既に済んでいることを前提とする）: shop存在・is_active確認、
+    service_id解決、日付形式検証、resource_type許可値検証は呼び出し元が
+    本関数を呼ぶ前に済ませていること。
+    """
+    closure = await _get_closure_for_date(db, shop.id, target_date)
+    if closure:
+        reason_text = (closure.reason or "").strip()
+        return _DayAvailabilityResult(
+            is_open=False, reason_code="temporary_closure",
+            closure_reason_text=reason_text or None,
+        )
+
+    # Reservation Intelligence Phase D-3: この日の営業時間の出どころ（特定日の
+    # 営業時間 ShopHoursOverride が優先。無ければ通常の曜日ごとの営業時間
+    # ShopHours にフォールバック）を _resolve_day_hours() で一括して決定する。
+    hours, _hours_source, is_open = await _resolve_day_hours(db, shop.id, target_date)
+    if hours is None:
+        return _DayAvailabilityResult(is_open=False, reason_code="business_hours_not_configured")
+    if not is_open:
+        return _DayAvailabilityResult(is_open=False, reason_code="shop_closed")
+
+    duration = _resolve_reservation_duration(service, shop)
+
+    # Reservation Intelligence Phase D-1: 日跨ぎ営業（closes_next_day=True）の
+    # 場合、closing_time・last_order_timeが「翌日」の時刻であることを考慮して
+    # 実datetimeを組み立てる（意図的なスコープ限定は元のget_availability()の
+    # docstringコメントと同じ。前日から継続する日跨ぎセッションの深夜側スロットは
+    # 今回対象外）。
+    closing_dt = datetime.combine(target_date, hours.closing_time)
+    if hours.closes_next_day:
+        closing_dt += timedelta(days=1)
+
+    if hours.last_order_time is not None:
+        latest_start_dt = datetime.combine(target_date, hours.last_order_time)
+        if hours.last_order_next_day:
+            latest_start_dt += timedelta(days=1)
+    else:
+        latest_start_dt = closing_dt - timedelta(minutes=duration)
+
+    opening_dt = datetime.combine(target_date, hours.opening_time)
+
+    if latest_start_dt < opening_dt:
+        return _DayAvailabilityResult(is_open=True, reason_code="no_slots_possible")
+
+    # Phase3E-3: reservation_dateと同じ基準(JST-naive)の「現在時刻」に統一。
+    now = _reservation_basis_now()
+    default_duration = shop.reservation_duration_minutes or 90
+    breaks = await _get_shop_break_times(db, shop.id, target_date.weekday())
+    allocation_mode = await _resolve_reservation_allocation_mode(db, shop.id) if not service else None
+
+    effective_resource_type: Optional[str] = None
+    if allocation_mode == "resource":
+        type_status, effective_resource_type, available_types = await _resolve_required_resource_type(
+            db, shop.id, resource_type,
+        )
+        if type_status == "AMBIGUOUS":
+            return _DayAvailabilityResult(
+                is_open=True, reason_code="resource_type_required",
+                available_resource_types=available_types,
+            )
+
+    slots: List[AvailabilitySlot] = []
+    slot_cursors: List[datetime] = []
+    cursor = opening_dt
+    while cursor <= latest_start_dt:
+        if cursor > now:
+            # Reservation Intelligence Phase C: latest_start_dtまでの30分刻みの
+            # 候補のうち、last_order_timeが設定されている店舗では「開始時刻は
+            # last_order_time以内でも、終了時刻がclosing_timeを超える」候補が
+            # 混在し得る。そのような候補はスロット自体を生成しない。
+            if _validate_reservation_time_window(hours, target_date, cursor, duration) is not None:
+                cursor += timedelta(minutes=SLOT_INTERVAL_MINUTES)
+                continue
+            # Reservation Intelligence Phase D-2: 休憩時間と重なるスロットは、
+            # 一覧からは隠さず「fully_booked」と同様に候補として表示した上で
+            # available=falseにする。
+            if breaks and _overlaps_break_time(breaks, target_date, cursor, cursor + timedelta(minutes=duration)):
+                slots.append(AvailabilitySlot(time=cursor.strftime("%H:%M"), available=False))
+                slot_cursors.append(cursor)
+                cursor += timedelta(minutes=SLOT_INTERVAL_MINUTES)
+                continue
+            if service:
+                found_staff_id, unmanaged = await _find_available_staff_for_service(
+                    db, shop.id, service.id, cursor, duration, default_duration, staff_id,
+                    enforce_schedule=bool(shop.staff_schedule_enabled),
+                )
+                available = unmanaged or (found_staff_id is not None)
+            elif allocation_mode == "resource":
+                resource_id, unmanaged = await _find_available_resource(
+                    db, shop.id, party_size, cursor, duration, default_duration,
+                    required_resource_type=effective_resource_type,
+                )
+                available = unmanaged or (resource_id is not None)
+            else:
+                table_id, unmanaged = await _find_available_table(
+                    db, shop.id, party_size, cursor, duration, default_duration
+                )
+                available = unmanaged or (table_id is not None)
+            slots.append(AvailabilitySlot(time=cursor.strftime("%H:%M"), available=available))
+            slot_cursors.append(cursor)
+        cursor += timedelta(minutes=SLOT_INTERVAL_MINUTES)
+
+    return _DayAvailabilityResult(is_open=True, slots=slots, slot_cursors=slot_cursors)
+
+
 @router.get(
     "/shop/{shop_id}/availability",
     response_model=AvailabilityResponse,
@@ -1710,148 +1879,33 @@ async def get_availability(
         resource_type=resource_type,
     )
 
-    closure = await _get_closure_for_date(db, shop_id, target_date)
-    if closure:
-        reason_text = (closure.reason or "").strip()
-        message = f"臨時休業日です（{reason_text}）" if reason_text else "臨時休業日です"
+    # Reservation Intelligence Phase E-1: 実際の計算は_compute_day_availability()
+    # （唯一のsource of truth）に一本化。以下は元のget_availability()の各早期
+    # returnと完全に同じ条件・同じmessage文言へ結果をそのまま変換するだけであり、
+    # 挙動は一切変化しない（既存テストで回帰確認済み）。
+    result = await _compute_day_availability(db, shop, target_date, party_size, service, staff_id, resource_type)
+
+    if result.reason_code == "temporary_closure":
+        message = f"臨時休業日です（{result.closure_reason_text}）" if result.closure_reason_text else "臨時休業日です"
         return AvailabilityResponse(**common, is_open=False, message=message, slots=[])
-
-    # Reservation Intelligence Phase D-3: この日の営業時間の出どころ（特定日の
-    # 営業時間 ShopHoursOverride が優先。無ければ通常の曜日ごとの営業時間
-    # ShopHours にフォールバック）を _resolve_day_hours() で一括して決定する
-    # （_resolve_business_session() / _lookup_yesterday_overnight_session() と
-    # 同じ共通ロジックを使うことで、Override優先の判断が重複しないようにする）。
-    # Special Hoursを1件も登録していない店舗では、本関数は常に従来と同じ
-    # ShopHoursベースの結果を返すため、挙動は一切変化しない。
-    hours, hours_source, is_open = await _resolve_day_hours(db, shop_id, target_date)
-
-    if hours is None:
+    if result.reason_code == "business_hours_not_configured":
         return AvailabilityResponse(**common, is_open=False, message="この店舗の営業時間が設定されていません", slots=[])
-    if not is_open:
+    if result.reason_code == "shop_closed":
         return AvailabilityResponse(**common, is_open=False, message="定休日です", slots=[])
-
-    duration = _resolve_reservation_duration(service, shop)
-
-    # Reservation Intelligence Phase D-1: 日跨ぎ営業（closes_next_day=True）の
-    # 場合、closing_time・last_order_timeが「翌日」の時刻であることを考慮して
-    # 実datetimeを組み立てる。日跨ぎを使わない店舗（closes_next_day=False）
-    # では従来と完全に同じdatetimeになり、挙動は変化しない。
-    #
-    # 注意（意図的なスコープ限定。Phase D-1完了報告の既知の制限として明記）:
-    # ここで扱うのは「target_date自身が開始日であるセッション」のみ。
-    # 前日から継続する日跨ぎセッションの深夜側スロット（例: 月曜18:00〜翌03:00
-    # 営業に対してdate=火曜で問い合わせた場合の00:00〜03:00スロット）は、
-    # この日付単位の空き一覧エンドポイントでは今回対象外とする
-    # （check_single_slot_availability() / create_reservation() /
-    # update_reservation()は_resolve_business_session()経由で正しく
-    # 前日セッションを検出するため、実際の予約可否判定には影響しない）。
-    closing_dt = datetime.combine(target_date, hours.closing_time)
-    if hours.closes_next_day:
-        closing_dt += timedelta(days=1)
-
-    if hours.last_order_time is not None:
-        latest_start_dt = datetime.combine(target_date, hours.last_order_time)
-        if hours.last_order_next_day:
-            latest_start_dt += timedelta(days=1)
-    else:
-        latest_start_dt = closing_dt - timedelta(minutes=duration)
-
-    opening_dt = datetime.combine(target_date, hours.opening_time)
-
-    if latest_start_dt < opening_dt:
+    if result.reason_code == "no_slots_possible":
         return AvailabilityResponse(**common, is_open=True, message="本日は予約可能な時間枠がありません", slots=[])
-
-    # Phase3E-3: reservation_dateと同じ基準(JST-naive)の「現在時刻」に統一
-    # （datetime.utcnow()との比較は最大9時間ズレるバグだった。上部コメント参照）。
-    now = _reservation_basis_now()
-    # Reservation Intelligence Phase B: 既存予約自身のduration_minutesがNULLの
-    # 場合のみのフォールバック値。check_single_slot_availability()と同じ考え方。
-    default_duration = shop.reservation_duration_minutes or 90
-    # Reservation Intelligence Phase D-2: この日（target_date自身が開始日である
-    # セッション）に登録されている休憩・予約停止時間を、ループの外で一度だけ取得する
-    # （スロット数分だけ同じクエリを繰り返さない）。休憩が1件も無い店舗・曜日では
-    # 空リストのままで、以下のoverlapチェックは常にFalseになり挙動は変化しない。
-    # get_availability()自身の既知の限定スコープ（前日から継続する日跨ぎセッションの
-    # 深夜側スロットは今回対象外。上のコメント参照）と同じtarget_date基準で扱う。
-    # Phase D-3: hoursがShopHoursOverrideの場合もあるため、day_of_week相当は
-    # target_date.weekday()から求める（他の3箇所と同じ修正方針）。
-    breaks = await _get_shop_break_times(db, shop_id, target_date.weekday())
-    # Generic Resource Foundation Phase R3: allocation_modeはshop_idのみに
-    # 依存し、スロットの時刻には依存しないため、ループの外で一度だけ判定する
-    # （breaksと同じ「スロット数分だけ同じクエリを繰り返さない」という既存方針）。
-    # check_single_slot_availability()/create_reservation()と完全に同じ
-    # 判定を共有する（Section36）。serviceが指定されている場合はStaff pathの
-    # ままであり判定自体が不要なため、無駄なクエリを発生させない。
-    allocation_mode = await _resolve_reservation_allocation_mode(db, shop_id) if not service else None
-
-    # Generic Resource Foundation Phase R4: allocation_mode=="resource"の
-    # 場合のみ、対象resource_typeを_resolve_required_resource_type()で
-    # 判定する（唯一のsource of truth。check_single_slot_availability()/
-    # create_reservation()と完全に同じ判定を共有する）。allocation_modeと
-    # 同じ理由でループの外で一度だけ判定する（shop_idと入力のresource_type
-    # のみに依存し、スロットの時刻には依存しないため）。
-    effective_resource_type: Optional[str] = None
-    if allocation_mode == "resource":
-        type_status, effective_resource_type, available_types = await _resolve_required_resource_type(
-            db, shop_id, resource_type,
+    if result.reason_code == "resource_type_required":
+        # Section30「混在型店舗は安全に失敗する（ランダムに統合しない）」:
+        # 既存のAvailabilityResponseの形（is_open=True, message, slots=[]）を
+        # そのまま流用する。公開Web予約枠にはresource_typeを選択させるUIが
+        # 無いため、この一覧では常にこの安全な空スロットで応答する。
+        return AvailabilityResponse(
+            **common, is_open=True,
+            message="ご利用になりたいお部屋・設備の種類によって空き状況が異なるため、恐れ入りますが店舗へお問い合わせください",
+            slots=[],
         )
-        if type_status == "AMBIGUOUS":
-            # Section30「混在型店舗は安全に失敗する（ランダムに統合しない）」:
-            # 既存のAvailabilityResponseの形（is_open=True, message, slots=[]）を
-            # そのまま流用する（「本日は予約可能な時間枠がありません」と同じ
-            # 既存パターン。新しいレスポンス構造は発明しない）。公開Web予約枠には
-            # resource_typeを選択させるUIが無いため、この一覧では常にこの安全な
-            # 空スロットで応答する（Owner UI・Realtime経由でresource_typeを明示
-            # した場合はEXPLICIT_TYPE/NO_MATCHとなり、ここには到達しない）。
-            return AvailabilityResponse(
-                **common, is_open=True,
-                message="ご利用になりたいお部屋・設備の種類によって空き状況が異なるため、恐れ入りますが店舗へお問い合わせください",
-                slots=[],
-            )
 
-    slots: List[AvailabilitySlot] = []
-    cursor = opening_dt
-    while cursor <= latest_start_dt:
-        if cursor > now:
-            # Reservation Intelligence Phase C: latest_start_dtまでの30分刻みの
-            # 候補のうち、last_order_timeが設定されている店舗では「開始時刻は
-            # last_order_time以内でも、終了時刻がclosing_timeを超える」候補が
-            # 混在し得る（_validate_reservation_time_window()のdocstring参照）。
-            # そのような候補はスロット自体を生成しない（営業時間外の時刻が
-            # 一覧に出ないようにする。closure/is_closedと同じ扱い）。
-            if _validate_reservation_time_window(hours, target_date, cursor, duration) is not None:
-                cursor += timedelta(minutes=SLOT_INTERVAL_MINUTES)
-                continue
-            # Reservation Intelligence Phase D-2: 休憩時間と重なるスロットは、
-            # 営業時間外のスロットとは異なり一覧からは隠さず、「fully_booked」と
-            # 同様に候補として表示した上でavailable=falseにする（休憩時間は営業時間
-            # 自体の一部であり、単に今取れないだけという点で満席と同種の扱いが
-            # 自然なため）。スタッフ/テーブルの空き状況クエリは休憩中なら不要なので呼ばない。
-            if breaks and _overlaps_break_time(breaks, target_date, cursor, cursor + timedelta(minutes=duration)):
-                slots.append(AvailabilitySlot(time=cursor.strftime("%H:%M"), available=False))
-                cursor += timedelta(minutes=SLOT_INTERVAL_MINUTES)
-                continue
-            if service:
-                found_staff_id, unmanaged = await _find_available_staff_for_service(
-                    db, shop_id, service.id, cursor, duration, default_duration, staff_id,
-                    enforce_schedule=bool(shop.staff_schedule_enabled),
-                )
-                available = unmanaged or (found_staff_id is not None)
-            elif allocation_mode == "resource":
-                resource_id, unmanaged = await _find_available_resource(
-                    db, shop_id, party_size, cursor, duration, default_duration,
-                    required_resource_type=effective_resource_type,
-                )
-                available = unmanaged or (resource_id is not None)
-            else:
-                table_id, unmanaged = await _find_available_table(
-                    db, shop_id, party_size, cursor, duration, default_duration
-                )
-                available = unmanaged or (table_id is not None)
-            slots.append(AvailabilitySlot(time=cursor.strftime("%H:%M"), available=available))
-        cursor += timedelta(minutes=SLOT_INTERVAL_MINUTES)
-
-    return AvailabilityResponse(**common, is_open=True, slots=slots)
+    return AvailabilityResponse(**common, is_open=True, slots=result.slots)
 
 
 @router.post(

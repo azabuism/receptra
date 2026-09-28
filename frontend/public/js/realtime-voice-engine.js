@@ -5225,6 +5225,56 @@
             }
         }
 
+        // ===== Reservation Intelligence Phase E-1: suggest_available_times =====
+        //
+        // 設計方針（重要）: callCheckAvailabilityTool()と全く同じテンプレートで
+        // 実装する（引数の転送方法・エラー処理・fallbackの安全側方針のいずれも
+        // check_availabilityと完全に揃える。ユーザー承認済み設計）。判定ロジック
+        // そのものはこのJSには一切無く、必ずFastAPI側（_compute_day_availability()
+        // 経由）の結果だけを唯一の正として扱う。
+        async function callSuggestAvailableTimesTool(args) {
+            const body = {
+                date: args && args.date,
+                party_size: args && args.party_size,
+            };
+            if (args && args.time) body.time = args.time;
+            if (args && args.service_id) body.service_id = args.service_id;
+            // Phase R5 Part B: check_availabilityと同じ理由でstaff_id（内部ID）は
+            // 一切転送しない（AIはstaff_idを知らない）。
+            if (args && args.staff_name) body.staff_name = args.staff_name;
+            if (args && args.resource_type) body.resource_type = args.resource_type;
+
+            try {
+                const res = await fetchToolWithTimeout('/api/v1/shops/' + encodeURIComponent(shopId) + '/realtime-voice/tools/suggest-available-times', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || typeof data.success !== 'boolean') {
+                    // check_availabilityと全く同じ理由・同じ切り分け
+                    // （422=引数自体が不正→invalid_request、それ以外→temporarily_unavailable）。
+                    return {
+                        success: false,
+                        date: body.date || null,
+                        party_size: body.party_size || null,
+                        candidates: [],
+                        reason_code: (res.status === 422) ? 'invalid_request' : 'temporarily_unavailable',
+                    };
+                }
+                return data;
+            } catch (e) {
+                logEvent('suggest_available_times Tool呼び出しに失敗' + describeToolFetchError(e));
+                return {
+                    success: false,
+                    date: body.date || null,
+                    party_size: body.party_size || null,
+                    candidates: [],
+                    reason_code: 'temporarily_unavailable',
+                };
+            }
+        }
+
         // ===== Phase3B: create_reservation =====
         //
         // 設計方針（重要）:
@@ -5657,6 +5707,14 @@
             if (item.name === 'check_availability') {
                 logEvent('Tool呼び出し受信: check_availability ' + JSON.stringify(args));
                 output = await callCheckAvailabilityTool(args || {});
+            } else if (item.name === 'suggest_available_times') {
+                // Reservation Intelligence Phase E-1（今回追加）: check_availabilityと
+                // 全く同じ分岐パターン（唯一の追加ディスパッチ分岐。ユーザー承認済み
+                // 設計。FAST TURN/ANSWER_WINDOW/Forced Commit/semantic_vad/
+                // HOTFIX14〜19/Phase A/B/C playback teardown等の既存メカニズムには
+                // 一切触れない、純粋な追加のみ）。
+                logEvent('Tool呼び出し受信: suggest_available_times ' + JSON.stringify(args));
+                output = await callSuggestAvailableTimesTool(args || {});
             } else if (item.name === 'create_reservation') {
                 logEvent('Tool呼び出し受信: create_reservation ' + JSON.stringify(args));
                 output = await callCreateReservationTool(args || {}, callId);
@@ -5755,10 +5813,10 @@
                 logEvent('Tool呼び出し受信: classify_intent ' + JSON.stringify(args));
                 output = await callClassifyIntentTool(args || {});
             } else {
-                // 現在宣言しているToolはcheck_availability / create_reservation /
-                // get_shop_info / find_customer / confirm_customer_identity /
-                // get_customer_context / set_conversation_language /
-                // request_callback / classify_intentの9つ。
+                // 現在宣言しているToolはcheck_availability / suggest_available_times /
+                // create_reservation / get_shop_info / find_customer /
+                // confirm_customer_identity / get_customer_context /
+                // set_conversation_language / request_callback / classify_intentの10個。
                 // 未知の関数名が来た場合も、応答せずに放置するとAIが待ち続けて
                 // しまうため、安全側の失敗として返す。
                 logEvent('未知のTool呼び出し: ' + item.name);
@@ -5838,9 +5896,10 @@
             // ことだけは避けられる。dc自体が閉じている場合はsendResponseCreate()
             // 側のRESPONSE_CREATE_SKIPPEDが記録され、挙動は変化しない。
             pushToolContinuationTrace('T5_CONTINUATION_RESPONSE_CREATE_ATTEMPT (tool=' + (item.name || '(不明)') + ')');
-            // Realtime Token Architecture Phase 2（今回追加・classify_intentのみの
-            // 例外。他の既存8個のToolは全てこの直後で無条件にsendResponseCreate()
-            // を呼ぶ従来どおりの挙動のまま変更しない）:
+            // Realtime Token Architecture Phase 2（classify_intentのみの
+            // 例外。suggest_available_times（Reservation Intelligence Phase E-1で
+            // 追加）を含む他の既存9個のToolは全てこの直後で無条件に
+            // sendResponseCreate()を呼ぶ従来どおりの挙動のまま変更しない）:
             // classify_intentはこの時点でarmPhaseTransitionAfterResponse()により
             // Phase遷移(reservation/callback)を「予約」しただけであり、実際の
             // session.update送信はまだ行われていない（この直後のresponse.done

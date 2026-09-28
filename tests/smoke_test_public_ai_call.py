@@ -185,6 +185,13 @@ def check_backend_files_untouched():
         # Phase A（callback電話番号fabrication mitigation）による意図的な
         # 変更。Phase P1の実装スコープとは無関係で、個別に監査・承認済み。
         "app/services/realtime_voice_ai.py",
+        # Reservation Intelligence Phase E-1（RECEPTRA予約受付改善 Feature 3:
+        # suggest_available_times Tool追加）による意図的な変更。Phase P1の
+        # 実装スコープとは無関係で、ユーザー承認済みのREAD-ONLY監査・実装
+        # 計画に基づく変更。
+        "app/routers/reservations.py",
+        "app/routers/realtime_voice.py",
+        "app/schemas/reservation.py",
     }
     backend_changed = [
         c for c in changed

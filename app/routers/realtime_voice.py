@@ -44,9 +44,14 @@ from app.schemas.reservation import (
     SetConversationLanguageToolRequest, SetConversationLanguageToolResponse,
     RequestCallbackToolRequest, RequestCallbackToolResponse,
     ReservationCreateRequest,
+    SuggestAvailableTimesToolRequest, SuggestAvailableTimesToolResponse, SuggestedTimeCandidate,
 )
 from app.schemas.shop_knowledge import GetShopInfoToolRequest
-from app.routers.reservations import check_single_slot_availability, create_reservation
+from app.models.service import Service
+from app.routers.reservations import (
+    check_single_slot_availability, create_reservation,
+    _compute_day_availability,
+)
 from app.routers.shop_knowledge import get_shop_info_for_ai
 from app.services.customer_memory import (
     find_customer_candidate_record, upsert_customer_memory_for_reservation,
@@ -944,6 +949,192 @@ async def check_availability_tool(
         # DB/内部エラーであり、お客様の入力が悪いわけではないためtemporarily_unavailable。
         logger.error("check_availability Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
         return _safe_fallback("temporarily_unavailable")
+
+
+def _select_time_candidates(
+    result_slots: List,
+    result_cursors: List[datetime],
+    target_date: date_type,
+    requested_time_str: Optional[str],
+    max_candidates: int = 3,
+) -> List[SuggestedTimeCandidate]:
+    """
+    Reservation Intelligence Phase E-1: suggest_available_times Toolが返す
+    候補時刻を選ぶ、完全に決定論的な並べ替え・絞り込みロジック（ユーザー承認済み
+    設計。LLMは順序を一切決めない）。
+
+    - available=Trueのスロットのみを対象にする（available=Falseのスロットは
+      理由を問わず一切候補に含めない）。
+    - 希望時刻（requested_time_str）が指定されている場合:
+      「希望時刻との差の絶対値」が小さい順に並べ、差が同じ場合は
+      「時刻そのものが早い方」を優先する（ユーザー確認済みの具体例:
+      希望18:00、候補17:30/18:30 → [17:30, 18:30]の順）。
+      比較は実際のdatetime（日跨ぎ営業でtarget_dateの翌日にまたがる
+      スロットも正しく扱うため。_compute_day_availability()のslot_cursors
+      docstring参照）で行うため、日跨ぎのケースでも時刻文字列の見た目上の
+      大小に惑わされない。
+    - 希望時刻が指定されていない場合: 単純に時刻が早い順（実datetime昇順）。
+    - 最大max_candidates件（既定3件）まで。
+    """
+    available_cursors = [
+        cursor for slot, cursor in zip(result_slots, result_cursors) if slot.available
+    ]
+
+    requested_dt: Optional[datetime] = None
+    if requested_time_str:
+        try:
+            requested_time_obj = datetime.strptime(requested_time_str, "%H:%M").time()
+            requested_dt = datetime.combine(target_date, requested_time_obj)
+        except ValueError:
+            requested_dt = None  # 不正な形式は「希望時刻なし」と同じ扱いにする（安全側）
+
+    if requested_dt is not None:
+        available_cursors.sort(key=lambda c: (abs((c - requested_dt).total_seconds()), c))
+    else:
+        available_cursors.sort()
+
+    return [
+        SuggestedTimeCandidate(time=c.strftime("%H:%M"))
+        for c in available_cursors[:max_candidates]
+    ]
+
+
+@router.post("/tools/suggest-available-times", response_model=SuggestAvailableTimesToolResponse)
+async def suggest_available_times_tool(
+    shop_id: str,
+    request: SuggestAvailableTimesToolRequest,
+    db: AsyncSession = Depends(get_db),
+) -> SuggestAvailableTimesToolResponse:
+    """
+    Reservation Intelligence Phase E-1: suggest_available_times Tool Calling専用
+    エンドポイント（認証不要。check_availability_toolと同じ認証方針）。
+
+    設計方針（重要・必ず守ること。ユーザー承認済み設計）:
+    - 判定ロジックは _compute_day_availability()（GET /shop/{shop_id}/availability
+      と共通の、唯一のsource of truth）をそのまま再利用する。ここでは新しい
+      予約可否判定を一切追加しない。
+    - AIは候補時刻を自分で生成・推測しない。ここが返すcandidatesの時刻のみを
+      AIは発話してよい（Tool descriptionで明示）。
+    - candidatesは最大3件。並び順は_select_time_candidates()による完全な
+      決定論的処理であり、AIが順序を決める余地は一切ない。
+    - candidatesが空でも「他の日なら空いています」等は一切示唆しない
+      （reason_code="no_availability_found"を返すのみ）。
+    - このToolは予約を確定しない（DBへの書き込みは一切行わない）。
+      create_reservation()は本Toolの結果を一切信用せず、その場で独立に
+      空き状況を再判定する（既存のcheck_availability/create_reservationの
+      二重チェック方針と同じ。変更していない）。
+    - shop_id・staff_id除外・resource_type検証・staff_name解決は
+      check_availability_toolと全く同じ方針（AIに他店舗のshop_idや
+      内部IDを一切扱わせない）。
+    - successの意味はcheck_availability(available)と揃えている: 「候補が
+      0件だった」「営業時間未設定・定休日・臨時休業・サービス利用不可・
+      スタッフ未特定など、確定的な理由で候補を出せなかった」場合は、
+      Tool呼び出し自体は正常に完了しているためsuccess=True（candidates=[]、
+      reason_codeで理由を伝える）。success=Falseは、check_availabilityの
+      isToolOutputFailure()判定基準と同じ2種類の真の失敗
+      （invalid_request＝入力形式が不正／temporarily_unavailable＝
+      こちら側都合で現時点では確定できない）専用とする。
+    """
+    _check_tool_rate_limit(shop_id)
+
+    def _hard_failure(reason_code: str) -> SuggestAvailableTimesToolResponse:
+        """入力形式不正・システム都合で確定できない、の2種類のみに使う真の失敗。"""
+        return SuggestAvailableTimesToolResponse(
+            success=False,
+            date=request.date,
+            party_size=request.party_size,
+            candidates=[],
+            reason_code=reason_code,
+        )
+
+    def _no_candidates(
+        reason_code: str,
+        available_resource_types: Optional[List[str]] = None,
+        staff_name_candidates: Optional[List[str]] = None,
+    ) -> SuggestAvailableTimesToolResponse:
+        """確定的な理由で候補が0件（Tool呼び出し自体は正常に完了。success=True）。"""
+        return SuggestAvailableTimesToolResponse(
+            success=True,
+            date=request.date,
+            party_size=request.party_size,
+            candidates=[],
+            reason_code=reason_code,
+            available_resource_types=available_resource_types,
+            staff_name_candidates=staff_name_candidates,
+        )
+
+    try:
+        shop = await db.get(Shop, shop_id)
+        if not shop or not shop.is_active:
+            return _hard_failure("temporarily_unavailable")
+
+        try:
+            target_date = date_type.fromisoformat(request.date)
+        except ValueError:
+            return _hard_failure("invalid_request")
+
+        if request.time is not None:
+            try:
+                datetime.strptime(request.time, "%H:%M")
+            except ValueError:
+                return _hard_failure("invalid_request")
+
+        # get_availability()の既存の検証順序と同じ（service_idの解決）。
+        # ここではHTTPExceptionを投げず、check_availability_toolと同じ
+        # 構造化reason_code（service_unavailable）で安全に返す。
+        service: Optional[Service] = None
+        if request.service_id:
+            service = await db.get(Service, request.service_id)
+            if not service or service.shop_id != shop_id or service.is_active != "active":
+                return _no_candidates("service_unavailable")
+
+        # Phase R5 Part B: Named Staff Safe Resolution。check_availability_toolと
+        # 全く同じ方針（service_idが解決できた場合のみstaff_name解決を行う）。
+        effective_staff_id = request.staff_id
+        if request.service_id and not effective_staff_id and request.staff_name:
+            staff_status, resolved_staff_id, staff_candidates = await _resolve_staff_by_name(
+                db, shop_id, request.staff_name,
+            )
+            if staff_status == "RESOLVED":
+                effective_staff_id = resolved_staff_id
+            elif staff_status == "NOT_FOUND":
+                return _no_candidates("staff_not_identified")
+            elif staff_status == "AMBIGUOUS":
+                return _no_candidates("staff_name_ambiguous", staff_name_candidates=staff_candidates)
+            # NOT_PROVIDED: 指名なしとして、従来通りそのまま続行する。
+
+        result = await _compute_day_availability(
+            db, shop, target_date, request.party_size, service, effective_staff_id, request.resource_type,
+        )
+
+        if result.reason_code == "temporary_closure":
+            return _no_candidates("temporary_closure")
+        if result.reason_code == "business_hours_not_configured":
+            return _no_candidates("business_hours_not_configured")
+        if result.reason_code == "shop_closed":
+            return _no_candidates("shop_closed")
+        if result.reason_code == "no_slots_possible":
+            return _no_candidates("no_availability_found")
+        if result.reason_code == "resource_type_required":
+            return _no_candidates("resource_type_required", available_resource_types=result.available_resource_types)
+
+        candidates = _select_time_candidates(
+            result.slots, result.slot_cursors, target_date, request.time,
+        )
+        if not candidates:
+            return _no_candidates("no_availability_found")
+
+        return SuggestAvailableTimesToolResponse(
+            success=True,
+            date=request.date,
+            party_size=request.party_size,
+            candidates=candidates,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("suggest_available_times Tool処理に失敗 (shop_id=%s): %s", shop_id, e)
+        return _hard_failure("temporarily_unavailable")
 
 
 @router.post("/tools/create-reservation", response_model=CreateReservationToolResponse)

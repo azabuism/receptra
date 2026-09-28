@@ -143,7 +143,9 @@ async def _test_full_instructions_regression():
     from app.models.shop import Shop
     from app.models.ai_staff_settings import AIStaffSettings
 
-    assert len(_REALTIME_TOOLS) == 8, f"Realtime Toolの数が想定と異なります: {len(_REALTIME_TOOLS)}"
+    # Reservation Intelligence Phase E-1でsuggest_available_timesが9個目の
+    # Toolとして追加された（ユーザー承認済み）。
+    assert len(_REALTIME_TOOLS) == 9, f"Realtime Toolの数が想定と異なります: {len(_REALTIME_TOOLS)}"
     tool_names = {t["name"] for t in _REALTIME_TOOLS}
     for expected in (
         "check_availability", "create_reservation", "get_shop_info", "find_customer",

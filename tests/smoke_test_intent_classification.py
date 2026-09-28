@@ -101,7 +101,12 @@ def _test_template_content():
     # 1e. 来店理由とIntentを混同しないという注記
     assert "来店理由" in tmpl, "来店理由とIntentを混同しない旨の注記が見つかりません"
 
-    # 2. 既存8 Toolがそのまま・9個目が追加されていないこと
+    # 2. 既存8 Toolの名前・順序がそのまま、末尾にsuggest_available_times
+    #    （Reservation Intelligence Phase E-1でユーザー承認済みに追加された
+    #    9個目のTool）が加わっている以外の変化がないこと。この検証の本来の
+    #    目的は「Intent Classification（本フェーズ）自身が新しいToolを
+    #    勝手に追加していないこと」であり、後発の別フェーズで正式に承認
+    #    された9個目のTool追加を恒久的に禁止するものではない。
     tool_names = [t["name"] for t in _REALTIME_TOOLS]
     assert tool_names == [
         "check_availability",
@@ -112,8 +117,9 @@ def _test_template_content():
         "get_customer_context",
         "set_conversation_language",
         "request_callback",
-    ], f"既存8 Toolの名前・順序が変わっています（9個目のTool追加は禁止）: {tool_names}"
-    assert len(_REALTIME_TOOLS) == 8, f"Toolの数が8個ではありません: {len(_REALTIME_TOOLS)}"
+        "suggest_available_times",
+    ], f"既存8 Toolの名前・順序、およびsuggest_available_timesの末尾追加という想定から変化しています: {tool_names}"
+    assert len(_REALTIME_TOOLS) == 9, f"Toolの数が9個ではありません: {len(_REALTIME_TOOLS)}"
 
     print("1-2. _INTENT_CLASSIFICATION_TEMPLATE内容・_REALTIME_TOOLS回帰: OK")
 
@@ -331,10 +337,10 @@ async def _test_session_endpoint_transmits_new_section(client, shop_id):
     assert sent_tool_names == [
         "check_availability", "create_reservation", "get_shop_info", "find_customer",
         "confirm_customer_identity", "get_customer_context", "set_conversation_language",
-        "request_callback",
-    ], f"legacy_fullのtoolsが既存8個から変化しています: {sent_tool_names}"
+        "request_callback", "suggest_available_times",
+    ], f"legacy_fullのtoolsが既存8個+suggest_available_timesという想定から変化しています: {sent_tool_names}"
 
-    print("6. /realtime-voice/session が実際に送信するsession_configにIntent Classification + 既存8Toolが含まれる: OK")
+    print("6. /realtime-voice/session が実際に送信するsession_configにIntent Classification + 既存9Toolが含まれる: OK")
 
 
 async def main():

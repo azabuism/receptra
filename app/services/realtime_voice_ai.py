@@ -149,6 +149,23 @@ _REALTIME_TOOLS = [
             "確認できない → 定休日と同様のトーンで「現在オンラインでは空き"
             "状況をご案内できません」と伝えた上でHuman Handoffへ（「ご自身で"
             "店舗へ連絡してください」のような丸投げ案内は絶対にしない）。\n"
+            "  business_hours_not_configuredのときに必ず守ること（7点）:\n"
+            "  1. 営業時間を自分で推測・仮定しない（開いていそう／閉まって"
+            "いそう、いずれの推測も含む）。\n"
+            "  2. 「では何時がよろしいですか」等、別の時間を尋ねて"
+            "check_availabilityを何度も呼び直さない（結果は何度呼んでも"
+            "変わらない）。\n"
+            "  3. 「本日は定休日です」のように定休日だと断定しない"
+            "（business_hours_not_configuredは定休日＝shop_closedとは異なる、"
+            "単に設定が未登録という状態）。\n"
+            "  4. 「現在オンラインでは空き状況をご案内できません」のように、"
+            "確認できないという事実そのものをはっきり伝える。\n"
+            "  5. それまでの会話で既に分かっている来店希望日時・人数・"
+            "お名前・電話番号があれば、聞き直さずそのまま引き継ぐ。\n"
+            "  6. 上記のうちまだ聞けていない、折り返しに必要な項目"
+            "（お名前・電話番号など）だけを確認する。\n"
+            "  7. 必要な情報が揃い次第、reason_code="
+            "business_hours_not_configuredでrequest_callbackを呼び出す。\n"
             "・invalid_request=渡した日付や時刻の形式に誤りの可能性 → "
             "date=YYYY-MM-DD, time=HH:MM(24時間)を再確認し、修正して再度"
             "呼び出す。\n"
@@ -740,6 +757,95 @@ _REALTIME_TOOLS = [
                 },
             },
             "required": ["customer_name", "customer_phone", "inquiry_text"],
+        },
+    },
+    # ===== Reservation Intelligence Phase E-1: suggest_available_times =====
+    #
+    # 設計方針（重要・必ず守ること。ユーザー承認済み設計）:
+    # - この関数はcheck_availabilityと違い、特定の1つの日時が空いているかを
+    #   判定するものではない。「この日、空いている時間の候補」を
+    #   RECEPTRA側の既存の空き状況判定（get_availability()と全く同じ
+    #   source of truth）から最大3件だけ返す、あくまでcheck_availabilityを
+    #   補助するToolである。
+    # - candidatesに入っている時刻以外は、AIは絶対に「空いています」と
+    #   案内しない・自分で時刻を作り出さない。
+    # - candidatesは予約の確約ではない。実際に予約するときは、必ず
+    #   check_availabilityまたはcreate_reservationで改めて確定させる
+    #   （このTool単体では予約を取れない）。
+    {
+        "type": "function",
+        "name": "suggest_available_times",
+        "description": (
+            "お客様が特定の1つの時刻をまだ明確に決めていない・迷っている・"
+            "「いつが空いていますか」のように候補を尋ねている場合にのみ"
+            "呼び出してください。特定の1つの時刻の可否だけを確認したい場合は、"
+            "この関数ではなく必ずcheck_availabilityを呼び出してください。\n"
+            "dateは必ずYYYY-MM-DD形式で指定してください。timeは、お客様が"
+            "「19時頃」のようにおおよその希望時刻を話した場合はその時刻"
+            "（HH:MM、24時間表記）を指定してください。希望時刻の手がかりが"
+            "全く無い場合はtimeを省略して構いません。party_size/service_id/"
+            "staff_name/resource_typeは該当する場合のみ指定してください"
+            "（check_availabilityと全く同じ指定方法。いずれも省略可）。\n"
+            "戻り値のcandidatesには、実際に空きがあると確認できた時刻が"
+            "最大3件、近い順に並んで返ります。この配列に含まれる時刻"
+            "以外は、空いているとも候補であるとも絶対に案内しないでください"
+            "（自分で時刻を作り出したり、配列の時刻を丸めたり言い換えたり"
+            "しないでください）。返ってきた候補は、そのまま自然な一つの"
+            "発話でお客様に提示してください（例:「17時半、18時、18時半でしたら"
+            "ご案内できます」）。並んでいる順序はそのまま提示してよく、"
+            "並べ替える必要はありません。\n"
+            "candidatesが空配列の場合（reason_code=no_availability_found）、"
+            "その日は空いている時間が見つからなかったという意味です。"
+            "「その日は満席です」のように断定しすぎず、かつ他の日であれば"
+            "空いているだろうとも一切示唆せず、別の日をご希望か伺って"
+            "ください。\n"
+            "candidatesが返っても、それは予約の確約ではありません。お客様が"
+            "その中の一つの時刻を選んだら、必ずcheck_availabilityまたは"
+            "create_reservationで改めてその時刻を確定してください（この"
+            "関数の結果だけで予約が取れた・確保できたと案内しないでください）。\n"
+            "reason_codeがno_availability_found以外の場合は、"
+            "check_availabilityと全く同じ意味・同じ対応方針です"
+            "（business_hours_not_configured/shop_closed/temporary_closure/"
+            "invalid_request/temporarily_unavailable/service_unavailable/"
+            "staff_not_identified/staff_name_ambiguous/resource_type_required。"
+            "対応方法はcheck_availabilityの説明を参照してください）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "日付（YYYY-MM-DD形式）"},
+                "time": {
+                    "type": "string",
+                    "description": "お客様のおおよその希望時刻（HH:MM形式、24時間表記）。手がかりが無い場合は省略可",
+                },
+                "party_size": {"type": "integer", "description": "人数", "minimum": 1},
+                "service_id": {
+                    "type": "string",
+                    "description": "サービスID（美容院・クリニック等、サービス単位で予約する業種かつサービス指定がある場合のみ）",
+                },
+                "staff_name": {
+                    "type": "string",
+                    "description": (
+                        "スタッフ指名がある場合のみ、客が発話した氏名の文字列"
+                        "（敬称なし。例:「田中」「田中美咲」）を指定。内部IDでは"
+                        "なく、内部IDへの変換・在籍状況の推測は絶対にしないこと。"
+                    ),
+                },
+                "resource_type": {
+                    "type": "string",
+                    "enum": [
+                        "room", "bed", "chair", "vehicle", "karaoke_room",
+                        "classroom", "equipment", "other",
+                    ],
+                    "description": (
+                        "種類が複数混在する店舗で、直前の呼び出しがresource_type_"
+                        "requiredを返し種類を確認できた場合のみ指定（通常は省略・"
+                        "先回り指定は禁止）。カテゴリラベルであり、部屋番号等の"
+                        "個別IDではない。"
+                    ),
+                },
+            },
+            "required": ["date", "party_size"],
         },
     },
 ]

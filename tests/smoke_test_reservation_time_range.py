@@ -81,12 +81,15 @@ def _test_tool_schema_and_instructions_unchanged():
     """
     from app.services.realtime_voice_ai import _REALTIME_TOOLS
 
+    # Reservation Intelligence Phase E-1でsuggest_available_timesが9個目の
+    # Toolとして追加された（ユーザー承認済み。本テストが守る「duration_minutesを
+    # Tool引数に追加していないこと」という契約自体には影響しない）。
     tool_names = [t["name"] for t in _REALTIME_TOOLS]
     assert tool_names == [
         "check_availability", "create_reservation", "get_shop_info", "find_customer",
         "confirm_customer_identity", "get_customer_context", "set_conversation_language",
-        "request_callback",
-    ], f"8 Tool schemaが変化しています（9個目のToolが追加された等）: {tool_names}"
+        "request_callback", "suggest_available_times",
+    ], f"9 Tool schemaが想定と異なります: {tool_names}"
 
     check_availability_tool = next(t for t in _REALTIME_TOOLS if t["name"] == "check_availability")
     create_reservation_tool = next(t for t in _REALTIME_TOOLS if t["name"] == "create_reservation")

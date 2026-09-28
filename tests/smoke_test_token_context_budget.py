@@ -253,8 +253,26 @@ import httpx
 # 変更なし（14277文字のまま）。この変更は「rate limit問題を解決した」もの
 # ではなく、あくまで会話順序変更の実測用の変更である（実機のusage実測は
 # ユーザー側で別途実施）。
+# 【2026-09-28・Reservation Intelligence Phase E-1（RECEPTRA予約受付改善
+# Feature 3: suggest_available_times Tool追加。ユーザー承認済み・未commit
+# 時点での更新。commit時にcommit hashをここへ追記すること）】
+# 新規Tool「suggest_available_times」（AIが自分で時刻を推測せず、既存の
+# 唯一のsource of truthである空き状況判定から実際に空きがある時刻を最大3件
+# だけ提示できるようにするTool）を8個目のTool群の末尾に追加した。あわせて
+# check_availabilityのbusiness_hours_not_configured案内に、Feature 1
+# （既存の判定ロジック自体は無変更）向けの7点の指示強化を追記した。
+# 実測: tools schema（JSON） 14277→17500文字（+3223文字、+22.6%。
+# ALLOWED_GROWTH_RATIO=1.10の許容枠を超過したため、意図した追加として本
+# コメントとともにBASELINE_TOOLS_JSON_CHARSを実測値に更新する。ユーザーに
+# 本超過を明示的に報告し、「baselineを更新して受け入れる」との回答を得た
+# 上での更新であり、黙ってbaselineを引き上げたものではない）。
+# 内訳: check_availability description強化分（+1161文字。既存8Tool分のみの
+# 合計は14277→15438文字で、これ単体では10%枠内）、
+# suggest_available_times単体（新規2062文字）。
+# instructions本体（system prompt）は本フェーズでは変更していない
+# （BASELINE_INSTRUCTIONS_CHARSはこの更新の対象外）。
 BASELINE_INSTRUCTIONS_CHARS = 19753
-BASELINE_TOOLS_JSON_CHARS = 14277
+BASELINE_TOOLS_JSON_CHARS = 17500
 ALLOWED_GROWTH_RATIO = 1.10  # 10%までの増加は許容し、それを超えたら気づけるようにする
 
 
@@ -269,9 +287,11 @@ def _test_tools_schema_budget():
         f"許容上限={limit}文字）。意図した追加であれば、BASELINE_TOOLS_JSON_CHARSを実測値に更新し、"
         f"更新理由・実測日時・commit hashをこのファイルのコメントに追記してください。"
     )
-    # tool数自体が意図せず増減していないかも合わせて確認（8つ固定）。
-    assert len(_REALTIME_TOOLS) == 8, (
-        f"Realtime Toolの数が{len(_REALTIME_TOOLS)}個に変化しています（想定は8個）。"
+    # tool数自体が意図せず増減していないかも合わせて確認。
+    # 【2026-09-28更新】Reservation Intelligence Phase E-1でsuggest_available_times
+    # を追加したため、想定数を8→9に更新（ユーザー承認済み、上のbaseline更新と同一の変更）。
+    assert len(_REALTIME_TOOLS) == 9, (
+        f"Realtime Toolの数が{len(_REALTIME_TOOLS)}個に変化しています（想定は9個）。"
         f"意図した追加/削除であれば、このテスト自体の期待値も更新してください。"
     )
     print(f"1. tools schema (JSON, 全{len(_REALTIME_TOOLS)}Tool): {actual}文字 "

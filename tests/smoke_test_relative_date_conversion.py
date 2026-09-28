@@ -178,12 +178,14 @@ def _test_backend_unchanged():
         _FAST_RESERVATION_FLOW_TEMPLATE, _HUMAN_HANDOFF_TEMPLATE,
     )
 
+    # Reservation Intelligence Phase E-1でsuggest_available_timesが9個目の
+    # Toolとして追加された（ユーザー承認済み。本フェーズのスコープ外の変更）。
     tool_names = [t["name"] for t in _REALTIME_TOOLS]
     assert tool_names == [
         "check_availability", "create_reservation", "get_shop_info", "find_customer",
         "confirm_customer_identity", "get_customer_context", "set_conversation_language",
-        "request_callback",
-    ], f"8 Tool schemaが変化しています: {tool_names}"
+        "request_callback", "suggest_available_times",
+    ], f"9 Tool schemaが想定と異なります: {tool_names}"
     assert "通話冒頭のご用件把握" in _INTENT_CLASSIFICATION_TEMPLATE
     assert "空き状況の確認は check_availability" in _CONSTRAINTS_TEMPLATE
     assert "情報を集める基本順序" in _FAST_RESERVATION_FLOW_TEMPLATE

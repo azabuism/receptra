@@ -26,8 +26,19 @@ Short Choice 3-Second Turn + Missing Business Hours Callback スモークテス�
 
 改善1（Short Choice 3-Second Turn）はフロントエンドJS側の実装のため、
 Node.js側のテスト（tests/test_short_choice_turn.js）で検証する。このPythonテストでは、
-関連するバックエンド側の不変条件（8 Tool schema・Intent Classification・
+関連するバックエンド側の不変条件（Tool schema・Intent Classification・
 Fast Reservation Flow等が変更されていないこと）のみ軽く確認する。
+
+追記（Reservation Intelligence Phase E-1。RECEPTRA予約受付改善Feature 1）:
+本フェーズでは既存のbusiness_hours_not_configured判定ロジック自体
+（_resolve_business_session/_resolve_day_hours等）は一切変更していない。
+変更したのはcheck_availability Toolのdescription文言への最小限の追記のみ
+（営業時間を自分で推測しない・別の時間を尋ねてcheck_availabilityを呼び直さない・
+「定休日」と断定しない・確認できない旨を明示する・既知情報を引き継ぐ・
+不足項目のみ確認する・request_callbackへ進む、の7点を明示的に指示する
+リマインダー）。加えて9個目のTool（suggest_available_times）が追加された
+ため、既存の「8 Tool schema」という前提を9個に更新した。CASE10-13/15/18の
+既存アサーション自体（判定ロジックの回帰確認）はすべてそのまま維持している。
 
 実行: python3 tests/smoke_test_short_choice_and_hours_callback.py
 """
@@ -55,9 +66,33 @@ def _test_backend_unchanged():
     assert tool_names == [
         "check_availability", "create_reservation", "get_shop_info", "find_customer",
         "confirm_customer_identity", "get_customer_context", "set_conversation_language",
-        "request_callback",
-    ], f"8 Tool schemaが変化しています: {tool_names}"
+        "request_callback", "suggest_available_times",
+    ], (
+        f"9 Tool schemaが想定と異なります（Reservation Intelligence Phase E-1で"
+        f"suggest_available_timesが既存8Toolの末尾に追加されたはず）: {tool_names}"
+    )
     assert "通話冒頭のご用件把握" in _INTENT_CLASSIFICATION_TEMPLATE, "Intent Classificationテンプレートが失われています"
+
+    # Reservation Intelligence Phase E-1（Feature 1）: check_availabilityの
+    # business_hours_not_configured案内に追加した7点の指示強化が、既存の
+    # 文言を壊さず追記されていることを確認する（既存の判定ロジック・既存の
+    # 文言自体は一切変更していない。追記のみ）。
+    check_availability_tool = next(t for t in _REALTIME_TOOLS if t["name"] == "check_availability")
+    check_desc = check_availability_tool["description"]
+    assert "現在オンラインでは空き状況をご案内できません" in check_desc, (
+        "既存のbusiness_hours_not_configured案内文言が失われています"
+    )
+    for reinforcement_phrase in [
+        "営業時間を自分で推測・仮定しない",
+        "check_availabilityを何度も呼び直さない",
+        "定休日だと断定しない",
+        "既に分かっている来店希望日時・人数・",
+        "reason_code=business_hours_not_configuredでrequest_callbackを呼び出す",
+    ]:
+        assert reinforcement_phrase in check_desc, (
+            f"Feature 1の7点の指示強化のうち一部が見当たりません: {reinforcement_phrase!r}"
+        )
+    print("0c. check_availability description: Feature 1の7点の指示強化が追記されていること OK")
 
     # 改善2の核心: business_hours_not_configured が Human Handoff の対象として
     # 明記されていること。丸投げ案内の禁止フレーズ自体は「絶対にしないでください」

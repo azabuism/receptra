@@ -188,16 +188,18 @@ def _test_medical_privacy_gate_unchanged():
 
 
 def _test_realtime_tools_unchanged():
-    """O, P: request_callback Tool schema無変更・Tool数8個。"""
+    """O, P: request_callback Tool schema無変更・Tool数9個
+    （Reservation Intelligence Phase E-1でsuggest_available_timesが
+    9個目として追加された。ユーザー承認済み）。"""
     from app.services.realtime_voice_ai import _REALTIME_TOOLS
 
     tool_names = [t["name"] for t in _REALTIME_TOOLS]
-    assert len(tool_names) == 8, f"Tool数が8個ではありません: {len(tool_names)}"
+    assert len(tool_names) == 9, f"Tool数が9個ではありません: {len(tool_names)}"
     assert tool_names == [
         "check_availability", "create_reservation", "get_shop_info", "find_customer",
         "confirm_customer_identity", "get_customer_context", "set_conversation_language",
-        "request_callback",
-    ], f"8 Tool schemaが変化しています: {tool_names}"
+        "request_callback", "suggest_available_times",
+    ], f"9 Tool schemaが変化しています: {tool_names}"
 
     request_callback_tool = next(t for t in _REALTIME_TOOLS if t["name"] == "request_callback")
     required = set(request_callback_tool["parameters"]["required"])

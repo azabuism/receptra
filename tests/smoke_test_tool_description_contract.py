@@ -35,15 +35,19 @@ def _assert_contains(text: str, needle: str, ctx: str):
 
 
 def test_tool_count_and_names_unchanged():
+    # Reservation Intelligence Phase E-1でsuggest_available_timesが9個目の
+    # Toolとして追加された（ユーザー承認済み。本テストが守る「check_availability/
+    # create_reservationのdescription圧縮で個別の行動指示を失っていないこと」
+    # という契約自体には影響しない）。
     expected_names = {
         "check_availability", "create_reservation", "get_shop_info",
         "find_customer", "confirm_customer_identity", "get_customer_context",
-        "set_conversation_language", "request_callback",
+        "set_conversation_language", "request_callback", "suggest_available_times",
     }
     actual_names = {t["name"] for t in _REALTIME_TOOLS}
     assert actual_names == expected_names, f"Tool名の集合が変化しています: {actual_names}"
-    assert len(_REALTIME_TOOLS) == 8, f"Tool数が{len(_REALTIME_TOOLS)}個に変化しています"
-    print("1. Tool数・Tool名の集合（8個固定）: OK")
+    assert len(_REALTIME_TOOLS) == 9, f"Tool数が{len(_REALTIME_TOOLS)}個に変化しています"
+    print("1. Tool数・Tool名の集合（9個固定）: OK")
 
 
 def test_check_availability_required_args_unchanged():
