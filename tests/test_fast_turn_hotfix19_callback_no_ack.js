@@ -328,11 +328,11 @@ test('AC. sendResponseCreate(の出現回数が25のまま変化していない�
     assert.strictEqual(count, 25, 'sendResponseCreate(の出現回数が変化しています: ' + count);
 });
 
-test('AD. dc.send(JSON.stringify(の出現回数が10のまま、setTimeout(の出現回数が20のまま変化していない（§19）', () => {
+test('AD. dc.send(JSON.stringify(の出現回数が10のまま変化していない（§19）。setTimeout(の出現回数はHOTFIX18の20から、Phase Cのplayback-aware teardown用に+2（22）、さらにPhase C監査のconfirm-window用に+1（23）へ意図的に変化（詳細はtests/test_fast_turn_hotfix18_callback_audio_tail.js参照）', () => {
     const dcSendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
     const setTimeoutCount = (SRC.match(/setTimeout\(/g) || []).length;
     assert.strictEqual(dcSendCount, 10, 'dc.send(JSON.stringify(の出現回数が変化しています: ' + dcSendCount);
-    assert.strictEqual(setTimeoutCount, 20, 'setTimeout(の出現回数が変化しています: ' + setTimeoutCount);
+    assert.strictEqual(setTimeoutCount, 23, 'setTimeout(の出現回数が変化しています: ' + setTimeoutCount);
 });
 
 console.log('\n=== 結果: ' + passed + ' passed, ' + failed + ' failed ===');

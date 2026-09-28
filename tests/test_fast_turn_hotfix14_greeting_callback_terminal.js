@@ -101,6 +101,15 @@ function extractElseIfBody(src, condLiteral) {
 const GATE_SNIPPET = extractGateSnippet(SRC);
 const CALLBACK_BRANCH_BODY = extractElseIfBody(SRC, "item.name === 'request_callback'");
 const MAYBE_HANGUP_CALLBACK_TERMINAL_FN = extractFunctionSource(SRC, 'maybeHangUpAfterCallbackTerminal', false);
+// PHASE C（今回追加）: maybeHangUpAfterCallbackTerminal()のtail grace完了後は、
+// もはや同期的にendCall()せず、新しいplayback-aware第2フェーズ
+// （waitForPlaybackSettleThenEndCall）に委譲する。このファイル内でtail grace
+// タイマーを実際に発火させるテスト（U）がVMコンテキスト内でこの新関数を
+// 解決できるよう、既存のMAYBE_HANGUP_CALLBACK_TERMINAL_FNと同じ要領で
+// 抽出しておく（cancelCallbackPlaybackAwareWaitも同様、再入防止分岐で
+// 参照されるため必要）。
+const WAIT_FOR_PLAYBACK_SETTLE_FN = extractFunctionSource(SRC, 'waitForPlaybackSettleThenEndCall', false);
+const CANCEL_PLAYBACK_AWARE_WAIT_FN = extractFunctionSource(SRC, 'cancelCallbackPlaybackAwareWait', false);
 const MAYBE_SEND_INITIAL_GREETING_FN = extractFunctionSource(SRC, 'maybeSendInitialGreeting', true);
 const IS_TOOL_OUTPUT_FAILURE_FN = extractFunctionSource(SRC, 'isToolOutputFailure', false);
 const CATEGORIZE_REASON_FN = extractFunctionSource(SRC, 'categorizeResponseReason', false);
@@ -464,7 +473,33 @@ test('U) maybeHangUpAfterCallbackTerminal: pendingフラグを消費し、stale�
         // 新しく参照するようになったモジュールレベルのtail grace state/setTimeout。
         callbackFinalTailGraceTimerId: null,
         CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS: 1500,
+        // PHASE C（今回追加）: waitForPlaybackSettleThenEndCall()/
+        // cancelCallbackPlaybackAwareWait()が参照するモジュールレベルstate。
+        // remoteAudioElを意図的にnullのままにし、fail-open経路
+        // （audio_element_absent → 即proceedToEndCall）を通す。実際の
+        // waiting/stalled(confirm-window方式)を使った待機の詳細挙動は、
+        // 専用のtests/test_phase_c_playback_aware_teardown.js側で個別に
+        // カバーする。
+        callbackPlaybackAwareWaitTimerId: null,
+        callbackPlaybackAwareListenersCleanup: null,
+        PLAYBACK_AWARE_MAX_WAIT_MS: 2500,
+        PLAYBACK_AWARE_SETTLE_MARGIN_MS: 300,
+        // PHASE C 監査（今回追加）: waiting/stalled候補イベント発生後に
+        // playing（再開）が起きないことを確認する猶予時間。remoteAudioEl:
+        // nullのfail-open経路ではこの値は一切参照されないが、他の
+        // Phase C定数と同じ要領でコンテキストに含めておく。
+        PLAYBACK_AWARE_SETTLE_CONFIRM_MS: 400,
+        remoteAudioEl: null,
+        callbackDiagTerminalResponseId: null,
+        callbackDiagCurrentResponseId: null,
+        callbackDiagUnexpectedResponseDuringGrace: false,
+        callbackDiagUnexpectedAudioDuringGrace: false,
+        callbackDiagCaptureAudioState: () => 'audioElPresent=false',
+        responseState: 'done',
+        aiAudioOutputActive: false,
+        performance: { now: () => Date.now() },
         setTimeout: (fn, ms) => { const id = timeouts.length; timeouts.push({ fn, ms, fired: false }); return id; },
+        clearTimeout: (id) => { if (typeof id === 'number' && timeouts[id]) timeouts[id].fired = true; },
         isStaleCallEvent: () => false,
         pushTimelineEvent: (t) => events.push(t),
         console: { log: (l) => logs.push(l) },
@@ -472,12 +507,17 @@ test('U) maybeHangUpAfterCallbackTerminal: pendingフラグを消費し、stale�
     };
     vm.createContext(context);
     vm.runInContext(MAYBE_HANGUP_CALLBACK_TERMINAL_FN, context);
+    vm.runInContext(WAIT_FOR_PLAYBACK_SETTLE_FN, context);
+    vm.runInContext(CANCEL_PLAYBACK_AWARE_WAIT_FN, context);
     vm.runInContext('maybeHangUpAfterCallbackTerminal', context)(1, 'ai_audio_stopped');
     assert.strictEqual(context.pendingCallbackTerminalHangup, false);
     // HOTFIX18: endCall()はbounded tail grace（setTimeout）を挟んでから呼ばれる
     // ため、この時点ではまだ呼ばれていない。
     assert.strictEqual(endCallCalls.length, 0, 'HOTFIX18: endCall must not fire synchronously before the tail grace timer');
     assert.strictEqual(timeouts.length, 1, 'exactly one tail grace timer must be scheduled');
+    // PHASE C: tail grace発火 → waitForPlaybackSettleThenEndCall()がfail-open
+    // 経路で追加のsetTimeout（settle margin）をスケジュールする。for...ofは
+    // 配列に途中でpushされた要素も拾うため、1回のループでendCall()まで到達する。
     for (const t of timeouts) { if (!t.fired) { t.fired = true; t.fn(); } }
     assert.strictEqual(endCallCalls.length, 1);
     assert.strictEqual(endCallCalls[0].reason, 'callback_terminal');

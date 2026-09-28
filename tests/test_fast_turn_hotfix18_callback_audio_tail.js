@@ -94,6 +94,12 @@ const CLEANUP_CONNECTION_FN = extractFunctionSource(SRC, 'cleanupConnection', fa
 const END_CALL_FN = extractFunctionSource(SRC, 'endCall', false);
 const GATE_SNIPPET = extractGateSnippet(SRC);
 const CALLBACK_BRANCH_BODY = extractElseIfBody(SRC, "item.name === 'request_callback'");
+// Phase C（今回追加）: 1500ms baseline経過後の実際のendCall()呼び出しは、
+// maybeHangUpAfterCallbackTerminal()自身の中からではなく、この新しい
+// playback-aware第2フェーズ関数の中から行われるようになった。E/Gの意図
+// （「endCall()は同期的に即座には呼ばれない。必ずタイマー経由で呼ばれる」）
+// はこの関数を対象に再確認する。
+const WAIT_FOR_PLAYBACK_SETTLE_FN = extractFunctionSource(SRC, 'waitForPlaybackSettleThenEndCall', false);
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -160,15 +166,31 @@ test('D) [回帰] response.doneの10秒遅延fallback（CALLBACK_TERMINAL_FALLBA
 // E-G: output_audio_buffer.stopped → tail grace → endCall（今回の本体修正）
 // ============================================================
 
-test('E) [今回の修正の核心] maybeHangUpAfterCallbackTerminal()内で、CALLBACK_FINAL_AUDIO_DONEのログ直後にendCall(が即座に呼ばれていない（setTimeoutの中でのみ呼ばれる）', () => {
+test('E) [今回の修正の核心・Phase Cで適応] maybeHangUpAfterCallbackTerminal()内で、CALLBACK_FINAL_AUDIO_DONEのログ直後にendCall(相当の処理が即座に呼ばれていない（setTimeoutの中でのみ、playback-aware第2フェーズへ委譲される）', () => {
     const afterAudioDone = MAYBE_HANGUP_CALLBACK_TERMINAL_FN.slice(
         MAYBE_HANGUP_CALLBACK_TERMINAL_FN.indexOf("CALLBACK_FINAL_AUDIO_DONE (source=")
     );
     const setTimeoutIdx = afterAudioDone.indexOf('setTimeout(');
-    const endCallIdx = afterAudioDone.indexOf("endCall('お電話ありがとうございました。'");
+    // Phase C（今回追加）: 実際のendCall()呼び出しはこの関数の外
+    // （waitForPlaybackSettleThenEndCall内）へ移動したため、この関数
+    // 自身の中にendCall('お電話ありがとうございました。'という文字列は
+    // 存在しなくなった。代わりに、1500ms baselineタイマーのコールバック内で
+    // waitForPlaybackSettleThenEndCall(への委譲が行われていることを確認する
+    // （＝endCallは今回もsetTimeoutの中でのみ、かつさらに遅延された形でのみ
+    // 呼ばれる、という不変条件自体は維持されている）。
+    const handoffIdx = afterAudioDone.indexOf('waitForPlaybackSettleThenEndCall(');
     assert.notStrictEqual(setTimeoutIdx, -1, 'a setTimeout must be present after CALLBACK_FINAL_AUDIO_DONE');
-    assert.notStrictEqual(endCallIdx, -1, 'endCall must still be called eventually');
-    assert.ok(setTimeoutIdx < endCallIdx, 'setTimeout(...) must appear before endCall(...) in source (endCall must be inside the timer callback, not called synchronously first)');
+    assert.notStrictEqual(handoffIdx, -1, 'the playback-aware hand-off (waitForPlaybackSettleThenEndCall) must still be called eventually');
+    assert.ok(setTimeoutIdx < handoffIdx, 'setTimeout(...) must appear before the hand-off in source (the hand-off, and therefore endCall, must be inside the timer callback, never called synchronously first)');
+    assert.ok(!MAYBE_HANGUP_CALLBACK_TERMINAL_FN.includes("endCall('お電話ありがとうございました。'"),
+        'maybeHangUpAfterCallbackTerminal() itself must no longer call endCall() directly (Phase C moved the real call into waitForPlaybackSettleThenEndCall)');
+    // 実際のendCall()呼び出しは、委譲先の関数の中に、こちらも常にsetTimeoutの
+    // 中でのみ存在することを確認する（同期的な即時呼び出しではない）。
+    const settleFnEndCallIdx = WAIT_FOR_PLAYBACK_SETTLE_FN.indexOf("endCall('お電話ありがとうございました。'");
+    const settleFnSetTimeoutIdx = WAIT_FOR_PLAYBACK_SETTLE_FN.indexOf('setTimeout(');
+    assert.notStrictEqual(settleFnEndCallIdx, -1, 'endCall must exist inside waitForPlaybackSettleThenEndCall');
+    assert.notStrictEqual(settleFnSetTimeoutIdx, -1);
+    assert.ok(settleFnSetTimeoutIdx < settleFnEndCallIdx, 'endCall inside waitForPlaybackSettleThenEndCall must still be reached only via a setTimeout callback, never synchronously');
 });
 
 test('F) [tail grace開始] output_audio_buffer.stopped経由でCALLBACK_FINAL_TAIL_GRACE_STARTEDマーカーが記録される（grace_msを含む）', () => {
@@ -176,15 +198,24 @@ test('F) [tail grace開始] output_audio_buffer.stopped経由でCALLBACK_FINAL_T
     assert.ok(MAYBE_HANGUP_CALLBACK_TERMINAL_FN.includes('CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS'));
 });
 
-test('G) [tail grace完了→endCall] タイマーcallback内でCALLBACK_FINAL_TAIL_GRACE_COMPLETEDの後にendCall()が呼ばれる', () => {
+test('G) [tail grace完了→playback-aware第2フェーズへ委譲・Phase Cで適応] タイマーcallback内でCALLBACK_FINAL_TAIL_GRACE_COMPLETEDの後にwaitForPlaybackSettleThenEndCall(が呼ばれ、その中で（さらに遅延の上）endCall()が呼ばれる', () => {
     const timerBodyStart = MAYBE_HANGUP_CALLBACK_TERMINAL_FN.indexOf('callbackFinalTailGraceTimerId = setTimeout(() => {');
     assert.notStrictEqual(timerBodyStart, -1);
     const timerBody = MAYBE_HANGUP_CALLBACK_TERMINAL_FN.slice(timerBodyStart);
     const completedIdx = timerBody.indexOf('CALLBACK_FINAL_TAIL_GRACE_COMPLETED');
-    const endCallIdx = timerBody.indexOf("endCall('お電話ありがとうございました。'");
+    const handoffIdx = timerBody.indexOf('waitForPlaybackSettleThenEndCall(');
     assert.notStrictEqual(completedIdx, -1);
-    assert.notStrictEqual(endCallIdx, -1);
-    assert.ok(completedIdx < endCallIdx, 'CALLBACK_FINAL_TAIL_GRACE_COMPLETED must be logged before endCall() inside the timer callback');
+    assert.notStrictEqual(handoffIdx, -1, 'waitForPlaybackSettleThenEndCall must be called inside the 1500ms timer callback');
+    assert.ok(completedIdx < handoffIdx, 'CALLBACK_FINAL_TAIL_GRACE_COMPLETED must be logged before the hand-off to the playback-aware phase');
+    // 実際のendCall()は委譲先の関数の中で、かつCALLBACK_DIAG_BEFORE_END_CALL
+    // 診断ログの後にのみ呼ばれることを確認する（H1診断のための最終
+    // スナップショットが必ずendCallより先に記録される、という既存の不変
+    // 条件はPhase Cでも維持されている）。
+    const settleDiagIdx = WAIT_FOR_PLAYBACK_SETTLE_FN.indexOf('[CALLBACK_DIAG_BEFORE_END_CALL]');
+    const settleEndCallIdx = WAIT_FOR_PLAYBACK_SETTLE_FN.indexOf("endCall('お電話ありがとうございました。'");
+    assert.notStrictEqual(settleDiagIdx, -1);
+    assert.notStrictEqual(settleEndCallIdx, -1);
+    assert.ok(settleDiagIdx < settleEndCallIdx, 'CALLBACK_DIAG_BEFORE_END_CALL must still be logged before endCall() inside the delegated function');
 });
 
 // ============================================================
@@ -373,13 +404,30 @@ test('AA) [回帰] FIRST ANSWER MUST COUNT（test_first_answer_must_count.js / t
 // 追加測定: sendResponseCreate/dc.send不変・setTimeout+1の妥当性
 // ============================================================
 
-test('MEASURE) [§20/§21] sendResponseCreate(/dc.send(JSON.stringify(はHOTFIX17基準から不変（25/10）、setTimeout(は+1（19→20、tail graceタイマー1個分のみ）', () => {
+test('MEASURE) [§20/§21] sendResponseCreate(/dc.send(JSON.stringify(はHOTFIX17基準から不変（25/10）、setTimeout(はHOTFIX18で+1（19→20、tail graceタイマー1個分のみ）、Phase Cでplayback-aware teardown用に+2（20→22）、Phase C監査でconfirm-window用にさらに+1（22→23）', () => {
     const sendResponseCreateCount = (SRC.match(/sendResponseCreate\(/g) || []).length;
     const dcSendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
     const setTimeoutCount = (SRC.match(/setTimeout\(/g) || []).length;
     assert.strictEqual(sendResponseCreateCount, 25, 'sendResponseCreate( count must remain 25 (no new response generation added)');
     assert.strictEqual(dcSendCount, 10, 'dc.send(JSON.stringify( count must remain 10');
-    assert.strictEqual(setTimeoutCount, 20, 'setTimeout( count must be exactly +1 from the HOTFIX17 baseline of 19 (the new tail grace timer only)');
+    // Phase C（playback-aware teardown、初版）: waitForPlaybackSettleThenEndCall()に
+    // 2箇所のsetTimeout(を追加（(1) PLAYBACK_AWARE_MAX_WAIT_MSのfail-safe
+    // タイマー、(2) settle検出/timeout後の小さなPLAYBACK_AWARE_SETTLE_
+    // MARGIN_MS安全マージン）。20→22。
+    //
+    // Phase C 監査（今回追加・ユーザー指示によるレビューで発見した欠陥の
+    // 修正）: waiting/stalledイベント単発をもって即settle確定としていた
+    // 初版実装は、ライブMediaStreamの一時的なジッタ起因アンダーラン後に
+    // 再生が再開するケースを想定できておらず、そのタイミングで誤って
+    // endCall()し得る欠陥があった。修正として、waiting/stalledを
+    // 「settle候補」に格下げし、PLAYBACK_AWARE_SETTLE_CONFIRM_MSの確認
+    // ウィンドウ内にplaying（再開）が起きないことを確認してから初めて
+    // settle確定とする新しいsetTimeout(を1箇所追加した。22→23。
+    // いずれもendCall()自体を新規に追加したものではなく、既存の唯一の
+    // endCall('お電話ありがとうございました。', 'callback_terminal')
+    // 呼び出しをより安全なタイミングへ遅らせるためのタイマーのみ
+    // （詳細はtests/test_phase_c_playback_aware_teardown.js参照）。
+    assert.strictEqual(setTimeoutCount, 23, 'setTimeout( count must be exactly +3 from the HOTFIX18 baseline of 20 (Phase C playback-aware max-wait timer + settle margin timer, plus Phase C audit settle-confirm timer)');
 });
 
 test('MEASURE2) [§22/§23] realtime_voice_ai.py（prompt/tool description）はHOTFIX18で一切変更されていない', () => {

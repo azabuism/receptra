@@ -133,6 +133,13 @@ const GATE_SNIPPET = extractGateSnippet(SRC);
 const DEFERRED_FALLBACK_SNIPPET = extractDeferredFallbackSnippet(SRC);
 const CALLBACK_BRANCH_BODY = extractElseIfBody(SRC, "item.name === 'request_callback'");
 const MAYBE_HANGUP_CALLBACK_TERMINAL_FN = extractFunctionSource(SRC, 'maybeHangUpAfterCallbackTerminal', false);
+// PHASE C（今回追加）: tail grace完了後の実際のendCall()呼び出しは
+// waitForPlaybackSettleThenEndCall()へ委譲されるようになったため、このVM
+// コンテキストでtail graceタイマーを発火させるテスト群が解決できるよう
+// 併せて抽出しておく（cancelCallbackPlaybackAwareWaitも再入防止分岐で
+// 参照される）。
+const WAIT_FOR_PLAYBACK_SETTLE_FN = extractFunctionSource(SRC, 'waitForPlaybackSettleThenEndCall', false);
+const CANCEL_PLAYBACK_AWARE_WAIT_FN = extractFunctionSource(SRC, 'cancelCallbackPlaybackAwareWait', false);
 const IS_TOOL_OUTPUT_FAILURE_FN = extractFunctionSource(SRC, 'isToolOutputFailure', false);
 
 let passed = 0, failed = 0;
@@ -188,6 +195,26 @@ function buildIntegrationContext(overrides) {
         // が新しく参照するようになったモジュールレベルのtail grace state。
         callbackFinalTailGraceTimerId: null,
         CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS: 1500,
+        // PHASE C（今回追加）: waitForPlaybackSettleThenEndCall()/
+        // cancelCallbackPlaybackAwareWait()が参照するモジュールレベルstate。
+        // remoteAudioElはnullのままにし、fail-open経路（audio_element_absent
+        // → 即proceedToEndCall）を通す。waiting/stalled(confirm-window方式)
+        // イベントを使った実際の待機挙動は専用のtests/test_phase_c_playback_aware_teardown.js
+        // 側でカバーする。
+        callbackPlaybackAwareWaitTimerId: null,
+        callbackPlaybackAwareListenersCleanup: null,
+        PLAYBACK_AWARE_MAX_WAIT_MS: 2500,
+        PLAYBACK_AWARE_SETTLE_MARGIN_MS: 300,
+        PLAYBACK_AWARE_SETTLE_CONFIRM_MS: 400,
+        remoteAudioEl: null,
+        callbackDiagTerminalResponseId: null,
+        callbackDiagCurrentResponseId: null,
+        callbackDiagUnexpectedResponseDuringGrace: false,
+        callbackDiagUnexpectedAudioDuringGrace: false,
+        callbackDiagCaptureAudioState: () => 'audioElPresent=false',
+        responseState: 'done',
+        aiAudioOutputActive: false,
+        performance: { now: () => Date.now() },
         deferSilenceTimerForToolContinuationRateLimit: false,
         lastResponseTranscriptWasProcessNarrationOnly: false,
         lastResponseTranscriptWasIncompleteAiTurn: false,
@@ -200,6 +227,7 @@ function buildIntegrationContext(overrides) {
         sendResponseCreate: () => true,
         startSilenceTimerIfNeeded: () => {},
         setTimeout: (fn, ms) => { const id = scheduled.length; scheduled.push({ fn, ms, fired: false }); return id; },
+        clearTimeout: (id) => { if (typeof id === 'number' && scheduled[id]) scheduled[id].fired = true; },
         endCall: (text, reason) => { endCallCalls.push({ text, reason }); },
         isStaleCallEvent: () => !!(overrides && overrides.__stale),
     };
@@ -208,6 +236,10 @@ function buildIntegrationContext(overrides) {
     // maybeHangUpAfterCallbackTerminal自体をこのコンテキストへ注入する
     // （GATE_SNIPPET/DEFERRED_FALLBACK_SNIPPETの両方から参照されるため）。
     vm.runInContext(MAYBE_HANGUP_CALLBACK_TERMINAL_FN, context);
+    // PHASE C（今回追加）: tail grace完了後に委譲される新関数群も同じ
+    // コンテキストへ注入する。
+    vm.runInContext(WAIT_FOR_PLAYBACK_SETTLE_FN, context);
+    vm.runInContext(CANCEL_PLAYBACK_AWARE_WAIT_FN, context);
     return { context, events, consoleLogs, endCallCalls, scheduled };
 }
 

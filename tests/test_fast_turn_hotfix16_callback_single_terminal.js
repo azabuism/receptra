@@ -171,6 +171,14 @@ const DEFERRED_FALLBACK_SNIPPET = extractDeferredFallbackSnippet(SRC);
 const TOOL_CONTINUATION_SEND_SNIPPET = extractToolContinuationSendSnippet(SRC);
 const MAYBE_HANGUP_CALLBACK_TERMINAL_FN = extractFunctionSource(SRC, 'maybeHangUpAfterCallbackTerminal', false);
 const IS_TOOL_OUTPUT_FAILURE_FN = extractFunctionSource(SRC, 'isToolOutputFailure', false);
+// Phase C（今回追加）: maybeHangUpAfterCallbackTerminal()は、1500ms baseline
+// タイマー完了後、実際のendCall()を直接呼ばず、この新しいplayback-aware
+// 第2フェーズ関数へ委譲するようになった。この関数をVMサンドボックスで
+// 実行するテスト（P/Q/R/S/T等）が、これまで通り「最終的にendCallが1回だけ
+// 呼ばれる」ことを検証し続けられるよう、この関数もあわせてサンドボックスへ
+// ロードする（既存のMAYBE_HANGUP_CALLBACK_TERMINAL_FNと同じ抽出方式）。
+const WAIT_FOR_PLAYBACK_SETTLE_FN = extractFunctionSource(SRC, 'waitForPlaybackSettleThenEndCall', false);
+const CANCEL_PLAYBACK_AWARE_WAIT_FN = extractFunctionSource(SRC, 'cancelCallbackPlaybackAwareWait', false);
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -457,12 +465,35 @@ function buildIntegrationContext(overrides) {
         sendResponseCreate: () => true,
         startSilenceTimerIfNeeded: () => {},
         setTimeout: (fn, ms) => { const id = scheduled.length; scheduled.push({ fn, ms, fired: false }); return id; },
+        clearTimeout: (id) => { if (typeof id === 'number' && scheduled[id]) scheduled[id].fired = true; },
         endCall: (text, reason) => { endCallCalls.push({ text, reason }); },
         isStaleCallEvent: () => !!(overrides && overrides.__stale),
+        // Phase C（今回追加）: waitForPlaybackSettleThenEndCall()が参照する
+        // モジュールレベルstate/定数/診断ヘルパーを、既存のcallbackTerminalArmed
+        // 等と同じパターンでこのVMサンドボックスにも明示的に用意する。
+        // remoteAudioElをnullにするのは、この単体テストが<audio>要素の
+        // モックを持たないため意図的にfail-openパス（第4章C.意図通り、
+        // 「待つ対象が無ければ即座に次のフェーズへ進む」）を通ることを
+        // 明示するためであり、実機の再生完了検知ロジック自体はPhase Cの
+        // 専用テスト（test_phase_c_playback_aware_teardown.js）で別途検証する。
+        remoteAudioEl: null,
+        callbackPlaybackAwareWaitTimerId: null,
+        callbackPlaybackAwareListenersCleanup: null,
+        PLAYBACK_AWARE_MAX_WAIT_MS: 2500,
+        PLAYBACK_AWARE_SETTLE_MARGIN_MS: 300,
+        PLAYBACK_AWARE_SETTLE_CONFIRM_MS: 400,
+        callbackDiagTerminalResponseId: null,
+        callbackDiagUnexpectedResponseDuringGrace: false,
+        callbackDiagUnexpectedAudioDuringGrace: false,
+        callbackDiagCaptureAudioState: () => 'audioElPresent=false',
+        responseState: 'done',
+        performance: { now: () => Date.now() },
     };
     Object.assign(context, overrides || {});
     vm.createContext(context);
     vm.runInContext(MAYBE_HANGUP_CALLBACK_TERMINAL_FN, context);
+    vm.runInContext(WAIT_FOR_PLAYBACK_SETTLE_FN, context);
+    vm.runInContext(CANCEL_PLAYBACK_AWARE_WAIT_FN, context);
     return { context, events, consoleLogs, endCallCalls, scheduled };
 }
 
@@ -617,13 +648,13 @@ test('AB) bounded: HOTFIX16の変更はループ構文を一切含まない（�
 // §22: response.create/dc.send呼び出し箇所数の回帰ガード（AM/AN）
 // ============================================================
 
-test('AC) [AM/AN: 呼び出し箇所数の不要な増加が無いこと] sendResponseCreate(の総出現数=25、dc.send(JSON.stringify(の総出現数=10（HOTFIX15時点の実測ベースラインと完全一致。HOTFIX16は新しいresponse.create経路もdc.send経路も一切追加していない＝診断ログ追加のみ）。setTimeout(はHOTFIX18でCALLBACK FINAL専用のbounded tail grace 1個分のみ意図的に+1（19→20、詳細はtests/test_fast_turn_hotfix18_callback_audio_tail.js参照）', () => {
+test('AC) [AM/AN: 呼び出し箇所数の不要な増加が無いこと] sendResponseCreate(の総出現数=25、dc.send(JSON.stringify(の総出現数=10（HOTFIX15時点の実測ベースラインと完全一致。HOTFIX16は新しいresponse.create経路もdc.send経路も一切追加していない＝診断ログ追加のみ）。setTimeout(はHOTFIX18でCALLBACK FINAL専用のbounded tail grace 1個分のみ意図的に+1（19→20）、Phase Cでplayback-aware teardown用に+2（20→22）、Phase C監査でconfirm-window用にさらに+1（22→23、詳細はtests/test_fast_turn_hotfix18_callback_audio_tail.js参照）', () => {
     const sendResponseCreateCount = (SRC.match(/sendResponseCreate\(/g) || []).length;
     const dcSendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
     const setTimeoutCount = (SRC.match(/setTimeout\(/g) || []).length;
     assert.strictEqual(sendResponseCreateCount, 25, 'sendResponseCreate( occurrence count must be unchanged from the HOTFIX15 baseline');
     assert.strictEqual(dcSendCount, 10, 'dc.send(JSON.stringify( occurrence count must be unchanged from the HOTFIX15 baseline');
-    assert.strictEqual(setTimeoutCount, 20, 'setTimeout( occurrence count must be exactly +1 from the HOTFIX15/16/17 baseline of 19 (HOTFIX18: one bounded tail grace timer for CALLBACK FINAL only)');
+    assert.strictEqual(setTimeoutCount, 23, 'setTimeout( occurrence count must be exactly +3 from the HOTFIX18 baseline of 20 (Phase C: playback-aware max-wait timer + settle margin timer, plus Phase C audit: settle-confirm timer, no new response.create/dc.send)');
 });
 
 // ============================================================

@@ -252,7 +252,10 @@ await test('E: UI_STATE) function_callを含む応答のresponse.doneでは「�
     // 該当ブロックをソーステキストとして直接検証する（実行はしない）。
     const idx = SRC.indexOf("} else if (type === 'response.done') {");
     assert.notStrictEqual(idx, -1, 'response.done handler not found');
-    const block = SRC.slice(idx, idx + 1200);
+    // PHASE MINI-1（今回・観測専用instrumentation追加）: [CALLBACK_DIAG_RESPONSE_DONE]
+    // 診断ログが追加され、対象文字列の実測位置が後退したため、ウィンドウを
+    // 1200→2000へ拡張（余裕込み）。
+    const block = SRC.slice(idx, idx + 2000);
     assert.ok(/if\s*\(responseHasFunctionCall\)\s*\{\s*subStatusText\.textContent\s*=\s*'確認しています';/.test(block),
         'response.done must keep "確認しています" (PROCESSING) when this response contained a function_call');
     assert.ok(/\}\s*else\s*\{\s*subStatusText\.textContent\s*=\s*'待機中（お話しください）';/.test(block),
@@ -273,7 +276,10 @@ await test('G: UI_STATE) 実際にAI音声が再生開始した瞬間(output_aud
     assert.notStrictEqual(idx, -1, 'output_audio_buffer.started handler not found');
     // ウィンドウは、後発フェーズ（AI SPEAKING PROTECTION等）がこのハンドラの
     // 先頭に行を追加しても対象文字列に届くよう、実測より余裕を持たせている。
-    const block = SRC.slice(idx, idx + 900);
+    // PHASE MINI-1（今回・観測専用instrumentation追加）: [CALLBACK_DIAG_AUDIO_STARTED]
+    // 診断ログが追加され、対象文字列の実測位置が+2034文字まで後退したため、
+    // ウィンドウを900→2400へ拡張（余裕込み）。
+    const block = SRC.slice(idx, idx + 2400);
     assert.ok(block.includes("subStatusText.textContent = 'AIスタッフが応答中';"),
         'must show AI_SPEAKING text exactly when audio actually starts playing');
 });
@@ -284,7 +290,11 @@ await test('N: FAST TURN 3.6B) T7(CONTINUATION_RESPONSE_CREATED)がresponse.crea
     // 実測: RESPONSE_CREATEDは+1614文字、T7は+1951文字（文字列自体の長さを
     // 含めると+2015文字）に位置するため、ウィンドウを2000→2400へ拡張
     // （測定値+余裕分。以前は2000ぴったりでT7の文字列が途中で切られていた）。
-    const block = SRC.slice(idx, idx + 2400);
+    // PHASE MINI-1（今回・観測専用instrumentation追加）: このハンドラ先頭に
+    // [CALLBACK_DIAG_RESPONSE_CREATED]/[CALLBACK_UNEXPECTED_RESPONSE_DURING_TAIL_GRACE]
+    // 診断ログ（PII無し、挙動には無関係）が追加され、T7の実測位置が+3867文字
+    // まで後退したため、ウィンドウを2400→4200へ再拡張（余裕込み）。
+    const block = SRC.slice(idx, idx + 4200);
     const rcIdx = block.indexOf("pushTimelineEvent('RESPONSE_CREATED');");
     const t7Idx = block.indexOf("pushToolContinuationTrace('T7_CONTINUATION_RESPONSE_CREATED');");
     assert.notStrictEqual(rcIdx, -1, 'RESPONSE_CREATED timeline log not found');
@@ -305,7 +315,10 @@ await test('O: FAST TURN 3.6B) T8(CONTINUATION_AUDIO_FIRST_DELTA)がoutput_audio
     assert.notStrictEqual(idx, -1, 'output_audio_buffer.started handler not found');
     // ウィンドウは、後発フェーズ（AI SPEAKING PROTECTION等）がこのハンドラの
     // 先頭に行を追加しても対象文字列に届くよう、実測より余裕を持たせている。
-    const block = SRC.slice(idx, idx + 1100);
+    // PHASE MINI-1（今回・観測専用instrumentation追加）: [CALLBACK_DIAG_AUDIO_STARTED]
+    // 診断ログが追加され、T8の実測位置が+2147文字まで後退したため、
+    // ウィンドウを1100→2600へ拡張（余裕込み）。
+    const block = SRC.slice(idx, idx + 2600);
     assert.ok(block.includes("pushToolContinuationTrace('T8_CONTINUATION_AUDIO_FIRST_DELTA');"),
         'T8 must fire when the Realtime output audio buffer actually starts (not merely when a response.create was sent)');
 });
@@ -371,7 +384,14 @@ await test('Q: FAST TURN 3.6B) T10(CONTINUATION_RESPONSE_DONE)はfunction_call�
     // トレース終了確認（toolContinuationTraceActive = false;まで）の終端が
     // 27664文字まで伸びたため、ウィンドウを25500→30500へ再拡張（測定値+
     // 余裕分）。
-    const block = SRC.slice(idx, idx + 30500);
+    // さらにIssue A/B AUDIT後の追加フェーズ（今回・観測専用instrumentation
+    // 追加）で、response.doneハンドラ内・callbackTerminalArmed確定分岐に
+    // [CALLBACK_DIAG_TERMINAL_TRANSCRIPT]診断ログ（transcript由来の安全な
+    // 派生値のみ、本文は含まない）が追加され、T10マッチ開始位置の実測
+    // オフセットが31238文字・トレース終了確認の終端が31366文字まで伸びたため、
+    // ウィンドウを30500→32200へ再拡張（測定値+余裕分。node -eでの実測
+    // スクリプトで確認済み）。
+    const block = SRC.slice(idx, idx + 32200);
     assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*pushToolContinuationTrace\('T10_CONTINUATION_RESPONSE_DONE/.test(block),
         'T10 must only be recorded for the final response.done (no function_call), never for the intermediate function-call-only response.done');
     assert.ok(/T10_CONTINUATION_RESPONSE_DONE[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
@@ -532,7 +552,12 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     // setTimeout）が追加され、最終else節のstartSilenceTimerIfNeeded呼び出し
     // 位置の実測オフセットが27078文字まで伸びたため、Qテストと同じくウィンドウを
     // 25500→30500へ再拡張する（測定値+余裕分。Qテストと揃えた）。
-    const block = SRC.slice(idx, idx + 30500);
+    // さらにIssue A/B AUDIT後の追加フェーズ（今回・観測専用instrumentation
+    // 追加）で、callbackTerminalArmed分岐内に[CALLBACK_DIAG_TERMINAL_TRANSCRIPT]
+    // 診断ログが追加され、最終else節のstartSilenceTimerIfNeeded呼び出し位置の
+    // 実測オフセットが伸びたため、Qテストと同じくウィンドウを30500→32200へ
+    // 再拡張する（測定値+余裕分。Qテストと揃えた）。
+    const block = SRC.slice(idx, idx + 32200);
     // PHASE O5.6診断: startSilenceTimerIfNeeded()に診断専用の第2引数
     // （armReasonForDiag、例: 'response_done_no_function_call'）が追加された。
     // ガード条件(!responseHasFunctionCall)自体・呼び出し自体（第1引数は
@@ -603,7 +628,13 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     // 追加された最優先分岐（callbackTerminalArmed===trueの間はtry節自体が
     // startSilenceTimerIfNeededを呼ばない、既存のdefer分岐と全く同じ設計）の
     // 存在だけを新たに許容する。
-    const hotfix14FlexibleChainForm = /if\s*\(!responseHasFunctionCall\)\s*\{\s*if\s*\(callbackTerminalArmed\)\s*\{[\s\S]{0,1500}?\}\s*else\s+if\s*\(deferSilenceTimerForToolContinuationRateLimit\)\s*\{[\s\S]{0,400}?\}\s*(?:else\s+if\s*\([\s\S]{0,400}?\)\s*\{[\s\S]{0,6000}?\}\s*){1,5}else\s*\{[\s\S]{0,2500}?startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);[\s\S]{0,400}?\}\s*\}/.test(block);
+    // Issue A/B AUDIT後の追加フェーズ（今回・観測専用instrumentation追加）:
+    // callbackTerminalArmed分岐の中身自体（[CALLBACK_DIAG_TERMINAL_TRANSCRIPT]
+    // 診断ログの追加により実測2858文字まで伸びた）を捉えるキャプチャ上限を
+    // 1500→3500へ拡張した（測定値+余裕分。node -eでの実測スクリプトで確認済み。
+    // このブランチが「silence timerを一切開始しない」という安全契約自体は
+    // 今回のログ追加で一切変わっていない）。
+    const hotfix14FlexibleChainForm = /if\s*\(!responseHasFunctionCall\)\s*\{\s*if\s*\(callbackTerminalArmed\)\s*\{[\s\S]{0,3500}?\}\s*else\s+if\s*\(deferSilenceTimerForToolContinuationRateLimit\)\s*\{[\s\S]{0,400}?\}\s*(?:else\s+if\s*\([\s\S]{0,400}?\)\s*\{[\s\S]{0,6000}?\}\s*){1,5}else\s*\{[\s\S]{0,2500}?startSilenceTimerIfNeeded\(callGeneration(,[^)]*)?\);[\s\S]{0,400}?\}\s*\}/.test(block);
     assert.ok(legacyDirectForm || newDeferredForm || hotfix12TripleForm || hotfix13FlexibleChainForm || hotfix14FlexibleChainForm,
         'the Silence Timeout must remain gated to only start when this response had no function_call (Tool round-trip window must never be counted as silence); FAST TURN EMERGENCY HOTFIX 10/12/13 legitimately added further conditions inside that same gate, which the new-form patterns above account for, while the final fallback must still call startSilenceTimerIfNeeded(callGeneration, ...) exactly as before');
 });

@@ -2532,6 +2532,224 @@
         // デモ環境での不自然に長い無音（発話終了後の間延び）を避けるため、
         // 人間の会話で違和感のない「発話後の短い間」の範囲に収める。
         const CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS = 1500;
+
+        // ===== PHASE C（今回追加）: PLAYBACK-AWARE TEARDOWN =====
+        // 実機再テストで、CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS=1500ms経過後も
+        // なお最終案内（closing発話）が「担当者から折り返し……」の途中で
+        // 切れる事象が再現した。Phase Bの診断ログでは、grace期間中に想定外の
+        // response/audioイベントは一切発生していなかった（unexpectedResponse
+        // DuringGrace=false, unexpectedAudioDuringGrace=false）ため、H1
+        // （grace中の想定外イベント）ではなくH2（意図した唯一のterminal
+        // responseの音声自体が、サーバー側output_audio_buffer.stoppedより後も
+        // ブラウザ側でまだ鳴り切っていない）が濃厚と判断した。
+        //
+        // 非交渉条件により、CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS=1500自体は
+        // 単純延長しない。代わりに、この1500ms baseline（既存のfallback/
+        // safety marginとしてそのまま維持）が経過した"後"に、独立した第2の
+        // playback-awareフェーズを追加する。
+        //
+        // 設計判断の根拠（詳細はレポート参照。ここではコードコメントとして
+        // 要約のみ）:
+        // - remoteAudioElはMediaStreamを直接srcObjectに持つ<audio>要素であり、
+        //   通話全体で使い回される長命な要素である。仕様上、MediaStream
+        //   ソースの<audio>要素は.duration=Infinity・.ended は発火しない
+        //   （ライブソースのため）・.bufferedも意味のあるTimeRangesを返さない
+        //   ことが一般的に知られている。そのため.ended/.pausedだけを
+        //   「このresponseの再生が完了したこと」の根拠にはできない
+        //   （ユーザー指示どおり）。
+        // - 一方、ブラウザの再生エンジンは、MediaStreamソースであっても
+        //   実際にデコード済みデータが枯渇した場合には既存のwaiting/
+        //   stalledイベントを発火させる（これは本ファイルのpc.ontrack内に
+        //   元々存在するREALTIME_AUDIO:*イベントリスナーが既に利用している、
+        //   標準のHTMLMediaElement readyState遷移に基づくイベントである）。
+        //   これが、追加のWebRTC statsポーリング（getStats()の
+        //   jitterBufferDelay等）を新設せずに得られる、最も軽量で標準的な
+        //   「ブラウザ側の再生が落ち着いた」ことの代理指標だと判断した。
+        // - ただし、これはあくまで代理指標であり確実な保証ではない
+        //   （ライブトラックが無音/コンフォートノイズ的なフレームを送り
+        //   続けた場合、waiting等が全く発火しないまま再生が「継続して
+        //   見える」可能性はゼロではない）。そのため、この代理指標が
+        //   観測できない場合に無限に待つことは絶対にせず、必ず
+        //   PLAYBACK_AWARE_MAX_WAIT_MSで打ち切ってendCall()する
+        //   fail-safeを必須とする。
+        //
+        // PHASE C 監査（ユーザー指示によるレビュー、今回実施・初版の設計を
+        // 修正）: 上記の初版実装は、waiting/stalled/suspendのいずれか1回の
+        // 発火だけをもって即座に「settle」と断定し、固定300msマージン後に
+        // endCall()していた。これには2つの欠陷があった。
+        //   (1) waiting/stalledはHTML Living Standardの定義上、明示的に
+        //       「一時的な現象」である（"the user agent expects that frame
+        //       to become available in due course" ＝ 仕様文言自体が
+        //       「近く利用可能になると想定している」という一時性を前提に
+        //       している）。ライブMediaStreamでは、ネットワークジッタに
+        //       よる瞬間的なアンダーランでwaiting/stalledが発火した直後に、
+        //       既に送出済みで転送中だった音声フレームが到着し再生が
+        //       再開する、という事象が普通に起こり得る。この場合、旧実装は
+        //       再開前（またはその途中）でendCall()してしまい、HOTFIX18が
+        //       修正しようとした「発話途中の強制切断」を、waiting/stalledと
+        //       いう別のトリガー経由で再発させ得た。
+        //   (2) suspendはHTML仕様上「ユーザーエージェントが意図的に
+        //       データの取得を止めた」ことを示すイベントで、本来は
+        //       プログレッシブダウンロード等の「先読みバッファリング」を
+        //       前提とした概念である。ライブのMediaStream srcObjectには
+        //       「先読み」という概念自体が存在しないため、多くのブラウザ
+        //       実装ではsuspendは再生開始直後（＝これから発話が始まる
+        //       タイミング）に1回だけ発火し得る。これは「再生完了」とは
+        //       全く無関係であり、settleの根拠として使うこと自体が誤りで
+        //       あったと判断し、今回削除した。
+        // 修正内容は下記waitForPlaybackSettleThenEndCall()のコメントと
+        // 新設のPLAYBACK_AWARE_SETTLE_CONFIRM_MSを参照。
+        let callbackPlaybackAwareWaitTimerId = null; // 第2フェーズのfail-safeタイマーID（進行中のみ非null）
+        let callbackPlaybackAwareListenersCleanup = null; // 第2フェーズ用に一時登録したイベントリスナーの解除関数（進行中のみ非null）
+        // 値の根拠（実測ではなく、既存の1500ms自体のコメント・一般的な
+        // WebRTC jitter buffer挙動からの推定。今回もネットワーク遮断のため
+        // 実機での波形計測はできなかった）:
+        // 一般的なWebRTC実装のjitter bufferターゲット遅延は数十〜数百ms
+        // 程度が典型だが、ネットワーク劣化時には数百ms〜まれに1秒超まで
+        // 伸びることが知られている。既存の1500ms安全マージンに対し、
+        // 同程度以上の追加の上限（本定数）を第2フェーズに与えることで、
+        // 典型的な劣化ケースも十分カバーできると判断した。通常時は
+        // waiting/stalledの検出によりこの上限よりずっと早く（多くの場合
+        // 1秒未満で）次へ進む設計のため、この値を大きめに取っても通常の
+        // 通話終了レイテンシへの影響は限定的である。
+        //
+        // PHASE C 監査（ユーザー指示によるレビュー、今回実施）:
+        // 下記のPLAYBACK_AWARE_SETTLE_CONFIRM_MSによる確認ウィンドウを
+        // 追加した後も、典型的なケース（confirm windowが1〜数回発生しても
+        // それぞれ数百ms以内に収まる）はこの2500msに十分収まると判断し、
+        // この値自体は変更していない（「遅延を単純に伸ばす」ことでは
+        // 解決しない、という方針どおり）。
+        const PLAYBACK_AWARE_MAX_WAIT_MS = 2500;
+        // settled確定（＝下記PLAYBACK_AWARE_SETTLE_CONFIRM_MSの確認ウィンドウを
+        // 通過した後、またはfail-safe timeout後）から、実際にendCall()する
+        // までの小さな追加安全マージン。OS/オーディオデバイス側の出力
+        // レイテンシの余裕を見込んだ、人間の対話感覚として不自然にならない
+        // 範囲の固定値。
+        const PLAYBACK_AWARE_SETTLE_MARGIN_MS = 300;
+        // PHASE C 監査で新規追加（ユーザー指示によるレビュー結果の反映）:
+        // waiting/stalledは「一時的にデータが枯渇した」ことを示すのみで、
+        // HTML Living Standardの記述どおり「ユーザーエージェントは近く
+        // データが利用可能になると想定している」（＝再開を前提とした一時的
+        // 状態）というのが仕様上の意味である。ライブのMediaStreamでは、
+        // ネットワークジッタにより一時的なアンダーランでwaiting/stalledが
+        // 発火した直後に、既に送信済みで転送中だった音声フレームが到着し
+        // 再生が再開する（playingが再度発火する）ことが普通に起こり得る。
+        // そのため、waiting/stalledの最初の1回だけをもって「このresponseの
+        // 音声はもう再生されない」と断定するのは誤りであり、旧実装
+        // （最初の1イベント＋固定300msマージンで即endCall）は、まさに
+        // HOTFIX18が修正しようとした「発話途中の強制切断」を、別の
+        // トリガー（誤って解釈されたwaiting/stalled）で再発させ得る欠陥
+        // だった。
+        //
+        // 修正: waiting/stalledは「settle候補」として扱うのみとし、候補
+        // イベント発生後この確認ウィンドウ内にplaying（再開）イベントが
+        // 一切発火しなかった場合にのみ、真にsettleしたとみなす。playingが
+        // 発火した場合は候補を破棄し、監視状態へ戻る（全体の
+        // PLAYBACK_AWARE_MAX_WAIT_MSのfail-safeはこの間も独立して継続する
+        // ため、無限待機にはならない）。
+        //
+        // 値の根拠: 一般的なWebRTC音声のjitter bufferターゲット遅延は
+        // 通常時数十ms、ネットワーク劣化時でも多くは数百ms程度で収まる
+        // ことが知られている。400msは、この典型的な劣化ケースでの再開を
+        // 見逃さず検知できる一方、確認のために通話終了レイテンシを
+        // 過度に伸ばさない値として選んだ（実波形計測は本セッションでも
+        // ネットワーク遮断のため不可能だったため、既存の1500ms/2500msの
+        // 値と同様、一般的なWebRTC挙動からの工学的判断である）。
+        const PLAYBACK_AWARE_SETTLE_CONFIRM_MS = 400;
+
+        // ===== OBSERVABILITY-ONLY INSTRUMENTATION（Phase MINI-1診断専用、
+        // gpt-realtime-2.1-miniでのみ観測された「ブツブツ」症状のH1/H2切り分け
+        // 用）=====
+        // 以下の変数はすべて「読み取り専用の診断ログ」のためだけに存在し、
+        // 分岐条件・タイマー・response.create/endCall等の挙動判定には一切
+        // 使用しない（読み取り・代入のみで、制御フローには関与しない）。
+        // H1仮説: callback terminal（tail grace）中/直後に想定外の追加
+        // response/audioイベントが発生している。
+        // H2仮説: 意図した唯一のterminal response自身のaudioが壊れている、
+        // または末尾に余剰が含まれている。
+        let callbackDiagCurrentResponseId = null; // 直近のresponse.createdのresponse.id（末尾8文字、診断専用）
+        let callbackDiagTerminalResponseId = null; // tail grace開始時点のresponse.id（診断専用）
+        let callbackDiagUnexpectedResponseDuringGrace = false; // tail grace中にresponse.createdが発生したか（診断専用）
+        let callbackDiagUnexpectedAudioDuringGrace = false; // tail grace中にoutput_audio_buffer.startedが発生したか（診断専用）
+
+        // ===== OBSERVABILITY-ONLY INSTRUMENTATION 追加分（Issue A/B監査後の
+        // フェーズ。B: 終端callback応答の音声が実際に最後まで生成されて
+        // いたか／再生側で切れたかを切り分けるための診断専用データのみ）=====
+        // 以下も全て「読み取り専用の診断ログ」のためだけに存在し、分岐条件・
+        // タイマー・response.create/endCall等の挙動判定には一切使用しない。
+        //
+        // response.output_audio_transcript.doneはresponse.doneより前に
+        // 発火するため、その時点ではまだ「この応答がcallback terminal
+        // 応答として確定するか」（response.done側でcallbackTerminalArmed
+        // かつresponseHasFunctionCall===falseと判明した時点で確定）は
+        // 分からない。そのため、transcriptから導出した安全な派生値
+        // （文字数・末尾一致の真偽値のみ。transcript本文そのものは一切
+        // 保持しない）を直近1件分だけ一時的に保持し、response.done側で
+        // このresponseが実際にterminalだったと確定した場合にのみ、
+        // その保持内容をログへ出力する。
+        let callbackDiagLastTranscriptSnapshot = null; // {responseId, length, endsWithExpectedClosing, containsExpectedThankYouEnding}（診断専用・本文は含まない）
+        // _HUMAN_HANDOFF_TEMPLATE（サーバー側prompt）5-1/5-2の締めの文言は
+        // 顧客データの埋め込みが一切無い固定リテラルであることをサーバー側
+        // ソース監査で確認済み（監査時点のPHONE/AUDIO監査レポート参照）。
+        // そのためこの末尾一致チェックはPII（顧客の発話内容）を一切含まない。
+        const CALLBACK_DIAG_EXPECTED_CLOSING_SUFFIX = 'お問い合わせいただきありがとうございました。';
+        const CALLBACK_DIAG_EXPECTED_CLOSING_SUFFIX_NO_PUNCT = 'お問い合わせいただきありがとうございました';
+        const CALLBACK_DIAG_EXPECTED_THANK_YOU_PHRASE = 'ありがとうございました';
+
+        // [CALLBACK_DIAG] 観測専用ヘルパー（挙動変更なし）。remoteAudioElと
+        // そのsrcObject（MediaStream）から、安全に取得できる技術的な再生
+        // 状態のみを読み取り、診断ログ用の文字列として返す純粋関数。読み取り
+        // のみを行い、一切の代入・実処理呼び出し（endCall/sendResponseCreate/
+        // dc.send/clearTimeout等）は行わない。例外発生時も安全な文字列を
+        // 返すのみで、呼び出し元の制御フローには一切影響しない。
+        //
+        // 重要な注意点（ユーザー指示に基づく明示的な前提の記録）:
+        // remoteAudioElは通話中ずっと再利用される長命なWebRTC <audio>要素で
+        // あり、複数のresponseにまたがって同じMediaStream/trackが張られ
+        // 続ける（pc.ontrackはstream自体を毎回作り直すとは限らない）。その
+        // ため、HTMLMediaElement.endedやpausedが「この応答（response）の
+        // 音声再生が完了した」ことを意味するとは限らない。ended/pausedは
+        // 単体では特定のresponseに対するper-response再生完了の証拠には
+        // ならず、あくまで「その瞬間の要素全体の状態」を報告するだけの
+        // 参考情報として扱うこと。
+        function callbackDiagCaptureAudioState() {
+            try {
+                const el = remoteAudioEl;
+                if (!el) {
+                    return 'audioElPresent=false';
+                }
+                const stream = el.srcObject || null;
+                let streamActive = 'null';
+                let trackCount = 0;
+                let trackReadyState = 'null';
+                let trackMuted = 'null';
+                if (stream) {
+                    try { streamActive = String(stream.active); } catch (streamErr) {}
+                    try {
+                        const audioTracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
+                        trackCount = audioTracks.length;
+                        if (audioTracks.length > 0) {
+                            trackReadyState = String(audioTracks[0].readyState);
+                            trackMuted = String(audioTracks[0].muted);
+                        }
+                    } catch (trackErr) {}
+                }
+                return 'audioElPresent=true'
+                    + ' currentTime=' + el.currentTime
+                    + ' paused=' + el.paused
+                    + ' ended=' + el.ended
+                    + ' readyState=' + el.readyState
+                    + ' networkState=' + el.networkState
+                    + ' srcObjectPresent=' + (!!stream)
+                    + ' streamActive=' + streamActive
+                    + ' audioTrackCount=' + trackCount
+                    + ' audioTrackReadyState=' + trackReadyState
+                    + ' audioTrackMuted=' + trackMuted;
+            } catch (diagErr) {
+                return 'audioStateCaptureError';
+            }
+        }
+
         const SILENCE_TIMEOUT_MS = 30000; // 約30秒間、有効な発話が無ければ予告（PHASE O5.6: 値は無変更。挙動を変えない）
         const SILENCE_WARNING_GRACE_MS = 8000; // 予告後、約5〜10秒の猶予（中間値を採用）（PHASE O5.6: 値は無変更）
 
@@ -2928,6 +3146,21 @@
                 clearTimeout(callbackFinalTailGraceTimerId);
                 callbackFinalTailGraceTimerId = null;
             }
+            // [CALLBACK_DIAG] 観測専用（挙動変更なし）: tail grace開始時点の
+            // スナップショット。以降このgraceウィンドウ中に発生した想定外の
+            // response.created/output_audio_buffer.startedを検知するため、
+            // 診断用フラグをリセットする（挙動には一切影響しない）。
+            try {
+                callbackDiagTerminalResponseId = callbackDiagCurrentResponseId;
+                callbackDiagUnexpectedResponseDuringGrace = false;
+                callbackDiagUnexpectedAudioDuringGrace = false;
+                console.log('[CALLBACK_DIAG_TAIL_GRACE_START] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
+                    + ' timestamp=' + performance.now()
+                    + ' responseState=' + responseState
+                    + ' aiAudioOutputActive=' + aiAudioOutputActive);
+                console.log('[CALLBACK_DIAG_AUDIO_STATE_AT_TAIL_GRACE_START] terminalResponseId='
+                    + (callbackDiagTerminalResponseId || 'null') + ' ' + callbackDiagCaptureAudioState());
+            } catch (diagErr) {}
             pushTimelineEvent('CALLBACK_FINAL_TAIL_GRACE_STARTED (grace_ms=' + CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS + ')');
             console.log('[CALLBACK_FINAL_TAIL_GRACE_STARTED]');
             callbackFinalTailGraceTimerId = setTimeout(() => {
@@ -2935,14 +3168,187 @@
                 pushTimelineEvent('CALLBACK_FINAL_TAIL_GRACE_COMPLETED');
                 console.log('[CALLBACK_FINAL_TAIL_GRACE_COMPLETED]');
                 // grace待機中に別経路（手動終了・接続断・新しい通話開始等）で
-                // 既にこの世代が古くなっていないか、endCall()直前に再確認する。
+                // 既にこの世代が古くなっていないか、次のフェーズへ進む直前に
+                // 再確認する。
                 if (isStaleCallEvent(myGeneration)) return;
-                pushTimelineEvent('CALLBACK_TERMINAL_END_CALL_REQUESTED (source=' + source + ')');
-                console.log('[CALLBACK_TERMINAL_END_CALL]');
-                pushTimelineEvent('CALLBACK_FINAL_END_CALL');
-                console.log('[CALLBACK_FINAL_END_CALL]');
-                endCall('お電話ありがとうございました。', 'callback_terminal');
+                // PHASE C（今回追加）: 1500ms baselineはここでそのまま終了する
+                // （即endCall()しない代わりに）。実際のendCall()呼び出しは、
+                // playback-awareな第2フェーズ（waitForPlaybackSettleThenEndCall）
+                // の中で、既存と全く同じ引数・同じ診断ログを伴って行う。
+                waitForPlaybackSettleThenEndCall(myGeneration, source);
             }, CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS);
+        }
+
+        // PHASE C（今回追加、PHASE C 監査により確認ウィンドウ方式へ修正）:
+        // PLAYBACK-AWARE TEARDOWN 本体。CALLBACK_FINAL_AUDIO_TAIL_GRACE_MS
+        // =1500msのbaseline待機が終わった直後にのみ呼ばれる（callback
+        // terminal経路専用。通常のresponse終了・tool continuation・
+        // barge-inには一切関与しない）。
+        //
+        // 「settle」の判定は2段階になっている:
+        //   1. remoteAudioElでwaiting/stalledイベント（ブラウザの再生
+        //      エンジンが実際にデコード済みデータの枯渇を報告する標準
+        //      イベント。suspendは「先読み停止」を示すのみでライブ
+        //      MediaStreamの再生完了とは無関係なため対象から除外した。
+        //      監査の詳細は上のPHASE C監査コメント参照）のいずれかが
+        //      発火した時点を「settle候補」とする。
+        //   2. ただちにsettle確定とはせず、PLAYBACK_AWARE_SETTLE_CONFIRM_MS
+        //      の確認ウィンドウを開始する。このウィンドウ内にplaying
+        //      （再生再開）イベントが発火した場合は、waiting/stalledは
+        //      一時的なジッタによるアンダーランに過ぎなかったと判断し、
+        //      候補を破棄して監視状態へ戻る（何度でも繰り返せる）。
+        //      ウィンドウ内にplayingが一切発火しなければ、真にsettleした
+        //      とみなす。
+        // これらのいずれも観測できない場合でも、PLAYBACK_AWARE_MAX_WAIT_MS
+        // で必ず打ち切る（fail-safe。confirm windowの繰り返しの有無に
+        // 関わらず、このタイマーは開始時点から独立してカウントし続けるため、
+        // 無限待機にはならない）。settle確定（またはfail-safe timeout）後、
+        // PLAYBACK_AWARE_SETTLE_MARGIN_MSの小さな安全マージンを置いてから、
+        // 既存と全く同じendCall('お電話ありがとうございました。',
+        // 'callback_terminal')を呼ぶ（引数・呼び出し自体は無変更）。
+        function waitForPlaybackSettleThenEndCall(myGeneration, source) {
+            // 二重起動防止（既存のcallbackFinalTailGraceTimerId方式と同じ
+            // パターン）。通常は起こり得ないが、念のため既存の待機が残って
+            // いれば先に破棄する。
+            if (callbackPlaybackAwareWaitTimerId !== null || callbackPlaybackAwareListenersCleanup !== null) {
+                cancelCallbackPlaybackAwareWait('waitForPlaybackSettleThenEndCall_reentry');
+            }
+            try {
+                console.log('[CALLBACK_DIAG_PLAYBACK_WAIT_START] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
+                    + ' maxWaitMs=' + PLAYBACK_AWARE_MAX_WAIT_MS
+                    + ' ' + callbackDiagCaptureAudioState());
+            } catch (diagErr) {}
+
+            function proceedToEndCall(settleReason) {
+                cancelCallbackPlaybackAwareWait('settled_or_timeout');
+                if (isStaleCallEvent(myGeneration)) return;
+                setTimeout(() => {
+                    if (isStaleCallEvent(myGeneration)) return;
+                    pushTimelineEvent('CALLBACK_TERMINAL_END_CALL_REQUESTED (source=' + source + ')');
+                    console.log('[CALLBACK_TERMINAL_END_CALL]');
+                    pushTimelineEvent('CALLBACK_FINAL_END_CALL');
+                    console.log('[CALLBACK_FINAL_END_CALL]');
+                    // [CALLBACK_DIAG] 観測専用（挙動変更なし）: endCall()直前の
+                    // 最終スナップショット。H1（grace中に想定外のresponse/
+                    // audioが発生していたか）を直接示す最重要ログ。endCall()の
+                    // 実行タイミング・引数は一切変更しない。
+                    try {
+                        console.log('[CALLBACK_DIAG_BEFORE_END_CALL] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
+                            + ' responseState=' + responseState
+                            + ' unexpectedResponseDuringGrace=' + callbackDiagUnexpectedResponseDuringGrace
+                            + ' unexpectedAudioDuringGrace=' + callbackDiagUnexpectedAudioDuringGrace);
+                        console.log('[CALLBACK_DIAG_AUDIO_STATE_BEFORE_END] terminalResponseId='
+                            + (callbackDiagTerminalResponseId || 'null') + ' settleReason=' + settleReason
+                            + ' ' + callbackDiagCaptureAudioState());
+                    } catch (diagErr) {}
+                    endCall('お電話ありがとうございました。', 'callback_terminal');
+                }, PLAYBACK_AWARE_SETTLE_MARGIN_MS);
+            }
+
+            const el = remoteAudioEl;
+            if (!el) {
+                // remoteAudioElが存在しない想定外経路: 待つ対象が無いため、
+                // fail-openで直ちに次のフェーズへ進む（無限待ちを避ける方が
+                // 優先。既存のendCall/cleanupConnection側の安全性には一切
+                // 影響しない）。
+                try {
+                    console.log('[CALLBACK_DIAG_PLAYBACK_TIMEOUT] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
+                        + ' reason=audio_element_absent');
+                } catch (diagErr) {}
+                proceedToEndCall('audio_element_absent');
+                return;
+            }
+
+            const waitStartedAt = performance.now();
+
+            // PHASE C 監査により新設: waiting/stalled発火後、playing
+            // （再開）が起きないことをこのタイマーで確認してから初めて
+            // settle確定とする。確認中のみ非null。confirm中に新たな
+            // waiting/stalledが重複発火しても（ブラウザによっては
+            // ほぼ同時に両方発火することがある）、二重に確認タイマーを
+            // 張らないようこの変数でガードする。
+            let settleConfirmTimerId = null;
+
+            const onCandidateSettleEvent = (ev) => {
+                if (settleConfirmTimerId !== null) return; // 既に確認中なら何もしない（重複防止）
+                try {
+                    console.log('[CALLBACK_DIAG_PLAYBACK_CANDIDATE] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
+                        + ' via=' + ev.type
+                        + ' elapsedMs=' + Math.round(performance.now() - waitStartedAt)
+                        + ' confirmMs=' + PLAYBACK_AWARE_SETTLE_CONFIRM_MS);
+                } catch (diagErr) {}
+                settleConfirmTimerId = setTimeout(() => {
+                    settleConfirmTimerId = null;
+                    try {
+                        console.log('[CALLBACK_DIAG_PLAYBACK_SETTLED] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
+                            + ' via=' + ev.type
+                            + ' elapsedMs=' + Math.round(performance.now() - waitStartedAt)
+                            + ' ' + callbackDiagCaptureAudioState());
+                    } catch (diagErr) {}
+                    proceedToEndCall('confirmed:' + ev.type);
+                }, PLAYBACK_AWARE_SETTLE_CONFIRM_MS);
+            };
+
+            const onResumeEvent = () => {
+                if (settleConfirmTimerId === null) return; // 確認中でなければ無視（ログ過多防止）
+                clearTimeout(settleConfirmTimerId);
+                settleConfirmTimerId = null;
+                try {
+                    console.log('[CALLBACK_DIAG_PLAYBACK_RESUME_DETECTED] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
+                        + ' elapsedMs=' + Math.round(performance.now() - waitStartedAt));
+                } catch (diagErr) {}
+                // 確認タイマーをキャンセルするのみ。監視自体（waiting/
+                // stalledの再監視、およびPLAYBACK_AWARE_MAX_WAIT_MSの
+                // fail-safe）はそのまま継続する（何度でも再候補化できる）。
+            };
+
+            el.addEventListener('waiting', onCandidateSettleEvent);
+            el.addEventListener('stalled', onCandidateSettleEvent);
+            el.addEventListener('playing', onResumeEvent);
+            callbackPlaybackAwareListenersCleanup = () => {
+                el.removeEventListener('waiting', onCandidateSettleEvent);
+                el.removeEventListener('stalled', onCandidateSettleEvent);
+                el.removeEventListener('playing', onResumeEvent);
+                if (settleConfirmTimerId !== null) {
+                    clearTimeout(settleConfirmTimerId);
+                    settleConfirmTimerId = null;
+                }
+            };
+
+            callbackPlaybackAwareWaitTimerId = setTimeout(() => {
+                callbackPlaybackAwareWaitTimerId = null;
+                try {
+                    console.log('[CALLBACK_DIAG_PLAYBACK_TIMEOUT] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
+                        + ' elapsedMs=' + Math.round(performance.now() - waitStartedAt)
+                        + ' ' + callbackDiagCaptureAudioState());
+                } catch (diagErr) {}
+                proceedToEndCall('max_wait_timeout');
+            }, PLAYBACK_AWARE_MAX_WAIT_MS);
+        }
+
+        // PHASE C（今回追加）: waitForPlaybackSettleThenEndCall()が進行中の
+        // 場合に、そのfail-safeタイマーと一時イベントリスナーを安全に破棄する。
+        // cancelCallbackFinalTailGrace()と全く同じ理由（手動終了・接続断・
+        // 新しい通話開始等の別経路でこの世代が古くなった場合の防御的
+        // cleanup）で、cancelCallbackFinalTailGrace()の呼び出し箇所
+        // （cleanupConnection()内・startCall()の状態リセット箇所）から
+        // まとめて呼ばれる（新しい個別の呼び出し箇所を増やさない）。
+        function cancelCallbackPlaybackAwareWait(reason) {
+            // 何も進行中でなければ何もしない（cancelCallbackFinalTailGrace()と
+            // 同じ早期returnパターン）。これにより、callback terminalと一切
+            // 無関係な通常の通話終了・開始のたびにログが出ることを防ぐ
+            // （ログ過多防止）。
+            if (callbackPlaybackAwareWaitTimerId === null && callbackPlaybackAwareListenersCleanup === null) return;
+            if (callbackPlaybackAwareWaitTimerId !== null) {
+                clearTimeout(callbackPlaybackAwareWaitTimerId);
+                callbackPlaybackAwareWaitTimerId = null;
+            }
+            if (callbackPlaybackAwareListenersCleanup !== null) {
+                try { callbackPlaybackAwareListenersCleanup(); } catch (cleanupErr) {}
+                callbackPlaybackAwareListenersCleanup = null;
+            }
+            pushTimelineEvent('CALLBACK_PLAYBACK_AWARE_WAIT_CANCELLED (reason=' + (reason || '不明') + ')');
+            console.log('[CALLBACK_PLAYBACK_AWARE_WAIT_CANCELLED]');
         }
 
         // FAST TURN HOTFIX 18（今回追加・§13/§15: race protection）: 手動終了・
@@ -2951,7 +3357,12 @@
         // タイマーを安全に破棄する。既存のdisconnectGraceTimer等の他タイマーと
         // 全く同じ場所・同じパターンで呼ばれる想定（cleanupConnection()内、
         // および次回startCall()の状態リセット箇所）。
+        //
+        // PHASE C（今回追加）: 同じ呼び出し箇所から、playback-aware第2フェーズ
+        // （waitForPlaybackSettleThenEndCall）の待機状態も必ず一緒に破棄する
+        // （新しい個別の呼び出し箇所を増やさず、既存のこの1箇所に相乗りする）。
         function cancelCallbackFinalTailGrace(reason) {
+            cancelCallbackPlaybackAwareWait(reason);
             if (callbackFinalTailGraceTimerId === null) return;
             clearTimeout(callbackFinalTailGraceTimerId);
             callbackFinalTailGraceTimerId = null;
@@ -5265,6 +5676,16 @@
                 logEvent('Tool呼び出し受信: set_conversation_language ' + JSON.stringify(args));
                 output = await callSetConversationLanguageTool(args || {});
             } else if (item.name === 'request_callback') {
+                // [CALLBACK_DIAG] 観測専用（挙動変更なし）: request_callback
+                // function_callを検知した時点のスナップショット。引数
+                // （customer_name/customer_phone/inquiry_text等）はPIIのため
+                // 一切ログに含めない。
+                try {
+                    console.log('[CALLBACK_DIAG_FUNCTION_CALL] responseId=' + (callbackDiagCurrentResponseId || 'null')
+                        + ' callId=' + (callId ? String(callId).slice(-8) : 'null')
+                        + ' tool=request_callback'
+                        + ' callbackAlreadyConfirmedThisCall=' + callbackAlreadyConfirmedThisCall);
+                } catch (diagErr) {}
                 // バグ修正: これまでこの分岐が存在せず、request_callbackが
                 // 常にelse（未知のTool）へ落ちていた（詳細はcallRequestCallbackTool
                 // の直前のコメント参照）。
@@ -5317,6 +5738,15 @@
                         console.log('[CALLBACK_TERMINAL_ARMED]');
                     }
                 }
+                // [CALLBACK_DIAG] 観測専用（挙動変更なし）: request_callback Tool
+                // 結果確定時点のスナップショット。バックエンド応答本文（output）は
+                // PIIリスクのため一切ログに含めず、成功/失敗の別のみを記録する。
+                try {
+                    console.log('[CALLBACK_DIAG_TOOL_RESULT] success=' + (!isToolOutputFailure(output))
+                        + ' callId=' + (callId ? String(callId).slice(-8) : 'null')
+                        + ' callbackTerminalArmed=' + callbackTerminalArmed
+                        + ' timestamp=' + performance.now());
+                } catch (diagErr) {}
             } else if (item.name === 'classify_intent') {
                 // Realtime Token Architecture Phase 2（今回追加）: ROUTING phaseに
                 // のみ宣言される内部振り分け専用Tool（詳細はcallClassifyIntentTool
@@ -5513,6 +5943,24 @@
             }
 
             if (type === 'output_audio_buffer.started') {
+                // [CALLBACK_DIAG] 観測専用（挙動変更なし）: output_audio_buffer.
+                // startedがcallback terminal tail grace中に発生した「想定外の
+                // 追加audio」でないかを確認するための診断ログ（H1候補の直接
+                // 証拠）。
+                try {
+                    const diagTailGraceActiveAudio = (callbackFinalTailGraceTimerId !== null);
+                    console.log('[CALLBACK_DIAG_AUDIO_STARTED] responseId=' + (callbackDiagCurrentResponseId || 'null')
+                        + ' responseState=' + responseState
+                        + ' callbackTerminalArmed=' + callbackTerminalArmed
+                        + ' pendingCallbackTerminalHangup=' + pendingCallbackTerminalHangup
+                        + ' tailGraceActive=' + diagTailGraceActiveAudio);
+                    if (diagTailGraceActiveAudio) {
+                        callbackDiagUnexpectedAudioDuringGrace = true;
+                        console.log('[CALLBACK_UNEXPECTED_AUDIO_DURING_TAIL_GRACE] responseId=' + (callbackDiagCurrentResponseId || 'null')
+                            + ' terminalResponseId=' + (callbackDiagTerminalResponseId || 'null'));
+                        pushTimelineEvent('CALLBACK_UNEXPECTED_AUDIO_DURING_TAIL_GRACE (responseId=' + (callbackDiagCurrentResponseId || 'null') + ')');
+                    }
+                } catch (diagErr) {}
                 aiAudioOutputActive = true;
                 lastAiAudioEventAt = performance.now();
                 // AI SPEAKING PROTECTION（今回追加）: 実際にAIの音声が再生
@@ -5552,6 +6000,16 @@
                 // SHORT_ANSWER Forced Commit（今回追加。全店舗適用・独立）
                 maybeLogQuickAnswerReactionElapsed('aiAudioStarted', 'AI_AUDIO_STARTED');
             } else if (type === 'output_audio_buffer.stopped') {
+                // [CALLBACK_DIAG] 観測専用（挙動変更なし）
+                try {
+                    console.log('[CALLBACK_DIAG_AUDIO_STOPPED] responseId=' + (callbackDiagCurrentResponseId || 'null')
+                        + ' responseState=' + responseState
+                        + ' callbackTerminalArmed=' + callbackTerminalArmed
+                        + ' pendingCallbackTerminalHangup=' + pendingCallbackTerminalHangup
+                        + ' tailGraceActive=' + (callbackFinalTailGraceTimerId !== null));
+                    console.log('[CALLBACK_DIAG_AUDIO_STATE_AT_STOP] responseId='
+                        + (callbackDiagCurrentResponseId || 'null') + ' ' + callbackDiagCaptureAudioState());
+                } catch (diagErr) {}
                 aiAudioOutputActive = false;
                 lastAiAudioEventAt = performance.now();
                 pushTimelineEvent('AI_AUDIO_STOPPED');
@@ -5986,6 +6444,30 @@
                 setStatus(stUserSpeakEl, '待機', null);
                 updateAudioDiagnosticsPanel();
             } else if (type === 'response.created') {
+                // [CALLBACK_DIAG] 観測専用（挙動変更なし）: このresponse.created
+                // がcallback terminal tail grace中に発生した「想定外の追加
+                // response」でないかを確認するための診断ログ（H1候補の直接
+                // 証拠）。既存のresponseState等の代入より前に読み取るため、
+                // ここでの値は「このイベント到達前の状態」を表す。
+                try {
+                    const diagRespId = (msg.response && msg.response.id) ? String(msg.response.id).slice(-8) : 'null';
+                    const diagResponseStateBefore = responseState;
+                    const diagTailGraceActive = (callbackFinalTailGraceTimerId !== null);
+                    console.log('[CALLBACK_DIAG_RESPONSE_CREATED] responseId=' + diagRespId
+                        + ' responseStateBefore=' + diagResponseStateBefore
+                        + ' responseStateAfter=active'
+                        + ' callbackTerminalArmed=' + callbackTerminalArmed
+                        + ' pendingCallbackTerminalHangup=' + pendingCallbackTerminalHangup
+                        + ' tailGraceActive=' + diagTailGraceActive
+                        + ' toolContinuationTraceActive=' + toolContinuationTraceActive);
+                    callbackDiagCurrentResponseId = diagRespId;
+                    if (diagTailGraceActive) {
+                        callbackDiagUnexpectedResponseDuringGrace = true;
+                        console.log('[CALLBACK_UNEXPECTED_RESPONSE_DURING_TAIL_GRACE] responseId=' + diagRespId
+                            + ' terminalResponseId=' + (callbackDiagTerminalResponseId || 'null'));
+                        pushTimelineEvent('CALLBACK_UNEXPECTED_RESPONSE_DURING_TAIL_GRACE (responseId=' + diagRespId + ')');
+                    }
+                } catch (diagErr) {}
                 if (greetingTiming.firstResponseCreated === null) {
                     greetingTiming.firstResponseCreated = performance.now();
                 }
@@ -6096,6 +6578,18 @@
                     resetSilenceTimer('ai_response_started');
                 }
             } else if (type === 'response.done') {
+                // [CALLBACK_DIAG] 観測専用（挙動変更なし）: response.done到達
+                // 時点（どの分岐よりも前、callbackTerminalArmedが消費される
+                // 前）の状態スナップショット。H1/H2切り分けの基礎データ。
+                try {
+                    const diagRespId2 = (msg.response && msg.response.id) ? String(msg.response.id).slice(-8) : 'null';
+                    const diagTailGraceActive2 = (callbackFinalTailGraceTimerId !== null);
+                    console.log('[CALLBACK_DIAG_RESPONSE_DONE] responseId=' + diagRespId2
+                        + ' hasFunctionCall=' + responseHasFunctionCall
+                        + ' callbackTerminalArmedAtEntry=' + callbackTerminalArmed
+                        + ' pendingCallbackTerminalHangup=' + pendingCallbackTerminalHangup
+                        + ' tailGraceActive=' + diagTailGraceActive2);
+                } catch (diagErr) {}
                 lastAiAudioEventAt = performance.now();
                 // FAST TURN 3.6A（UI_STATE修正・UXのみ、latency/挙動は無変更）:
                 // FAST TURN 3.4の観測で、Tool Callを含むターンではfunction_call
@@ -6417,6 +6911,26 @@
                         // FAST TURN HOTFIX 16（今回追加・§19診断。挙動は変更しない）
                         pushTimelineEvent('CALLBACK_FINAL_DONE');
                         console.log('[CALLBACK_FINAL_DONE]');
+                        // [CALLBACK_DIAG] 観測専用（挙動変更なし）: この分岐に
+                        // 到達した時点で「この応答が実際にcallback terminal応答
+                        // だった」ことが確定した（!responseHasFunctionCall かつ
+                        // callbackTerminalArmed）。ここで初めて、直近保持していた
+                        // transcript派生スナップショット（文字数・真偽値のみ、
+                        // 本文なし）をログへ出力する。response.idが一致しない
+                        // 場合（取りこぼし等）はmatched=falseとして安全に報告し、
+                        // 何も推測しない。
+                        try {
+                            const diagTerminalRespIdForTranscript = (msg.response && msg.response.id)
+                                ? String(msg.response.id).slice(-8)
+                                : 'null';
+                            const diagSnap = callbackDiagLastTranscriptSnapshot;
+                            const diagSnapMatched = !!(diagSnap && diagSnap.responseId === diagTerminalRespIdForTranscript);
+                            console.log('[CALLBACK_DIAG_TERMINAL_TRANSCRIPT] responseId=' + diagTerminalRespIdForTranscript
+                                + ' matched=' + diagSnapMatched
+                                + ' length=' + (diagSnapMatched ? diagSnap.length : 'null')
+                                + ' endsWithExpectedClosing=' + (diagSnapMatched ? diagSnap.endsWithExpectedClosing : 'null')
+                                + ' containsExpectedThankYouEnding=' + (diagSnapMatched ? diagSnap.containsExpectedThankYouEnding : 'null'));
+                        } catch (diagErr) {}
                     } else if (deferSilenceTimerForToolContinuationRateLimit) {
                         pushTimelineEvent('SILENCE_TIMER_START_DEFERRED (reason=tool_continuation_rate_limit_fallback_pending)');
                     } else if (lastResponseTranscriptWasProcessNarrationOnly
@@ -6584,6 +7098,30 @@
                 // 求めている回答の種類を軽量に推定する（PIIはtype文字列にのみ
                 // 反映し、transcript本文はどこにも保存・記録しない）。
                 classifyExpectedAnswerType(msg.transcript);
+                // [CALLBACK_DIAG] 観測専用（挙動変更なし）: この時点ではまだ
+                // 「この応答がcallback terminal応答として確定するか」は
+                // 分からない（response.doneでcallbackTerminalArmedが消費
+                // される時点で初めて確定する）。そのため、transcript本文は
+                // 一切保持・ログ出力せず、安全な派生値（文字数・期待される
+                // 締め文言との末尾一致の真偽値のみ）だけを直近1件分の一時
+                // スナップショットとして保持する。次に別の応答のtranscriptが
+                // 来た時点で上書きされ、蓄積されない。
+                try {
+                    const diagTranscript = (typeof msg.transcript === 'string') ? msg.transcript : '';
+                    const diagTranscriptTrimmed = diagTranscript.trim();
+                    const diagRespIdForTranscript = msg.response_id
+                        ? String(msg.response_id).slice(-8)
+                        : (callbackDiagCurrentResponseId || 'null');
+                    callbackDiagLastTranscriptSnapshot = {
+                        responseId: diagRespIdForTranscript,
+                        length: diagTranscript.length,
+                        endsWithExpectedClosing: (
+                            diagTranscriptTrimmed.endsWith(CALLBACK_DIAG_EXPECTED_CLOSING_SUFFIX)
+                            || diagTranscriptTrimmed.endsWith(CALLBACK_DIAG_EXPECTED_CLOSING_SUFFIX_NO_PUNCT)
+                        ),
+                        containsExpectedThankYouEnding: diagTranscriptTrimmed.indexOf(CALLBACK_DIAG_EXPECTED_THANK_YOU_PHRASE) !== -1,
+                    };
+                } catch (diagErr) {}
             } else if (type === 'response.output_item.done' && msg.item && msg.item.type === 'function_call') {
                 // Phase3A: Tool Calling。応答完了(response.done)を待たず、
                 // このitemが確定した時点で処理を開始してよい

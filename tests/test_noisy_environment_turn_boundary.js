@@ -464,14 +464,25 @@ test('J3: LIVE-WIRING) cleanupConnection()がuserTurnFallbackTimerId/aiSpeakingP
 test('K: LIVE-WIRING) output_audio_buffer.started ハンドラが engageAiSpeakingProtection を呼んでいる', () => {
     const idx = SRC.indexOf("if (type === 'output_audio_buffer.started') {");
     assert.notStrictEqual(idx, -1);
-    const block = SRC.slice(idx, idx + 900);
+    // PHASE MINI-1（今回・観測専用instrumentation追加）: このハンドラ先頭に
+    // [CALLBACK_DIAG_AUDIO_STARTED]/[CALLBACK_UNEXPECTED_AUDIO_DURING_TAIL_GRACE]
+    // 診断ログ（PII無し、挙動には無関係）が追加され、対象文字列の実測位置が
+    // +1690文字まで後退したため、ウィンドウを900→2400へ拡張（余裕込み）。
+    const block = SRC.slice(idx, idx + 2400);
     assert.ok(block.includes("engageAiSpeakingProtection('output_audio_buffer_started')"));
 });
 
 test('K2: LIVE-WIRING) output_audio_buffer.stopped ハンドラが releaseAiSpeakingProtection を呼んでいる', () => {
     const idx = SRC.indexOf("} else if (type === 'output_audio_buffer.stopped') {");
     assert.notStrictEqual(idx, -1);
-    const block = SRC.slice(idx, idx + 500);
+    // PHASE MINI-1（今回・観測専用instrumentation追加）: [CALLBACK_DIAG_AUDIO_STOPPED]
+    // 診断ログが追加され、対象文字列の実測位置が+914文字まで後退したため、
+    // ウィンドウを500→1100へ拡張（余裕込み）。
+    // Issue A/B AUDIT後の追加フェーズ（今回・観測専用instrumentation追加）:
+    // [CALLBACK_DIAG_AUDIO_STATE_AT_STOP]診断ログが同ハンドラへさらに追加され、
+    // 実測位置が+1106文字まで後退したため、ウィンドウを1100→1700へ再拡張
+    // （余裕込み。node -e での実測スクリプトで確認済み）。
+    const block = SRC.slice(idx, idx + 1700);
     assert.ok(block.includes("releaseAiSpeakingProtection('output_audio_buffer_stopped')"));
 });
 
@@ -485,7 +496,10 @@ test('K3: LIVE-WIRING) output_audio_buffer.cleared ハンドラが releaseAiSpea
 test('K4: LIVE-WIRING) response.done ハンドラが releaseAiSpeakingProtection を安全網として呼んでいる', () => {
     const idx = SRC.indexOf("} else if (type === 'response.done') {");
     assert.notStrictEqual(idx, -1);
-    const block = SRC.slice(idx, idx + 1900);
+    // PHASE MINI-1（今回・観測専用instrumentation追加）: [CALLBACK_DIAG_RESPONSE_DONE]
+    // 診断ログが追加され、対象文字列の実測位置が+2407文字まで後退したため、
+    // ウィンドウを1900→2600へ拡張（余裕込み）。
+    const block = SRC.slice(idx, idx + 2600);
     assert.ok(block.includes("releaseAiSpeakingProtection('response_done_fallback')"));
 });
 
