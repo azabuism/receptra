@@ -47,6 +47,14 @@ from app.schemas.reservation import (
     SuggestAvailableTimesToolRequest, SuggestAvailableTimesToolResponse, SuggestedTimeCandidate,
 )
 from app.schemas.shop_knowledge import GetShopInfoToolRequest
+# JAPAN PHONE NUMBER LENGTH GUARD（今回追加）: 日本国内電話番号として判断
+# できる番号かどうかの判定・正規化は、Customer Memory機能が既に持っている
+# normalize_jp_phone_national()をそのまま再利用する（0始まり10〜11桁、
+# または81/+81始まりを0始まりへ変換した上で同条件、のいずれにも一致しない
+# 場合はNoneを返す。桁数の推測・補完は一切行わない）。新しい判定ロジックを
+# 重複して作らず、既存のsingle source of truthをrequest_callbackの
+# バリデーションにも適用する。
+from app.schemas.shop import normalize_jp_phone_national
 from app.models.service import Service
 from app.routers.reservations import (
     check_single_slot_availability, create_reservation,
@@ -1640,10 +1648,15 @@ async def request_callback_tool(
       既に「今は自分で安全に判断できない」と判断済みであるため、Toolの引数を
       検証のうえそのまま保存するのみ。形式が不正な値は静かに無視してNoneのまま
       保存する＝受付自体は失敗させない）。
-    - customer_phone/customer_nameの妥当性（本人確認・桁数チェック等）はAI側の
-      会話ルール（既存のBOOKING_SAFETY同様、1桁ずつ復唱確認する等）に委ね、この
-      エンドポイントでは追加の検証を行わない（create_reservation_toolのguest_phone
-      と同じ方針）。
+    - customer_phoneの本人確認（本当にお客様本人が伝えた番号か）はAI側の会話
+      ルール（既存のBOOKING_SAFETY同様、1桁ずつ復唱確認する等）に委ね、この
+      エンドポイントでは検証しない（create_reservation_toolのguest_phoneと
+      同じ方針）。ただしJAPAN PHONE NUMBER LENGTH GUARD（今回追加）により、
+      日本国内電話番号として10桁・11桁のどちらの桁数にも一致しない
+      customer_phoneだけは、このエンドポイント側でも決定論的に拒否する
+      （実機で1桁多い12桁の番号がToolへ渡った不具合への対応。プロンプト側の
+      指示だけに依存しないtool boundaryでの防御）。customer_nameの妥当性は
+      引き続きこのエンドポイントでは検証しない。
     """
     _check_callback_tool_rate_limit(shop_id)
 
@@ -1676,6 +1689,39 @@ async def request_callback_tool(
                 desired_time_val = datetime.strptime(request.desired_time, "%H:%M").time()
             except ValueError:
                 desired_time_val = None
+
+        # JAPAN PHONE NUMBER LENGTH GUARD（今回追加・実機不具合対応）:
+        # 実機で customer_phone に本来存在しない桁が1桁増えて渡された事例
+        # （080-3964-4468＝11桁のはずが080-3964-44468＝12桁としてToolへ渡った）
+        # が確認された。プロンプト側の指示（1桁ずつ復唱・推測禁止等）だけに
+        # 依存せず、ここでも決定論的に検証する（tool boundaryでの防御）。
+        # 判定・正規化ロジックはCustomer Memory機能の既存実装
+        # （normalize_jp_phone_national、0始まり10〜11桁 / 81・+81始まりを
+        # 0始まりへ変換した上で同条件）をそのまま再利用し、新しい判定基準を
+        # 重複して作らない。
+        # 国際番号サポートの監査結果: RECEPTRA全体を確認した限り、
+        # customer_phone/guest_phoneについて、日本国内形式（0始まり）と
+        # 81/+81始まりの国際表記（0始まりへ変換可能なもの）以外の電話番号
+        # フォーマットへの正式対応は存在しない（normalize_jp_phone_national()
+        # 自身がこの2パターンのみを妥当な形式として扱う設計）。そのため、
+        # この関数がNoneを返す＝どちらのパターンにも一致しない場合は、
+        # 「未対応の国際番号を誤って拒否している」のではなく「日本国内番号として
+        # 見ても桁数・形式が不正」と判断できるため、無条件にこの桁数チェックを
+        # 適用する（既存で正式サポートされている国際番号フォーマットは無いため、
+        # 壊すものは無い）。
+        # 無効と判断した場合は、絶対に桁を自動的に補完・削除・修正せず、
+        # DBへも保存せず、success=Falseのみを返す（AI側は
+        # reason_code=phone_invalid_digit_countを見て、お客様へもう一度
+        # 電話番号を尋ね直す。request_callbackのTool説明文にこの分岐を明記）。
+        # ログにはPII（生の電話番号そのもの）を一切出力せず、桁数のみを
+        # 記録する。
+        if normalize_jp_phone_national(request.customer_phone) is None:
+            logger.warning(
+                "request_callback Tool: customer_phoneが日本国内電話番号として"
+                "妥当な桁数(10桁または11桁)ではないため拒否 (shop_id=%s, digit_length=%d)",
+                shop_id, len(re.sub(r"\D", "", request.customer_phone or "")),
+            )
+            return RequestCallbackToolResponse(success=False, reason_code="phone_invalid_digit_count")
 
         idempotency_key = f"realtime_voice:{shop_id}:{request.call_id}"
 

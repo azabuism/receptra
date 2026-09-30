@@ -317,8 +317,12 @@ async def _test_session_endpoint_transmits_new_section(client, shop_id):
         "初回セッションのinstructionsにIntent Classificationセクションが含まれています"
         "（Phase1最小化が効いていない可能性）"
     )
-    assert session_config.get("tools") == [], (
-        "初回セッションのtoolsが空リストではありません（Phase1最小化が効いていない可能性）"
+    # 会話品質改善フェーズ（2026年9月）で、NAME phaseにconfirm_customer_name Tool
+    # （1個のみ）が意図的に追加されたため、tools==[]ではなく「confirm_customer_name
+    # のみ」であることを確認する（tests/smoke_test_realtime_phase1_name.py A/B参照）。
+    initial_tool_names = sorted(t.get("name") for t in (session_config.get("tools") or []))
+    assert initial_tool_names == ["confirm_customer_name"], (
+        f"初回セッションのtoolsがconfirm_customer_nameのみではありません（Phase1最小化+会話品質改善フェーズの契約に反する可能性）: {initial_tool_names}"
     )
 
     # 既存の全セクション（Intent Classification・Booking Safety等）と既存8Toolは

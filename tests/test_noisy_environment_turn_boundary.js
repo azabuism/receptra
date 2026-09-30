@@ -499,7 +499,15 @@ test('K4: LIVE-WIRING) response.done ハンドラが releaseAiSpeakingProtection
     // PHASE MINI-1（今回・観測専用instrumentation追加）: [CALLBACK_DIAG_RESPONSE_DONE]
     // 診断ログが追加され、対象文字列の実測位置が+2407文字まで後退したため、
     // ウィンドウを1900→2600へ拡張（余裕込み）。
-    const block = SRC.slice(idx, idx + 2600);
+    // TASK B HOTFIX 3（今回・観測専用instrumentation追加）: ROUTING_TRACE_
+    // RESPONSE_DONE診断ログがCALLBACK_DIAG_RESPONSE_DONEの直後に追加され、
+    // 対象文字列の実測位置が+3555文字まで後退したため、ウィンドウを
+    // 2600→3800へ再拡張（余裕込み）。
+    // RESPONSE ORIGIN TRACE（今回・診断専用instrumentation追加）:
+    // ROUTING_TRACE_RESPONSE_DONEの直後にRESPONSE_ORIGIN_DONE診断ログが
+    // 追加され、対象文字列の実測位置が5706文字まで後退したため、ウィンドウを
+    // 3800→6400へ再拡張（node -eでの実測スクリプトで確認済み。測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 6400);
     assert.ok(block.includes("releaseAiSpeakingProtection('response_done_fallback')"));
 });
 
@@ -516,7 +524,14 @@ test('L2: LIVE-WIRING) input_audio_buffer.speech_started ハンドラが cancelU
     // FAST TURN HOTFIX（FIRST ANSWER MUST COUNT）フェーズで、speech_startedハンドラ
     // 冒頭付近にUSER_SPEECH_STARTED_MIC_STATE診断ログ（実機DEBUG要件）が追加され、
     // 実測オフセットが5249文字まで伸びたため、ウィンドウを4600→5800へ拡張。
-    const block = SRC.slice(idx, idx + 5800);
+    // 雑音誤検知対策 TASK D（STEP1修正）で、speech_startedハンドラ冒頭に
+    // nameCaptureAttemptCountedThisTurnリセット（コメント込み）が追加され、
+    // 実測オフセットが5792文字まで伸びたため、ウィンドウを5800→6200へ再拡張。
+    // TASK B HOTFIX 3（今回・観測専用instrumentation追加）: speech_started
+    // ハンドラ冒頭にROUTING_TRACE用のturnSeq/responseSeqInTurnリセット
+    // （try/catch込み）が追加され、実測オフセットが6329文字まで伸びたため、
+    // ウィンドウを6200→6600へ再拡張。
+    const block = SRC.slice(idx, idx + 6600);
     assert.ok(block.includes("cancelUserTurnFallbackTimer('speech_started_again')"));
     assert.ok(block.includes("if (expectedAnswerType === 'NONE')") && block.includes("USER_TURN_START"));
 });
@@ -524,11 +539,22 @@ test('L2: LIVE-WIRING) input_audio_buffer.speech_started ハンドラが cancelU
 test('M: LIVE-WIRING) input_audio_buffer.committed ハンドラが userTurnFallbackNormalCompletionSeen を立てて cancelUserTurnFallbackTimer を呼んでいる', () => {
     const idx = SRC.indexOf("} else if (type === 'input_audio_buffer.committed') {");
     assert.notStrictEqual(idx, -1);
-    // 実測: FAST TURN HOTFIX 3のFULL TURN LATENCY TRACE追加（TURN_COMMITTED /
-    // TURN_RESPONSE_REQUESTEDマーカーとその説明コメント）により、アンカーからの
-    // オフセットが2836/2897文字まで伸びたため、ウィンドウを2600→3200へ拡張
-    // （測定値+余裕分）。
-    const block = SRC.slice(idx, idx + 3200);
+    // 実測: PHASE ORDER HOTFIX（routingHasReceivedUserTurn追加）で、この
+    // input_audio_buffer.committedハンドラの冒頭（USER_AUDIO_BUFFER_COMMITTED
+    // マーカー直後）にROUTING在中判定ブロックを新規追加したため、アンカーからの
+    // オフセットが3856/3917文字まで伸びた。ウィンドウを3200→4200へ拡張
+    // （node -eによる実測値+余裕分。推測で数値を伸ばしていない）。
+    // RECEPTRA — CALLBACK FINAL QUALITY PASS（今回追加）でさらに、
+    // phoneReadbackTurnCompletedThisCall/phoneReadbackAwaitingUserReply用の
+    // 判定ブロックを同ハンドラの冒頭に追加したため、オフセットが
+    // 4262/4323文字まで伸びた。ウィンドウを4200→4700へ再拡張
+    // （node -eによる実測値+余裕分。推測で数値を伸ばしていない）。
+    // RECEPTRA — CALLBACK REAL-DEVICE VERIFICATION AUDIT（今回追加）で
+    // さらに、[CALLBACK_PHONE_USER_REPLY]の一時診断ログを同ハンドラの
+    // 冒頭付近に追加したため、オフセットが4873/4934文字まで伸びた。
+    // ウィンドウを4700→5400へ再拡張（node -eによる実測値+余裕分。
+    // 推測で数値を伸ばしていない）。
+    const block = SRC.slice(idx, idx + 5400);
     assert.ok(block.includes('userTurnFallbackNormalCompletionSeen = true') && block.includes("cancelUserTurnFallbackTimer('committed')"));
 });
 

@@ -109,12 +109,17 @@ async def main():
                     result = await realtime_voice_ai.create_realtime_session(db_session, shop)
                 session_config = captured.get("session") or {}
 
-                # A. 初回セッションのtoolsに全8Toolが含まれない
+                # A. 初回セッションのtoolsに全8Toolが含まれない（会話品質改善フェーズで
+                # confirm_customer_name Toolを1個だけ追加したため、tools==[]ではなく
+                # 「confirm_customer_nameのみ」であることを確認する。詳細は
+                # tests/test_realtime_phase1_transition.js（confirm_customer_nameの
+                # 遷移契約テスト）を参照。
                 sent_tools = session_config.get("tools", None)
-                assert sent_tools == [], (
-                    f"初回セッション作成時点でtoolsが空リストではありません（Phase1最小化が効いていません）: {sent_tools}"
+                sent_tool_names = sorted(t.get("name") for t in (sent_tools or []))
+                assert sent_tool_names == ["confirm_customer_name"], (
+                    f"初回セッションのtoolsがconfirm_customer_nameのみではありません（Phase1最小化+会話品質改善フェーズの契約に反する可能性）: {sent_tool_names}"
                 )
-                print("A. 初回セッションのsession_configには全8Toolが含まれない（tools=[]）: OK")
+                print("A. 初回セッションのsession_configには全8Toolが含まれず、confirm_customer_nameのみ: OK")
 
                 # B. Phase1 tool数は0
                 phase_contexts = result.get("realtime_phase_contexts") or {}
@@ -122,8 +127,11 @@ async def main():
                     f"realtime_phase_contextsにname/routing/legacy_fullが揃っていません: {list(phase_contexts.keys())}"
                 )
                 name_ctx = phase_contexts["name"]
-                assert name_ctx["tools"] == [], f"Phase1のtool数が0ではありません: {name_ctx['tools']}"
-                print("B. Phase1のtool数は0: OK")
+                name_ctx_tool_names = sorted(t.get("name") for t in (name_ctx["tools"] or []))
+                assert name_ctx_tool_names == ["confirm_customer_name"], (
+                    f"Phase1のtoolがconfirm_customer_nameのみではありません: {name_ctx_tool_names}"
+                )
+                print("B. Phase1のtoolはconfirm_customer_nameのみ（0個ではない、会話品質改善フェーズによる意図的な追加）: OK")
 
                 name_instructions = name_ctx["instructions"]
 

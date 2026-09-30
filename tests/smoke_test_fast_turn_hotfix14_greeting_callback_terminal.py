@@ -86,11 +86,13 @@ def _make_fake_client(captured):
 
 
 def _extract_new_closing_instruction(template: str) -> str:
-    """_HUMAN_HANDOFF_TEMPLATE内の、今回追記した5-3セクションだけを抜き出す
+    """_HUMAN_HANDOFF_TEMPLATE内の、成功案内後の「用件は完結し追加の質問・
+    確認・ご案内をしない」旨を定めたクロージング指示のサブセクション（RECEPTRA
+    CALLBACK最終案内文の固定タスクで5-3から5-1へ改番）だけを抜き出す
     （禁止フレーズ検査を、既存の他セクション（例えば「保証できない表現の
     禁止」セクションが「すぐ折り返します」等を引用しているのは今回の対象外）
     に誤爆させないため）。"""
-    start = template.index("5-3. ")
+    start = template.index("5-1. ")
     end = template.index("\n6. successがfalseの場合")
     return template[start:end]
 

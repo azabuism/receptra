@@ -395,7 +395,10 @@ test('Y) [response.create/dc.sendの不要な増加が無いこと] HOTFIX17は�
     const sendResponseCreateCount = (SRC.match(/sendResponseCreate\(/g) || []).length;
     const dcSendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
     const setTimeoutCount = (SRC.match(/setTimeout\(/g) || []).length;
-    assert.strictEqual(sendResponseCreateCount, 25);
+    // 雑音誤検知対策 TASK D（STEP6）で、NAME phase安全網が雑音の兆候を伴って
+    // 到達した場合の案内アナウンス用に、既存の一元化ラッパー経由で意図的に
+    // +1（25→26。詳細はtests/test_noisy_environment_turn_boundary.js参照）。
+    assert.strictEqual(sendResponseCreateCount, 26);
     assert.strictEqual(dcSendCount, 10);
     assert.strictEqual(setTimeoutCount, 23);
 });

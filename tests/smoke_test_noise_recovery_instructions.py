@@ -109,8 +109,13 @@ def _test_bad_good_examples():
     window = normalized[max(0, idx_bad_example - 100):idx_bad_example + 150]
     assert "絶対に" in window and ("しないでください" in window or "しない" in window)
 
-    # ユーザー指定のGOOD例（日時取得済み・人数不明の場合）
-    assert "ありがとうございます。何名様でのご予約でしょうか？」" in normalized
+    # ユーザー指定のGOOD例（日時取得済み・人数不明の場合）。
+    # TASK B: 相槌の機械的濫用を防ぐため、先頭の「ありがとうございます。」は
+    # 撤廃し、質問のみを直接尋ねる形に変更した。
+    assert "何名様でのご予約でしょうか？」" in normalized
+    assert "ありがとうございます。何名様でのご予約でしょうか？」" not in normalized, (
+        "NOISE RECOVERY例に相槌が機械的に復活しています（TASK B回帰）"
+    )
 
     # 逆パターン（人数取得済み・日時不明）のGOOD例も追加している
     assert "ご希望の日時をもう一度お願いします。」" in normalized
@@ -223,8 +228,9 @@ async def _test_build_instructions_direct(shop_id):
         instructions = await build_realtime_instructions(session, shop, None)
         _assert_section_order(instructions)
         # テンプレート内の改行位置（折り返し）は圧縮で変わり得るため、
-        # 改行を除去した上でフレーズ自体の存在を検証する
-        assert "ありがとうございます。何名様でのご予約でしょうか？」" in instructions.replace("\n", "")
+        # 改行を除去した上でフレーズ自体の存在を検証する。
+        # TASK B: 先頭の「ありがとうございます。」は撤廃済み（上記参照）。
+        assert "何名様でのご予約でしょうか？」" in instructions.replace("\n", "")
 
     print("5. build_realtime_instructions() 全体でのセクション出現順序・新ルールの実挿入位置: OK")
 

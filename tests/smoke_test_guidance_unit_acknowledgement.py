@@ -80,17 +80,28 @@ def _test_acknowledgement_only_rule_wording():
 
     print("1. 「相槌だけで発話を終わらせない」ルールと禁止相槌4種の明記: OK")
 
-    # 2. 相槌＋要約＋次の質問の3点セット（HOTFIX 8 Phase 2で圧縮済み。
-    #    具体的な形容語「短い/簡潔な」は変わり得るため、ルール見出し近傍で
-    #    (1)相槌 (2)要約 (3)次の質問、の3要素が指示されていることを意味的に検証する）
+    # 2. TASK B: 相槌の強制を撤廃し、(1)簡潔な要約・復唱 (2)次の質問（または
+    #    Tool呼び出し）の2点セットに変更。かつ「情報を受け取るたびの決まり
+    #    文句」として相槌を機械的に使うことと、別の固定相槌（承知しました／
+    #    かしこまりました）への単純な置き換えも、どちらも明示的に禁止されて
+    #    いることを検証する。
     idx_ack_rule = normalized.find("相槌だけで発話を終わらせない")
     nearby_ack_rule = normalized[idx_ack_rule:idx_ack_rule + 700]
-    assert "短い相槌" in nearby_ack_rule, "「(1)短い相槌」の指示が見つかりません"
-    assert "要約" in nearby_ack_rule, "「(2)要約」の指示が見つかりません"
+    assert "簡潔な要約" in nearby_ack_rule, "「(1)簡潔な要約・復唱」の指示が見つかりません"
     assert "次の項目を尋ねる" in nearby_ack_rule and "質問" in nearby_ack_rule, (
-        "「(3)まだ分かっていない次の項目を尋ねる質問」の指示が見つかりません"
+        "「(2)まだ分かっていない次の項目を尋ねる質問」の指示が見つかりません"
     )
-    print("2. 「相槌＋要約＋次の質問」を1発話でまとめる指示: OK")
+    print("2. 「要約＋次の質問」を1発話でまとめる指示（相槌の強制なし・TASK B）: OK")
+
+    # 2b. TASK B新規: 相槌を「情報を受け取るたびの決まり文句」にすることの
+    #     禁止、および「ありがとうございます」を控える代わりに別の固定相槌へ
+    #     単純に置き換えるだけの"すり替え"も同様に禁止されていることの明記。
+    idx_overuse_rule = normalized.find("情報を受け取るたびの決まり文句")
+    assert idx_overuse_rule != -1, "相槌の濫用禁止ルールの見出しが見つかりません"
+    nearby_overuse_rule = normalized[idx_overuse_rule:idx_overuse_rule + 700]
+    assert "機械的" in nearby_overuse_rule, "機械的な使い方の禁止が見つかりません"
+    assert "単純な置き換え" in nearby_overuse_rule, "別の固定相槌への単純な置き換え禁止が見つかりません"
+    print("2b. 相槌の機械的濫用禁止・単純置き換え禁止ルール（TASK B新規）: OK")
 
     # 3. ユーザー報告と同一の再現例（悪い例はそのまま。良い例の具体的な言い回しは
     #    圧縮で変わり得るため、「2名様ですね」という要約フレーズ自体の存在を検証する）

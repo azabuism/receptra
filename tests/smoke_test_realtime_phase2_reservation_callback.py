@@ -165,9 +165,12 @@ async def main():
                 )
                 print(f"A. NAME instructions_chars={len(name_instructions)} < 3000: OK")
 
-                # ===== B. NAME tools == [] =====
-                assert name_ctx["tools"] == [], f"NAMEのtoolsが空リストではありません: {name_tool_names}"
-                print("B. NAME tools == []: OK")
+                # ===== B. NAME tools（会話品質改善フェーズで、confirm_customer_nameのみ
+                # 許容するよう更新。tests/smoke_test_realtime_phase1_name.py A/B参照） =====
+                assert name_tool_names == ["confirm_customer_name"], (
+                    f"NAMEのtoolsがconfirm_customer_nameのみではありません: {name_tool_names}"
+                )
+                print("B. NAME tools == ['confirm_customer_name']: OK")
 
                 # ===== C. ROUTING instructions_chars < 3000（Phase1成功実績=2265に対する回帰guard） =====
                 assert len(routing_instructions) < 3000, (

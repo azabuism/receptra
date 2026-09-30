@@ -48,9 +48,11 @@ Known Limitation / Future Safety Task（今回は変更しない。完了報告�
 本テストが検証すること（ユーザー指定のA〜Pチェックリストに対応）:
   A. 分からないことを推測しない旨の文言
   B. 担当者判断が必要ならhandoffする旨の文言
-  C. 折り返し確定時の文言（「業務の状況により、折り返しまでお時間を
-     いただく場合がある」）
-  D. 折り返し未確定時の文言（「必要に応じて」）
+  C. 折り返し受付成功時の最終案内文言（RECEPTRA『CALLBACK最終案内文の
+     固定』タスクにより、「担当者から折り返し連絡しますので、電話を切って
+     お待ちください。」の1文へ統一。旧・可変文言は撤廃）
+  D. 折り返し確定/未確定の2文言分岐は撤廃され、単一の正式文言のみを使う
+     設計へ統一されていること
   E. 「いつ電話が来ますか？」への応答（具体的な時間を推測しない）
   F. 「すぐ」「数分以内」「30分以内」「本日中」「必ず」等を約束しない
      禁止リスト
@@ -97,32 +99,63 @@ def _test_unknown_and_staff_decision_immediate_handoff():
 
 
 def _test_confirmed_callback_wording():
-    """C: 折り返し確定時の文言。"""
+    """C: 折り返し受付成功時の最終案内文言（RECEPTRA『CALLBACK最終案内文の
+    固定』タスクによる更新）。
+
+    このテストが元々検証していた旧・可変文言（「業務の状況により、折り返し
+    までお時間をいただく場合がございます」等、店舗運用状況を説明する文言）は
+    撤廃された。実機テストで「最終案内の途中で通話が切れる」「文言が発話ごと
+    に揺れる」問題が確認されたため、successがtrueの場合の最終案内は次の1文
+    （一言一句固定・言い換え禁止）に統一されている:
+      「担当者から折り返し連絡しますので、電話を切ってお待ちください。」
+    """
     from app.services.realtime_voice_ai import _HUMAN_HANDOFF_TEMPLATE
 
-    assert (
-        "確認が必要なため、担当者にお伝えします。業務の状況により、\n"
-        "   折り返しまでお時間をいただく場合がございます。"
-        in _HUMAN_HANDOFF_TEMPLATE
-        or "確認が必要なため、担当者にお伝えします。業務の状況により、" in _HUMAN_HANDOFF_TEMPLATE
-    )
     normalized = _HUMAN_HANDOFF_TEMPLATE.replace("\n", "").replace(" ", "").replace("　", "")
-    assert "確認が必要なため、担当者にお伝えします。業務の状況により、折り返しまでお時間をいただく場合がございます。" in normalized
-    assert "担当者は通常業務中であり" in normalized
-    assert "すぐに折り返せるとは限らない" in normalized
 
-    print("C. 折り返し確定時の文言（業務の状況により折り返しまでお時間をいただく場合がある）: OK")
+    # 新・正式文言が一言一句そのまま存在すること（これが唯一の正式な
+    # 最終案内文であり、単なる例文ではないことも明示されている）
+    assert "担当者から折り返し連絡しますので、電話を切ってお待ちください。" in normalized
+    assert "正式な最終案内文です" in normalized
+
+    # 旧・可変文言（業務状況を説明する言い回し）は撤廃されていること
+    assert "確認が必要なため、担当者にお伝えします。業務の状況により、" not in normalized
+    assert "担当者は通常業務中であり" not in normalized
+
+    # B（ユーザー指示の禁止リスト）: 正式文言そのものが禁止表現
+    # 「このままお待ちください」に一致していないこと、かつテンプレートが
+    # その言い換えを明示的に禁止していること（電話を切ってお待ちいただく
+    # 必要がある、という要件の裏付け）
+    official_phrase = "担当者から折り返し連絡しますので、電話を切ってお待ちください。"
+    assert "このままお待ちください" not in official_phrase
+    assert "「このままお待ちください」への言い換えは絶対にしないでください" in normalized
+
+    print("C. 折り返し受付成功時の最終案内文言は「担当者から折り返し連絡しますので、電話を切ってお待ちください。」に一言一句固定されている（「このままお待ちください」への言い換えではないことも確認）: OK")
 
 
 def _test_unconfirmed_callback_wording():
-    """D: 折り返し未確定時の文言。"""
+    """D: 折り返し確定/未確定の2文言分岐は撤廃されていること（RECEPTRA
+    『CALLBACK最終案内文の固定』タスクによる更新）。
+
+    旧実装は「確定時（5-1）」と「未確定時（5-2、必ず折り返すと誤解させない
+    言い方）」の2文言をLLMの解釈で使い分けていたが、request_callback Tool
+    には確定/未確定を区別する引数が無く、この分岐は実際にはプロンプト文言
+    のみによる人為的な区別だった。ユーザー指示により、successがtrueの場合
+    は常にC.で検証した単一の正式文言のみを使う設計へ統一し、この分岐を
+    廃止した。
+    """
     from app.services.realtime_voice_ai import _HUMAN_HANDOFF_TEMPLATE
 
     normalized = _HUMAN_HANDOFF_TEMPLATE.replace("\n", "").replace(" ", "").replace("　", "")
-    assert "確認が必要なため、担当者にお伝えします。必要に応じてこちらからご連絡いたします。業務の状況により、ご連絡までお時間をいただく場合がございます。" in normalized
-    assert "必ず折り返す」と誤解させる言い方" in normalized
 
-    print("D. 折り返し未確定時の文言（必要に応じてこちらからご連絡いたします）: OK")
+    # 旧・未確定時専用文言（必要に応じてこちらからご連絡いたします）は撤廃
+    assert "確認が必要なため、担当者にお伝えします。必要に応じてこちらからご連絡いたします。" not in normalized
+
+    # successがtrueになったら、の記述は1箇所のみ（確定/未確定の分岐が無い
+    # ことの構造的な確認）
+    assert normalized.count("successがtrueになったら") == 1
+
+    print("D. 折り返し確定/未確定の文言分岐は撤廃され、success=true時は単一の正式文言のみを使う設計へ統一されている: OK")
 
 
 def _test_when_will_you_call_wording():
@@ -285,7 +318,7 @@ async def _test_build_instructions_direct(shop_id):
         assert shop is not None
         instructions = await build_realtime_instructions(session, shop, None)
         _assert_section_order(instructions)
-        assert "確認が必要なため、担当者にお伝えします。" in instructions
+        assert "担当者から折り返し連絡しますので、電話を切ってお待ちください。" in instructions
         assert "担当者の業務状況によるため、具体的なお時間はご案内できません。" in instructions
 
     print("build_realtime_instructions() 全体でのセクション出現順序・新文言の実挿入位置: OK")

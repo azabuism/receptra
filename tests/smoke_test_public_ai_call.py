@@ -192,6 +192,12 @@ def check_backend_files_untouched():
         "app/routers/reservations.py",
         "app/routers/realtime_voice.py",
         "app/schemas/reservation.py",
+        # PHONE CAPTURE DIAGNOSTIC PHASE 1（今回追加）による意図的な変更。
+        # OPENAI_REALTIME_TRANSCRIPTION_DIAGNOSTIC_ENABLED/
+        # OPENAI_REALTIME_TRANSCRIPTION_MODELという設定を追加したのみで、
+        # このテストのスコープ（Phase P1/P2の公開AI通話設定）とは無関係。
+        # ユーザー承認済みの電話番号聞き取り診断監査に基づく変更。
+        "app/config.py",
     }
     backend_changed = [
         c for c in changed

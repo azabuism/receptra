@@ -551,12 +551,89 @@
             if (expectedAnswerType === 'NAME') {
                 nameFirstFlowState.hasName = true;
                 pushNameFirstFlowEvent('name_answer_received');
-                // Realtime Token Architecture Phase 1（今回追加）: NAME質問への
-                // 回答が終わった時点で、次のresponse.done（NAME phaseのack応答
-                // 完了時点）でROUTINGへのsession.updateを送るよう予約する
-                // （ここでは何も送信しない。観測用マーカーやForced Commit等の
-                // 既存挙動には一切影響しない独立した予約のみ）。
-                armPhaseTransitionAfterResponse('routing');
+                // 会話品質改善フェーズ（2026年9月）更新（最重要・根本対策）:
+                // 以前はここで無条件にarmPhaseTransitionAfterResponse('routing')
+                // を呼んでいた。これは「NAME質問への回答ターンが完了した
+                // （このイベント自体が発火した）」という事実だけを根拠に
+                // していたが、このイベントは客観的にはHOTFIX10の既存
+                // Forced Commit/Answer Window機構が「1ターンが正常に完了
+                // した」ことを示すだけであり、実際にユーザーの発話内容に
+                // お名前が含まれていたかどうかは一切検証していなかった。
+                // その結果、「予約したいです」等のお名前ではない発話でも
+                // このターン完了イベントは同じく発火するため、お名前を
+                // 未取得のままROUTINGへ進んでしまう実機バグの直接原因に
+                // なっていた。
+                //
+                // 根本対策として、NAME→ROUTINGへのarmは、モデル自身が
+                // 「お客様の発話に実際に使えるお名前が含まれている」と
+                // 判断してconfirm_customer_name Tool（ROUTING phaseの
+                // classify_intentと同じ設計の内部signal専用Tool）を呼んだ
+                // 時点でのみ行う（callConfirmCustomerNameTool()参照）。
+                // ここでは呼ばない。
+                //
+                // 無限ループ防止（最小安全案・ユーザー提示の要件）: モデルが
+                // 何度もお名前を取得できないまま同じNAME phaseに留まり続ける
+                // 事態を避けるため、このターン完了イベント（＝お名前質問への
+                // 回答ターンが完了したがconfirm_customer_nameが呼ばれなかった
+                // 可能性がある機会）をnameCaptureAttemptsとして数え、既存の
+                // Human Handoff相当の「諦めて先へ進む」安全網が他に存在しない
+                // ため、小さな固定回数（NAME_CAPTURE_MAX_ATTEMPTS）に達したら
+                // 安全側としてROUTINGへの遷移を強制する（お名前が結局
+                // 分からないまま通話が無期限に停滞することを避けるための、
+                // ユーザー確認前提の最小提案。armPhaseTransitionAfterResponse
+                // 自体は既存の多重arm防止ガードを持つため、この直後に
+                // confirm_customer_nameが実際に呼ばれても二重処理にはならない）。
+                if (currentRealtimePhase === 'name') {
+                    // NOISE_DIAG（今回追加・雑音誤検知対策 TASK D・最重要）: この関数は
+                    // 1回の物理的なユーザーターンにつき最大3回（committed /
+                    // conversation.item.created / speech_stopped）呼ばれ得るため
+                    // （実測で確認済み。上のnameCaptureAttemptCountedThisTurn宣言部の
+                    // コメント参照）、ここから先の「1ターンにつき1回だけ」の処理は
+                    // すべてこのガードの内側にまとめる。物理ターンの境界は
+                    // input_audio_buffer.speech_startedであり、そこでこのフラグは
+                    // falseにリセットされる。
+                    if (!nameCaptureAttemptCountedThisTurn) {
+                        nameCaptureAttemptCountedThisTurn = true;
+                        // NOISE_DIAG（今回追加・STEP5 Option B）: speech_started〜
+                        // speech_stoppedの継続時間が極端に短いターンは、雑音
+                        // （物音・咳・ドア音等）である可能性が高いと判断し、
+                        // nameCaptureAttemptsへは加算しない（＝有効な会話進行
+                        // トリガーとして扱わない）。入力内容（transcript）は
+                        // 一切参照せず、既存タイムスタンプの差分のみで判定する
+                        // （音量閾値・WebRTC音声トラック処理の変更は行わない）。
+                        const turnDurationMsForNameAttempt = (lastSpeechStartedAt !== null && lastSpeechStoppedAt !== null)
+                            ? (lastSpeechStoppedAt - lastSpeechStartedAt) : null;
+                        if (turnDurationMsForNameAttempt !== null && turnDurationMsForNameAttempt < MIN_VALID_TURN_MS_FOR_NAME_ATTEMPT) {
+                            nameCaptureShortTurnRejections += 1;
+                            try {
+                                pushTimelineEvent('NOISE_DIAG_FALSE_TURN_IGNORED (durationMs=' + Math.round(turnDurationMsForNameAttempt)
+                                    + ', thresholdMs=' + MIN_VALID_TURN_MS_FOR_NAME_ATTEMPT
+                                    + ', shortTurnRejections=' + nameCaptureShortTurnRejections + ')');
+                            } catch (diagErr) {}
+                        } else {
+                            nameCaptureAttempts += 1;
+                            try {
+                                pushTimelineEvent('NAME_CAPTURE_ATTEMPT (count=' + nameCaptureAttempts
+                                    + ', turnDurationMs=' + (turnDurationMsForNameAttempt === null ? 'null' : Math.round(turnDurationMsForNameAttempt)) + ')');
+                            } catch (diagErr) {}
+                            if (nameCaptureAttempts >= NAME_CAPTURE_MAX_ATTEMPTS) {
+                                pushTimelineEvent('NAME_CAPTURE_MAX_ATTEMPTS_REACHED (fallback=force_routing_transition, shortTurnRejections=' + nameCaptureShortTurnRejections + ')');
+                                console.log('[NAME_CAPTURE_MAX_ATTEMPTS_REACHED]');
+                                // NOISE_DIAG（今回追加・STEP6）: 上限到達までの間に
+                                // 短すぎるターン（雑音の可能性）が1回以上あった場合のみ、
+                                // 「周囲が騒がしい可能性」を考慮した案内付きの終話へ
+                                // 分岐する（単発の雑音だけでは発火しない。既存の
+                                // ROUTINGへの無言フォールバックは、雑音の兆候が一切
+                                // 無かった場合の挙動として完全に維持する）。
+                                if (nameCaptureShortTurnRejections >= 1) {
+                                    triggerNoisyEnvironmentGoodbye(callGeneration);
+                                } else {
+                                    armPhaseTransitionAfterResponse('routing');
+                                }
+                            }
+                        }
+                    }
+                }
             } else if (expectedAnswerType === 'VISIT_REASON') {
                 nameFirstFlowState.hasPurpose = true;
                 pushNameFirstFlowEvent('purpose_answer_received');
@@ -597,6 +674,58 @@
         //   transitionしか進行中でない」という不変条件
         //   （phaseTransitionInProgress）だけに依拠する設計とした。
         let currentRealtimePhase = 'name';
+        // 会話品質改善フェーズ（2026年9月）追記（無限ループ防止・最小安全案）:
+        // NAME phaseでconfirm_customer_nameが呼ばれないまま「NAME質問への
+        // 回答ターンが完了した」イベントが繰り返された回数。ユーザー提示の
+        // 要件に基づく最小の安全網であり、この固定回数に達した場合のみ
+        // お名前未取得のままROUTINGへの遷移を強制する（詳細は
+        // maybeRecordNameFirstAnswer()参照）。値は暫定の保守的な初期値であり、
+        // 実機結果を見て調整する前提の提案値。
+        let nameCaptureAttempts = 0;
+        const NAME_CAPTURE_MAX_ATTEMPTS = 3;
+        // NOISE_DIAG（今回追加・雑音誤検知対策 TASK D）: maybeRecordNameFirstAnswer()は
+        // input_audio_buffer.committed / conversation.item.created /
+        // input_audio_buffer.speech_stoppedの3箇所から呼ばれる（既存設計・
+        // HOTFIX10コメント参照）。既存のnameFirstStageLoggedガードは診断ログの
+        // 重複記録のみを防いでおり、nameCaptureAttempts += 1という「カウンタの
+        // 加算」自体は元々ガードされていなかった（実測で確認）。そのため、
+        // 1回の物理的なユーザーターン（雑音か実発話かを問わず）で3箇所すべてが
+        // 発火すると、nameCaptureAttemptsが1ではなく最大3ずつ増加し得る
+        // 深刻なバグだった。このフラグは、物理的な1ターン（input_audio_buffer.
+        // speech_startedの発生を境界とする）につき最大1回だけカウントする
+        // ためのガードで、speech_started側でfalseにリセットする（下記参照）。
+        let nameCaptureAttemptCountedThisTurn = false;
+        // ROUTING_TRACE（TASK B HOTFIX 3・今回追加・観測専用・PIIなし）:
+        // 実機で報告された「ご用件を約3回聞く」症状の原因をイベント単位で
+        // 追跡するための診断専用状態。挙動制御には一切使わない（読み取り専用の
+        // カウンタ・フラグで、既存のresponse.create/session.update等の送信内容・
+        // タイミングは変更しない）。customer name・用件本文・電話番号・raw
+        // transcriptはいずれも記録しない。
+        //   routingTraceUserTurnSeq: 通話開始からの物理的なユーザーターン通し
+        //     番号（input_audio_buffer.speech_startedで+1）。
+        //   routingTraceResponseSeqInTurn: 直近のユーザーターン内で何個目の
+        //     response.doneか（同一ユーザー発話に対してAI応答が複数回生成
+        //     されていないかを実測するためのカウンタ）。
+        //   classifyIntentCalledInCurrentResponse: 直近のresponse.created〜
+        //     response.doneの間にclassify_intent Toolが呼ばれたか
+        //     （responseHasFunctionCallと同じリセット規律に従う）。
+        let routingTraceUserTurnSeq = 0;
+        let routingTraceResponseSeqInTurn = 0;
+        let classifyIntentCalledInCurrentResponse = false;
+        // NOISE_DIAG（今回追加・雑音誤検知対策 TASK D・STEP5 Option B）: NAME phase中に
+        // 「有効な会話進行トリガーとして数えるには短すぎる」と判定され、
+        // nameCaptureAttemptsへカウントされなかったターンの回数（雑音の可能性が
+        // あった回数の目安。診断・STEP6の雑音環境案内トリガー判定にのみ使用）。
+        let nameCaptureShortTurnRejections = 0;
+        // NOISE_DIAG（今回追加）: 「有効な発話」とみなすための最小継続時間
+        // （speech_started〜speech_stopped間、ミリ秒）。極端に短い雑音
+        // （物音・ドアの音・咳等）はこれより大幅に短いことが多い一方、
+        // 実際の「お名前です」等の発話は通常これより長く継続するため、
+        // 安全側の最小限のしきい値として採用する（ユーザー指示STEP5-C・Dの
+        // 禁止事項どおり、音量ベースの判定やWebRTC音声トラック処理の変更は
+        // 一切行わない。あくまでspeech_started/speech_stoppedの既存タイム
+        // スタンプの差分のみを使う）。
+        const MIN_VALID_TURN_MS_FOR_NAME_ATTEMPT = 400;
         // このセッションで発行されたPhase別session context（name/routing/
         // legacy_full）。POST /realtime-voice/sessionのレスポンスに含まれる
         // realtime_phase_contextsをそのまま保持するだけ（PIIなし。会話内容は
@@ -615,6 +744,16 @@
         // sendRealtimePhaseSessionUpdateの説明コメント参照）。
         let pendingPhaseTransitionForceFollowUp = null;
         let pendingPhaseTransitionReasonForFollowUp = null;
+        // PHASE ORDER HOTFIX（今回追加・選択肢A）: ROUTINGへのsession.update
+        // 完了（=ROUTING contextへの切り替え）と、お客様が実際にROUTING期間中に
+        // 新しい発話をした、という事実を混同しないための最小限のstate。
+        // ROUTING開始時にfalseへ戻し、ROUTING在中にinput_audio_buffer.committed
+        // （＝実際のユーザー発話がcommitされたことを示す既存イベント。AI生成の
+        // 強制follow-up応答からは絶対に発火しない）を観測した時点でのみtrueにする。
+        // 通話終了/新しい通話開始時にも必ずリセットする（stale状態を次の通話へ
+        // 持ち越さない）。新しい大規模state machineではなく、この1個のboolean
+        // のみを追加する。
+        let routingHasReceivedUserTurn = false;
         // REALTIME_SESSION_UPDATED診断用: 直近のsession.update送信時刻
         // （performance.now()）。
         let phaseTransitionSessionUpdateSentAt = null;
@@ -636,6 +775,14 @@
             if (pendingPhaseTransitionTarget === targetPhase) return;
             if (phaseTransitionInProgress) return;
             pendingPhaseTransitionTarget = targetPhase;
+            // ROUTING_TRACE（今回追加・観測専用）: phase遷移が実際にarmされた
+            // 事実のみを記録する（3つのガードのいずれにも該当しなかった場合の
+            // みここに到達する）。
+            try {
+                const armLine = 'ROUTING_TRACE_TRANSITION_ARM (from=' + currentRealtimePhase + ', to=' + targetPhase + ')';
+                pushTimelineEvent(armLine);
+                console.log('[' + armLine + ']');
+            } catch (diagErr) {}
         }
 
         // Realtime Token Architecture Phase 1（今回追加）: NAME→ROUTING→
@@ -671,6 +818,16 @@
             } catch (diagErr) {
                 pushTimelineEvent('REALTIME_PHASE_TRANSITION_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
             }
+            // ROUTING_TRACE（TASK B HOTFIX 3・今回追加・観測専用）: 既存の
+            // REALTIME_PHASE_TRANSITIONにはforceFollowUpの値が含まれていない
+            // （実機の「約3回」調査で最も重要な未計測値）。既存マーカーは
+            // 変更せず、新しい行として追加する。
+            try {
+                const routingTraceSessionUpdateLine = 'ROUTING_TRACE_SESSION_UPDATE (from=' + fromPhase
+                    + ', target=' + targetPhase + ', forceFollowUp=' + forceFollowUp + ')';
+                pushTimelineEvent(routingTraceSessionUpdateLine);
+                console.log('[' + routingTraceSessionUpdateLine + ']');
+            } catch (diagErr) {}
 
             const tools = ctx.tools || [];
             const instructionsChars = (ctx.instructions || '').length;
@@ -725,13 +882,24 @@
             // 楽観的更新（上のコメント参照: event_idが成功時にエコーされない仕様のため）。
             currentRealtimePhase = targetPhase;
 
-            // ユーザー承認済み設計（AskUserQuestion）: ROUTINGへの遷移が完了した
-            // 直後、Reservation/Callback Phaseを実装しない今回は、その次の
-            // response.done（＝ROUTING phaseのack応答完了時点）で無条件に
-            // legacy_full（既存の未変更フル機能）へ自動フォールバックする
-            // ようここで予約する。
+            // PHASE ORDER HOTFIX（今回変更・root cause fix）: 旧設計は、ROUTINGへの
+            // 遷移が完了した直後・お客様がまだ一度も新しい発話をしていない段階で
+            // 無条件にlegacy_fullへのフォールバックを予約していた。これにより、
+            // ROUTING突入直後の（NAME確認が用件質問を同一発話内で言い切れなかった
+            // 場合の）強制follow-up応答（「本日はどのようなご用件でしょうか？」）
+            // 自身のresponse.doneで、お客様の回答を一度も受け取らないまま
+            // legacy_fullへ脱出してしまう実機バグの直接原因だった（コード調査で
+            // 確認済み・推測ではない）。
+            // 対策: ここでは即座に予約せず、ROUTING期間中にお客様の実際の新しい
+            // 発話を受け取ったかどうかだけを表す最小限のstate
+            // （routingHasReceivedUserTurn）をfalseへ戻すだけに留める。
+            // legacy_fullへのフォールバック自体は削除しない（本当に分類不能な
+            // OTHER/UNKNOWNの安全網としては引き続き必要）。予約するタイミングを
+            // 「お客様の実際の発話に対する応答が、それでも分類できなかった場合」
+            // （response.doneハンドラ側、下記のtransition consumeブロック直前）
+            // へ移すことで、既存のresponse.done消費ガード自体は一切変更しない。
             if (targetPhase === 'routing') {
-                pendingPhaseTransitionTarget = 'legacy_full';
+                routingHasReceivedUserTurn = false;
             }
 
             return true;
@@ -828,6 +996,39 @@
         // AIが新たにPHONEを尋ねたと判定した（NAMEと同じく、型が変化した瞬間のみ）
         // ときに+1する。
         let phoneAnswerGeneration = 0;
+        // SMART INTERRUPTION / NOISE RESILIENCE HOTFIX（今回追加）: 直近で
+        // 判定されたPHONE型のAI発話（電話番号の質問・復唱確認）が、
+        // 「言い切れていない」（lastResponseTranscriptWasIncompleteAiTurn
+        // ===true）状態のまま終わったかどうかを保持する。用途は1つだけ:
+        // request_callback Tool呼び出しの直前に、電話番号の復唱確認が
+        // 本当に完了しているかを確認するゲート（下のhandleFunctionCallItem
+        // 内、request_callback分岐を参照）。新しいNLU・keyword判定は
+        // 一切追加せず、既存のclassifyExpectedAnswerType()の判定結果を
+        // そのまま再利用する。
+        let phoneConfirmationIncomplete = false;
+        // CALLBACK FINAL QUALITY PASS（今回追加・最重要）: 実機で
+        // 「AIが電話番号の復唱確認段階に一切入らずrequest_callbackへ進んで
+        // しまう」症状が確認された（前回のSMART INTERRUPTION対応が対処した
+        // 「復唱が途中で中断される」ケースとは異なり、今回は復唱そのものが
+        // 一度も発生しない、またはAIが返事を待たず即座にTool呼び出しへ
+        // 進んでしまうケース）。上のphoneConfirmationIncompleteだけでは
+        // 「直近のPHONE型発話が言い切れていたか」しか分からず、「そもそも
+        // 一度も完了したPHONE型発話が無い」「発話はしたが、お客様の返事を
+        // 一度も受け取っていない」の2つを検出できない。これらを、新しい
+        // NLU・keyword判定を追加せず、既存のclassifyExpectedAnswerType()の
+        // 判定結果とinput_audio_buffer.committed（実際のお客様の発話が
+        // commitされたことを示す既存イベント。routingHasReceivedUserTurnと
+        // 全く同じ仕組みを再利用）だけで構造的に検出する。
+        //   - phoneReadbackTurnCompletedThisCall: この通話中に、言い切れた
+        //     （lastResponseTranscriptWasIncompleteAiTurn===false）PHONE型の
+        //     AI発話が一度でも発生していればtrue。
+        //   - phoneReadbackAwaitingUserReply: 直近の完了したPHONE型発話の後、
+        //     お客様の実際の新しい発話（input_audio_buffer.committed）を
+        //     まだ一度も受け取っていない間はtrue。新しいPHONE型発話が発生
+        //     するたびに再度trueへ戻す（電話番号の訂正・再読み上げのたびに、
+        //     その回ごとの返事を改めて要求するため）。
+        let phoneReadbackTurnCompletedThisCall = false;
+        let phoneReadbackAwaitingUserReply = false;
         // このPHONE世代について、既に手動commitを送信済みならその世代番号
         // （未送信ならnull）。同一世代につき手動commitは最大1回のみ。
         let phoneCommitSentGeneration = null;
@@ -1795,6 +1996,35 @@
             }
             // PII-free診断マーカー（ユーザー指示12）: transcript本文は一切含めず、
             // 分類結果の型文字列とincomplete判定結果のみを記録する。
+            // SMART INTERRUPTION / NOISE RESILIENCE HOTFIX（今回追加）:
+            // PHONE型と判定された発話については、その完了可否
+            // （lastResponseTranscriptWasIncompleteAiTurn）をPHONE専用の
+            // ゲート変数へも反映する。type変化の有無に関わらず、PHONE型の
+            // 発話が生成されるたびに毎回上書きする（継続応答で改めて
+            // 完全な復唱が行われれば、その時点でfalseに戻る）。
+            if (type === 'PHONE') {
+                phoneConfirmationIncomplete = lastResponseTranscriptWasIncompleteAiTurn;
+                // CALLBACK FINAL QUALITY PASS（今回追加）: 言い切れた
+                // （=incompleteでない）PHONE型発話が発生するたびに、
+                // 「完了済み」フラグを立て、「お客様の返事待ち」フラグを
+                // 改めてtrueに戻す（訂正・再読み上げのたびに、その回ごとの
+                // 返事を必ず新たに要求するため）。言い切れなかった場合は
+                // どちらも変更しない（phoneConfirmationIncompleteの既存の
+                // 安全側判定にすべて委ねる）。
+                if (!lastResponseTranscriptWasIncompleteAiTurn) {
+                    phoneReadbackTurnCompletedThisCall = true;
+                    phoneReadbackAwaitingUserReply = true;
+                }
+                // CALLBACK REAL-DEVICE VERIFICATION AUDIT（今回追加・一時診断・
+                // PIIなし）: 実機での状態遷移を実測するための一時的な診断ログ。
+                // boolean値のみで、電話番号本文・トランスクリプトは一切含まない。
+                // 監査完了後に削除予定（恒久的な新機構ではない）。
+                try {
+                    console.log('[CALLBACK_PHONE_STATE] readbackCompleted=' + phoneReadbackTurnCompletedThisCall
+                        + ' awaitingUserReply=' + phoneReadbackAwaitingUserReply
+                        + ' confirmationIncomplete=' + phoneConfirmationIncomplete);
+                } catch (diagErr) {}
+            }
             pushTimelineEvent('AI_TURN_CLASSIFIED (type=' + type
                 + ', narrationOnly=' + lastResponseTranscriptWasProcessNarrationOnly
                 + ', incompleteAiTurn=' + lastResponseTranscriptWasIncompleteAiTurn + ')');
@@ -2491,6 +2721,14 @@
         let silenceState = 'idle'; // 'idle' | 'waiting' | 'warned' | 'goodbye'
         let responseHasFunctionCall = false; // 直近のresponse.created〜response.doneの間にfunction_callがあったか
         let pendingSilenceGoodbyeHangup = false; // 終話案内アナウンスの再生完了待ちかどうか
+        // NOISE_DIAG（今回追加・雑音誤検知対策 TASK D・STEP6）: NAME phaseでお名前を
+        // 確認できないまま安全網（NAME_CAPTURE_MAX_ATTEMPTS）に到達し、かつ
+        // その過程で雑音の可能性がある短すぎるターンが検知されていた場合に、
+        // 「周囲が騒がしい可能性」を考慮した案内アナウンスを話し、その再生完了を
+        // 待ってから終話するためのフラグ。pendingSilenceGoodbyeHangupと全く
+        // 同じ設計（音声途中での切断を防ぐ、既存のPhase A相当の確立済み
+        // パターンをそのまま再利用するだけで、新しいstate machineは作らない）。
+        let pendingNoisyEnvironmentGoodbyeHangup = false;
         // FAST TURN HOTFIX 14（今回追加・CASE B: CALLBACK terminal state）:
         // request_callbackが成功し、折り返し確定の案内（closing発話）を
         // これから話す/話している間だけtrueにするフラグ。実機証拠: 折り返し
@@ -2510,6 +2748,20 @@
         // Armedとは別に、response.doneのたびにconsumeされず通話全体で保持する）。
         // request_callbackの二重実行（重複した折り返し作成）を防ぐために使う。
         let callbackAlreadyConfirmedThisCall = false;
+        // CALLBACK FINAL EXACTLY-ONCE HOTFIX（今回追加・Task M・root cause fix）:
+        // 監査（READ-ONLY audit）で判明した構造的原因: request_callbackが
+        // この通話中に複数回呼び出された場合（HOTFIX14の
+        // callbackAlreadyConfirmedThisCallによる「既に確定済み」の再呼び出し
+        // も含む）、呼び出しのたびに無条件で継続のresponse.create送信（sendResponseCreate　関数）が
+        // 実行されており、callbackTerminalArmedがHOTFIX16により毎回
+        // 再armされることと相まって、呼び出し回数と同じ回数だけ独立した
+        // 新しい応答（＝最終案内フレーズを含む音声）が生成され得ていた。
+        // このフラグは、CALLBACK terminal応答用のresponse.createが
+        // この通話で既に一度でも送信済みかどうかだけを表す（PIIなし・
+        // boolean 1個のみ）。true化後は、request_callbackが（成功扱いで）
+        // 再び呼ばれても新しいresponse.createは二度と送らない
+        // （handleFunctionCallItem内のTool継続ディスパッチ参照）。
+        let callbackFinalResponseAlreadyRequested = false;
         // FAST TURN HOTFIX 18（今回追加・CALLBACK FINAL AUDIO TAIL ONLY）:
         // 実機で「担当者から折り返しお電話いたし・・・」の途中で通話が切れる
         // 症状が報告された。コード監査（cleanupConnection()直上の既存コメント
@@ -2656,6 +2908,15 @@
         // ネットワーク遮断のため不可能だったため、既存の1500ms/2500msの
         // 値と同様、一般的なWebRTC挙動からの工学的判断である）。
         const PLAYBACK_AWARE_SETTLE_CONFIRM_MS = 400;
+
+        // TASK6（実機不具合調査・今回追加）: 確認ウィンドウ判定に使う
+        // ポーリング間隔。aiSpeakingNow（setupLatencyMeter()内、
+        // requestAnimationFrameで毎フレーム更新される既存の実測シグナル）を
+        // この間隔で読み取るだけであり、新しい音量分類やVAD相当の判定を
+        // 追加するものではない。PLAYBACK_AWARE_SETTLE_CONFIRM_MS=400msの
+        // 確認ウィンドウに対して十分な解像度を持ちつつ、ポーリング自体の
+        // オーバーヘッドを避けられる値として選んだ。
+        const PLAYBACK_AWARE_POLL_INTERVAL_MS = 100;
 
         // ===== OBSERVABILITY-ONLY INSTRUMENTATION（Phase MINI-1診断専用、
         // gpt-realtime-2.1-miniでのみ観測された「ブツブツ」症状のH1/H2切り分け
@@ -2865,6 +3126,22 @@
         let lastFunctionCallNameForDiag = null;
         let lastFunctionCallStartedAtForDiag = null;
 
+        // RESPONSE ORIGIN TRACE（今回追加・診断専用・PIIなし・挙動制御には
+        // 一切使わない）: 既存のlastResponseCreateReason（単一スカラー、
+        // 次のresponse.createdで一度だけ消費）とは独立に、応答生成要求を
+        // 送信順のFIFOキューとして保持する。1つのユーザーターン内で複数回、
+        // response.created受信前に連続して応答生成要求が発生した場合でも、
+        // 単一スカラーでは後から呼んだ方が前の情報を上書きしてしまい相関が
+        // ズレ得るが、キューであれば発生順どおりに対応付けられる。
+        // 既存のlastResponseCreateReason/responseCreateDiagSeqの読み書き・
+        // 消費タイミングは一切変更しない（完全に並行した別経路として追加）。
+        let responseOriginPendingQueue = [];
+        // responseId（下8桁の文字列）→ origin情報（reason/phase/turnSeq/
+        // triggerSource）のマップ。response.createdで登録し、対応する
+        // response.doneで読み取って記録する（PIIなし・整数・enum文字列のみ）。
+        // 通話ごとに必ずリセットする（下の新しい通話リセット処理を参照）。
+        let responseOriginById = {};
+
         // 指定した過去のperformance.now()時刻からの経過msを返す（未計測ならnull）。
         // 診断表示専用のフォーマットヘルパーで、既存ロジックには使わない。
         function msSince(t) {
@@ -2898,6 +3175,36 @@
             // ai_working_continuationと同じ理由で専用カテゴリとして識別する。
             if (rawReason === 'incomplete_ai_turn_continuation') return 'incomplete_ai_turn_continuation';
             return 'unknown';
+        }
+
+        // RESPONSE ORIGIN TRACE（今回追加・診断専用）: reason文字列を、
+        // 「この応答生成要求がどの経路から発生したか」を表す粗いenumへ
+        // 分類する。実コードで確認済みの実在するreason文字列のみを対象と
+        // し、未知のreasonはotherへ倒す（推測で新しいカテゴリを作らない）。
+        // 挙動制御には一切使わない・PIIなし（enum文字列のみ）。
+        function deriveResponseOriginTriggerSource(reason) {
+            if (reason === 'initial_greeting' || reason === 'initial_greeting_fallback') {
+                return 'initial_greeting';
+            }
+            if (reason === 'initial_greeting_zero_wait_followup') {
+                return 'zero_wait';
+            }
+            if (typeof reason === 'string' && reason.indexOf('phase_transition_to_') === 0) {
+                // session.updated受信ハンドラ内から送信される（既存コード
+                // 確認済み）。
+                return 'session_updated';
+            }
+            if (typeof reason === 'string' && reason.indexOf('tool_result:') === 0) {
+                return 'tool_result';
+            }
+            if (reason === 'ai_working_continuation'
+                || reason === 'incomplete_ai_turn_continuation'
+                || reason === 'tool_continuation_rate_limit_retry') {
+                // いずれもresponse.doneハンドラ内から送信される（既存コード
+                // 確認済み）。
+                return 'response_done';
+            }
+            return 'other';
         }
 
         // silenceStateの変更を必ずこの関数経由にすることで、遷移のたびに
@@ -2980,6 +3287,11 @@
 
         const SILENCE_WARNING_TEXT = 'お声が確認できないため、このままですとお電話を終了します。';
         const SILENCE_GOODBYE_TEXT = 'お電話を終了させていただきます。ありがとうございました。';
+        // NOISE_DIAG（今回追加・STEP6）: 店名・AI名は再掲しない、ご用件を再度
+        // 尋ねない、固定の短い定型文（SILENCE_WARNING_TEXT/SILENCE_GOODBYE_TEXTと
+        // 同じ設計思想）。既存の一元化ラッパー関数のinstructionsOverride引数で
+        // 一字一句そのまま話させる。
+        const NOISY_ENVIRONMENT_GOODBYE_TEXT = '恐れ入りますが、周囲の音でお声がうまく確認できませんでした。お手数ですが、静かな場所に移っていただくか、改めてお電話をいただけますでしょうか。失礼いたします。';
 
         // 「AIがユーザーの回答を待っている」状態に入った瞬間に呼ぶ。既に
         // waiting/warned/goodbyeのいずれかであれば何もしない（多重開始防止）。
@@ -3110,6 +3422,36 @@
             if (isStaleCallEvent(myGeneration)) return;
             pushTimelineEvent('SILENCE_END_CALL_REQUESTED (source=' + source + ')');
             endCall(SILENCE_GOODBYE_TEXT, 'silence_timeout');
+        }
+
+        // NOISE_DIAG（今回追加・雑音誤検知対策 TASK D・STEP6）: NAME phaseの
+        // NAME_CAPTURE_MAX_ATTEMPTS安全網に、雑音の可能性がある短すぎるターンを
+        // 伴って到達した場合にのみ呼ばれる（maybeRecordNameFirstAnswer()参照。
+        // 単発の雑音だけでは呼ばれない＝複数ターンにわたる安全網到達が前提）。
+        // 既存のSilence Timeoutと全く同じ「固定の短い定型文を話し、その再生
+        // 完了をpendingフラグで待ってから既存のendCall()経路で終了する」という
+        // 確立済みパターン（上のtriggerSilenceFinalGoodbye/
+        // maybeHangUpAfterSilenceGoodbyeと同一設計）をそのまま再利用するだけで、
+        // 新しい即時切断経路は作らない。
+        function triggerNoisyEnvironmentGoodbye(myGeneration) {
+            if (isStaleCallEvent(myGeneration)) return;
+            pendingNoisyEnvironmentGoodbyeHangup = true;
+            pushTimelineEvent('NOISE_DIAG_NAME_CAPTURE_NOISY_ENVIRONMENT_GOODBYE_STARTED');
+            sendResponseCreate('noisy_environment_goodbye', NOISY_ENVIRONMENT_GOODBYE_TEXT);
+        }
+
+        // 案内アナウンスの音声再生が完了したことを確認してから、既存の安全な
+        // endCall()経路で通話を終了する（maybeHangUpAfterSilenceGoodbye()と
+        // 全く同じ設計・同じ理由。pc.close()/dc.close()/track.stop()をここから
+        // 直接個別に呼ぶことは絶対にしない）。呼び出し箇所もSilence Timeoutと
+        // 全く同じ2箇所（output_audio_buffer.stopped主経路・response.done
+        // 安全網）に相乗りする（新しい個別のイベント購読は増やさない）。
+        function maybeHangUpAfterNoisyEnvironmentGoodbye(myGeneration, source) {
+            if (!pendingNoisyEnvironmentGoodbyeHangup) return;
+            pendingNoisyEnvironmentGoodbyeHangup = false;
+            if (isStaleCallEvent(myGeneration)) return;
+            pushTimelineEvent('NOISE_DIAG_NAME_CAPTURE_NOISY_ENVIRONMENT_END_CALL_REQUESTED (source=' + source + ')');
+            endCall(NOISY_ENVIRONMENT_GOODBYE_TEXT, 'noisy_environment_max_attempts');
         }
 
         // FAST TURN HOTFIX 14（今回追加・CASE B §9: 音声途中で切断禁止）:
@@ -3267,52 +3609,100 @@
             // waiting/stalledが重複発火しても（ブラウザによっては
             // ほぼ同時に両方発火することがある）、二重に確認タイマーを
             // 張らないようこの変数でガードする。
+            // TASK6（実機不具合調査・今回変更）: waiting/stalled DOM
+            // イベントは、ライブWebRTC MediaStream経由の<audio>要素では
+            // 実質的に発火しないことが実機ログで確認された（readyState=4,
+            // streamActive=true, audioTrackReadyState=live のまま一度も
+            // waiting/stalledが発火せず、必ずPLAYBACK_AWARE_MAX_WAIT_MSの
+            // fail-safeへ落ちていた。トラック自体は生きたまま無音を送り
+            // 続けるため、ブラウザ側のバッファアンダーラン検知が働かない
+            // ためと考えられる）。OpenAI Realtime APIにも「クライアント側
+            // 再生完了」を示す公式イベントは存在しない（output_audio_buffer.*
+            // はサーバー側の送信完了のみを示し、WebRTC/SIP専用でWebSocket
+            // では送られない）。
+            //
+            // そのため、既存のcandidate→confirm window→resumeで打ち消し、
+            // という判定の「形」自体（waiting/stalledで安易に即断しない、
+            // という上記コメントの設計思想）は維持しつつ、判定の元となる
+            // 信号だけを、不発火なDOMイベントから、既にこのコードベースに
+            // 存在し実測に基づく信号である aiSpeakingNow
+            // （setupLatencyMeter()内のAnalyserNodeで、AI自身の音声ストリーム
+            // のみを毎フレーム計測している。人間発話・周囲雑音の音量分類
+            // ではないため、STEP9の禁止事項には抵触しない。FAST TURN
+            // HOTFIX 2で既にAI SPEAKING PROTECTIONの契機として実績あり）の
+            // ポーリングに差し替える。新しい独立したhangup機構ではなく、
+            // 既存のこの関数・既存のfail-safe（PLAYBACK_AWARE_MAX_WAIT_MS、
+            // 値は無変更）・既存の確認ウィンドウ（PLAYBACK_AWARE_SETTLE_
+            // CONFIRM_MS、値は無変更）をそのまま使う信号源の置き換えである。
             let settleConfirmTimerId = null;
+            let silenceCandidateSince = null; // 非nullの間だけ「AI無音の候補」を確認中
 
-            const onCandidateSettleEvent = (ev) => {
-                if (settleConfirmTimerId !== null) return; // 既に確認中なら何もしない（重複防止）
-                try {
-                    console.log('[CALLBACK_DIAG_PLAYBACK_CANDIDATE] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
-                        + ' via=' + ev.type
-                        + ' elapsedMs=' + Math.round(performance.now() - waitStartedAt)
-                        + ' confirmMs=' + PLAYBACK_AWARE_SETTLE_CONFIRM_MS);
-                } catch (diagErr) {}
-                settleConfirmTimerId = setTimeout(() => {
-                    settleConfirmTimerId = null;
+            const evaluatePlaybackSignal = () => {
+                if (!remoteAudioCtx) {
+                    // aiSpeakingNowの計測基盤（setupLatencyMeter()内の
+                    // AnalyserNode）が未初期化、またはこの通話の終了処理で
+                    // 既に破棄されている場合、aiSpeakingNow自体の値は
+                    // 信頼できない（誤って初期値のfalseのままの可能性がある）。
+                    // このtickでは何も判定せず（settle候補化しない）、
+                    // PLAYBACK_AWARE_MAX_WAIT_MSのfail-safeにのみ委ねる。
+                    // 「無音と早合点してendCall()し、発話の途中を切ってしまう」
+                    // （TASK6のB「音声を絶対に途中で切らない」に違反する）
+                    // よりも安全側に倒す設計判断であり、DOM版でwaiting/stalledが
+                    // 一度も発火しなかった場合と同じ安全な振る舞いになる。
+                    return;
+                }
+                if (!aiSpeakingNow) {
+                    if (silenceCandidateSince === null) {
+                        silenceCandidateSince = performance.now();
+                        try {
+                            console.log('[CALLBACK_DIAG_PLAYBACK_CANDIDATE] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
+                                + ' via=ai_speaking_now_false'
+                                + ' elapsedMs=' + Math.round(performance.now() - waitStartedAt)
+                                + ' confirmMs=' + PLAYBACK_AWARE_SETTLE_CONFIRM_MS);
+                        } catch (diagErr) {}
+                    }
+                    if (settleConfirmTimerId === null) {
+                        settleConfirmTimerId = setTimeout(() => {
+                            settleConfirmTimerId = null;
+                            if (aiSpeakingNow) return; // 確認ウィンドウ内に再開していれば確定させない（下のelse分岐が既にcandidateを解除済み）
+                            try {
+                                console.log('[CALLBACK_DIAG_PLAYBACK_SETTLED] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
+                                    + ' via=ai_speaking_now_false'
+                                    + ' elapsedMs=' + Math.round(performance.now() - waitStartedAt)
+                                    + ' ' + callbackDiagCaptureAudioState());
+                            } catch (diagErr) {}
+                            proceedToEndCall('confirmed:ai_speaking_now_false');
+                        }, PLAYBACK_AWARE_SETTLE_CONFIRM_MS);
+                    }
+                } else if (silenceCandidateSince !== null) {
+                    if (settleConfirmTimerId !== null) {
+                        clearTimeout(settleConfirmTimerId);
+                        settleConfirmTimerId = null;
+                    }
                     try {
-                        console.log('[CALLBACK_DIAG_PLAYBACK_SETTLED] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
-                            + ' via=' + ev.type
-                            + ' elapsedMs=' + Math.round(performance.now() - waitStartedAt)
-                            + ' ' + callbackDiagCaptureAudioState());
+                        console.log('[CALLBACK_DIAG_PLAYBACK_RESUME_DETECTED] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
+                            + ' elapsedMs=' + Math.round(performance.now() - waitStartedAt));
                     } catch (diagErr) {}
-                    proceedToEndCall('confirmed:' + ev.type);
-                }, PLAYBACK_AWARE_SETTLE_CONFIRM_MS);
+                    silenceCandidateSince = null;
+                    // ここでの解除は確認タイマーのキャンセルのみ。ポーリング
+                    // 自体（および独立したPLAYBACK_AWARE_MAX_WAIT_MSの
+                    // fail-safe）はそのまま継続する（何度でも再候補化できる）。
+                }
             };
 
-            const onResumeEvent = () => {
-                if (settleConfirmTimerId === null) return; // 確認中でなければ無視（ログ過多防止）
-                clearTimeout(settleConfirmTimerId);
-                settleConfirmTimerId = null;
-                try {
-                    console.log('[CALLBACK_DIAG_PLAYBACK_RESUME_DETECTED] terminalResponseId=' + (callbackDiagTerminalResponseId || 'null')
-                        + ' elapsedMs=' + Math.round(performance.now() - waitStartedAt));
-                } catch (diagErr) {}
-                // 確認タイマーをキャンセルするのみ。監視自体（waiting/
-                // stalledの再監視、およびPLAYBACK_AWARE_MAX_WAIT_MSの
-                // fail-safe）はそのまま継続する（何度でも再候補化できる）。
-            };
+            const playbackSignalPollId = setInterval(evaluatePlaybackSignal, PLAYBACK_AWARE_POLL_INTERVAL_MS);
+            // 初回はポーリング間隔を待たず即時評価する（この関数が呼ばれた
+            // 時点で既にaiSpeakingNowがfalseであれば、直ちに確認ウィンドウを
+            // 開始するため）。
+            evaluatePlaybackSignal();
 
-            el.addEventListener('waiting', onCandidateSettleEvent);
-            el.addEventListener('stalled', onCandidateSettleEvent);
-            el.addEventListener('playing', onResumeEvent);
             callbackPlaybackAwareListenersCleanup = () => {
-                el.removeEventListener('waiting', onCandidateSettleEvent);
-                el.removeEventListener('stalled', onCandidateSettleEvent);
-                el.removeEventListener('playing', onResumeEvent);
+                clearInterval(playbackSignalPollId);
                 if (settleConfirmTimerId !== null) {
                     clearTimeout(settleConfirmTimerId);
                     settleConfirmTimerId = null;
                 }
+                silenceCandidateSince = null;
             };
 
             callbackPlaybackAwareWaitTimerId = setTimeout(() => {
@@ -3428,6 +3818,18 @@
                 try {
                     pushTimelineEvent('RESPONSE_CREATE_DIAG (seq=' + responseCreateDiagSeq + ', reason=' + reason
                         + ', category=' + categorizeResponseReason(reason) + ')');
+                } catch (diagErr) {}
+                // RESPONSE ORIGIN TRACE（今回追加・診断専用）: 送信できた
+                // ことが確定したこの要求を、response.createdでの相関用
+                // FIFOキューへ積む。既存のlastResponseCreateReason（直上の
+                // 行で設定済み・別経路）の挙動には一切影響しない。
+                try {
+                    responseOriginPendingQueue.push({
+                        reason: reason,
+                        phase: currentRealtimePhase,
+                        turnSeq: routingTraceUserTurnSeq,
+                        triggerSource: deriveResponseOriginTriggerSource(reason),
+                    });
                 } catch (diagErr) {}
                 return true;
             } catch (e) {
@@ -3944,11 +4346,48 @@
             source.connect(analyser);
             const data = new Uint8Array(analyser.frequencyBinCount);
             const THRESHOLD = 12; // 0-255スケールの平均音量しきい値（環境ノイズにより要調整）
+            // SMART INTERRUPTION / NOISE RESILIENCE HOTFIX（今回追加・root
+            // cause対策）: このrequestAnimationFrameベースの音量監視は、
+            // 「本当にAIの発話が終わった」の判定を、無音が
+            // AI_SPEAKING_LEVEL_SILENCE_HOLD_MS以上継続して初めて確定する
+            // （標準的なVAD hangover手法）。
+            //
+            // 根拠（実機症状の直接原因・推測ではない）: 電話番号の1桁ずつの
+            // 読み上げ等、単語・digit間に自然な短い無音区間を含む発話では、
+            // 毎フレーム（約16ms間隔）評価するこの経路が、その自然な無音
+            // 区間だけで「AIが発話を終えた」と誤判定し、releaseAiSpeaking
+            // Protection()を即座に発火させてしまっていた。これによりAIの
+            // 発話がまだ完全に終わっていない段階でマイクtrackが再度有効化
+            // され、その一瞬の再有効化ウィンドウ内に周囲雑音がspeech_started
+            // としてサーバーへ届くと、interrupt_response既定trueにより
+            // サーバー側が現在進行中のAI応答（電話番号復唱の途中）を実際に
+            // 打ち切ってしまう。これが「電話番号復唱中にノイズでAI発話が
+            // 中断された」実機症状の直接原因である（このファイル内の既存
+            // イベント経路をそのまま追跡した結果であり、固定delayでごまかす
+            // 対症療法ではなく、単語間の自然なポーズの典型的な長さを踏まえた
+            // しきい値設計）。
+            //
+            // 影響範囲: output_audio_buffer.stopped/cleared・response.done
+            // 経由の既存3つのrelease経路（サーバーが「本当にこの応答の音声
+            // 出力が終わった」と明示的に通知するイベント）は本HOTFIXの対象
+            // 外であり、通常はそちらが先に発火するため無変更。この
+            // AnalyserNode経路はあくまでそれらが遅延・欠落した場合の
+            // バックアップ（既存コメント参照）であり、hold時間を設けても
+            // その役割・最終安全網（AI_SPEAKING_PROTECTION_MAX_MS=20000）は
+            // 変わらない。
+            const AI_SPEAKING_LEVEL_SILENCE_HOLD_MS = 600;
+            let aiSpeakingLevelSilenceSince = null;
 
             function tick() {
                 analyser.getByteFrequencyData(data);
                 const avg = data.reduce((a, b) => a + b, 0) / data.length;
                 const nowSpeaking = avg > THRESHOLD;
+                if (nowSpeaking) {
+                    // 発話（とみなせる音量）を検知した時点で無音カウントを
+                    // リセットする（単語間の短い無音が続けて2回とカウント
+                    // されないようにする）。
+                    aiSpeakingLevelSilenceSince = null;
+                }
                 if (nowSpeaking && !aiSpeakingNow) {
                     aiSpeakingNow = true;
                     // FAST TURN HOTFIX 2（FIRST ANSWER MUST COUNT・今回追加）:
@@ -4020,23 +4459,29 @@
                         toolCallStartedAtForLatency = null;
                     }
                 } else if (!nowSpeaking && aiSpeakingNow) {
-                    aiSpeakingNow = false;
-                    // FAST TURN HOTFIX 2（FIRST ANSWER MUST COUNT・今回追加）:
-                    // 上のengage側コメント参照。AIの実際の音声が（サーバー側
-                    // イベントを待たず）ローカルで無音になったと分かった瞬間に
-                    // 保護解除する。output_audio_buffer.stopped/cleared/
-                    // response.doneが遅延・欠落しても、ここが独立した経路として
-                    // ミュート解除を保証する。1文中の短いポーズ等で瞬間的に
-                    // nowSpeaking=falseへ振れても、releaseAiSpeakingProtection
-                    // 自体は「track.enabledをtrueに戻すだけ」で即座に有害な
-                    // 副作用は起こさず、直後にAIが発話を再開すればengage側が
-                    // 次のtickで即座に再度保護をかけ直す（毎フレーム評価される
-                    // ため露出時間は最大で1フレーム分に収まる）。この設計上の
-                    // トレードオフは実機テストのAI_SPEAKING_START/ENDログで
-                    // 検証すること（STEP30）。
-                    releaseAiSpeakingProtection('ai_audio_level_silent');
-                    bigMic.classList.remove('ai-speaking');
-                    setStatus(stAiSpeakEl, '待機', null);
+                    // SMART INTERRUPTION / NOISE RESILIENCE HOTFIX（今回追加）:
+                    // 「1文中の短いポーズ等で瞬間的にnowSpeaking=falseへ
+                    // 振れても」という旧コメントの前提こそが実機症状の原因
+                    // だったため、ここは即座にreleaseせず、無音が
+                    // AI_SPEAKING_LEVEL_SILENCE_HOLD_MS以上継続して初めて
+                    // 「本当に発話が終わった」とみなす（上のtick()冒頭コメント
+                    // 参照）。
+                    if (aiSpeakingLevelSilenceSince === null) {
+                        aiSpeakingLevelSilenceSince = performance.now();
+                    }
+                    if (performance.now() - aiSpeakingLevelSilenceSince >= AI_SPEAKING_LEVEL_SILENCE_HOLD_MS) {
+                        aiSpeakingNow = false;
+                        // FAST TURN HOTFIX 2（FIRST ANSWER MUST COUNT・今回追加）:
+                        // 上のengage側コメント参照。AIの実際の音声が（サーバー側
+                        // イベントを待たず）ローカルで無音になったと分かった瞬間に
+                        // 保護解除する。output_audio_buffer.stopped/cleared/
+                        // response.doneが遅延・欠落しても、ここが独立した経路として
+                        // ミュート解除を保証する。
+                        releaseAiSpeakingProtection('ai_audio_level_silent');
+                        bigMic.classList.remove('ai-speaking');
+                        setStatus(stAiSpeakEl, '待機', null);
+                        aiSpeakingLevelSilenceSince = null;
+                    }
                 }
                 if (pc) requestAnimationFrame(tick);
             }
@@ -4784,6 +5229,19 @@
                 greetingSource = 'zero_wait';
                 updateAudioDiagnosticsPanel();
                 pushTimelineEvent('GREETING SOURCE=zero_wait (response.createは送信しません)');
+                // 会話品質改善フェーズ（2026年9月）追記: 以前はzeroWaitGreetingText
+                // （_resolve_greeting_text()の出力）が自己紹介のみで、お客様の
+                // お名前を伺う質問を含んでいなかった。そのため、ここで会話履歴へ
+                // 注入した内容だけでは「質問まで完結している」ことをモデルへ
+                // 伝えられず、下のfollow-up response.create（お名前を尋ねる別発話）
+                // が必須だった。今回_resolve_greeting_text()自体を改修し、第一声に
+                // 必ずお客様のお名前を伺う質問を含めるようにしたため（バックエンド
+                // 側の対応する変更点を参照）、この会話履歴注入が成功した場合は
+                // 「自己紹介+お名前質問」が単一の発話として既に完結している。
+                // greetingHistoryInjectedは、その注入が実際に成功したか
+                // （zeroWaitGreetingTextが存在し、dc.sendが例外を投げなかったか）
+                // を記録し、下流のfollow-up要否判定に使う。
+                let greetingHistoryInjected = false;
                 if (zeroWaitGreetingText) {
                     try {
                         // response.createを伴わないconversation.item.createは
@@ -4805,6 +5263,7 @@
                                 content: [{ type: 'output_text', text: zeroWaitGreetingText }],
                             },
                         }));
+                        greetingHistoryInjected = true;
                         logEvent('[ZeroWait] Realtime会話履歴へ第一声テキストを通知しました（response.createは送信しません＝二重発話防止）');
                     } catch (e) {
                         logEvent('[ZeroWait] 会話履歴通知に失敗（通話は継続します。二重発話は発生しません）: ' + e.message);
@@ -4813,7 +5272,7 @@
                     logEvent('[ZeroWait] 第一声テキスト未取得のため会話履歴通知は省略します（response.createは送信しません）');
                 }
                 zeroWaitAwaitingFirstPostGreetingLatency = true;
-                // FAST TURN HOTFIX 14（今回追加・CASE A修正・最重要）: これまでは
+                // FAST TURN HOTFIX 14（CASE A修正・最重要）: これまでは
                 // ここでreturnし、以降は何もトリガーしないままだった。Zero-Wait
                 // Greetingの文言は自己紹介のみでお名前を伺う質問を含まないため、
                 // 「名乗りだけで終わり、お客様は何を答えればよいか分からず沈黙する」
@@ -4834,9 +5293,30 @@
                     pushTimelineEvent('ZERO_WAIT_NAME_FOLLOWUP_SKIPPED (reason=user_already_speaking)');
                     return;
                 }
-                // Realtime自身に、既に会話履歴へ記録済みの自己紹介を繰り返さず
-                // お名前を伺う質問だけを続けて話すよう促す（NAME phase
-                // instructions側の対応する追記は_PHASE1_NAME_ROLE_TEMPLATE参照）。
+                if (greetingHistoryInjected) {
+                    // 会話品質改善フェーズ（2026年9月）追記（最重要・二重自己紹介の
+                    // 根本対策）: Zero-Wait Greeting音声自体に既にお名前を伺う質問が
+                    // 含まれており（_resolve_greeting_text()参照）、かつその全文が
+                    // 会話履歴への注入に成功しているため、追加のfollow-up
+                    // response.create（＝モデルに再度発話させる別ターン）は一切
+                    // 不要かつ有害（モデルが注入済み履歴を確実に「自分が既に話した
+                    // 内容」と認識するとは限らず、これが実機で観測された二重自己
+                    // 紹介の直接原因だった）。ここでは新しい発話を一切生成させず、
+                    // 直接「お客様の回答を待っている」状態に入る。これはHOTFIX14
+                    // 導入以前の直接silence timer起動パターンと同じ形だが、当時と
+                    // 異なり今回はGreeting自体が質問まで完結しているため、
+                    // 「質問していないのにタイマーだけ起動する」という当時の問題は
+                    // 再発しない。
+                    pushTimelineEvent('INITIAL_GREETING_COMPLETE (reason=zero_wait_greeting_includes_name_question)');
+                    console.log('[INITIAL_GREETING_COMPLETE]');
+                    startSilenceTimerIfNeeded(myGeneration, 'zero_wait_greeting_includes_name_question');
+                    return;
+                }
+                // フォールバック（greetingHistoryInjected=false: zeroWaitGreetingText
+                // が未取得だった、またはdc.sendが例外を投げた場合）: モデル側には
+                // 「第一声で何を話したか」が一切伝わっていないため、Realtime自身に
+                // 改めて自己紹介+お名前を伺う質問を1発話で生成させる（NAME phase
+                // instructions側の対応する記述は_PHASE1_NAME_ROLE_TEMPLATE参照）。
                 // 理由文字列は既存のcategorizeResponseReason()の
                 // `indexOf('initial_greeting') === 0` 判定にそのまま合致するため、
                 // 新しいコード分岐を追加せずcategory='greeting'に分類される
@@ -5643,6 +6123,32 @@
             return { success: true };
         }
 
+        // 会話品質改善フェーズ（2026年9月）追記（根本対策・最重要）: NAME phase
+        // にのみ宣言される、副作用のない「内部signal専用」Tool
+        // （callClassifyIntentToolと全く同じ設計方針＝バックエンドへのHTTP
+        // 呼び出しは行わない）。「お客様の発話に実際に使えるお名前が含まれて
+        // いる」という判断自体は既存のRealtimeモデル自身の自然言語理解結果で
+        // あり、この関数はその結果を読み取れる形にするためだけの合図。
+        // 新しいNLU・別モデル・regexによる名前らしさ判定は一切追加しない。
+        //
+        // 呼び出されたら、armPhaseTransitionAfterResponse('routing')をそのまま
+        // 呼ぶだけでよい（NAME→ROUTING遷移の既存の仕組みをそのまま再利用）。
+        // 引数は無し（名前の値自体はこの関数では扱わない。PII最小化のため
+        // 意図的に持たせていない）。
+        async function callConfirmCustomerNameTool() {
+            armPhaseTransitionAfterResponse('routing');
+            try {
+                pushTimelineEvent('CUSTOMER_NAME_CONFIRMED');
+                console.log('[CUSTOMER_NAME_CONFIRMED]');
+            } catch (diagErr) {
+                pushTimelineEvent('CUSTOMER_NAME_CONFIRMED_MARKER_ERROR (' + ((diagErr && diagErr.message) || '不明') + ')');
+            }
+            // このToolには副作用が無く、AIに「内部処理を受け付けた」ことだけを
+            // 伝えればよい（他Toolのavailable/status等の形は模倣しない。
+            // callClassifyIntentToolと同じ形）。
+            return { success: true };
+        }
+
         async function handleFunctionCallItem(item) {
             const callId = item.call_id;
             if (!callId) return;
@@ -5753,6 +6259,21 @@
                 // 安全な確認済みresultをそのまま返す。terminal armed後に万一
                 // モデルがrequest_callbackを再度呼び出しても、折り返しの重複
                 // 作成（production safety）を防ぐ。
+                // CALLBACK REAL-DEVICE VERIFICATION AUDIT（今回追加・一時診断・
+                // PIIなし）: request_callbackの実際のゲート判定に使われる3つの
+                // boolean値と、その結果ブロックされるかどうかを、いずれの分岐へ
+                // 進むかが決まるより前に、そのまま記録する。customer_phone等の
+                // 引数値は一切含まない。監査完了後に削除予定（恒久的な新機構
+                // ではない）。
+                try {
+                    const gateWouldBlock = (phoneConfirmationIncomplete || !phoneReadbackTurnCompletedThisCall || phoneReadbackAwaitingUserReply);
+                    console.log('[CALLBACK_REQUEST_GATE] phoneConfirmationIncomplete=' + phoneConfirmationIncomplete
+                        + ' phoneReadbackTurnCompletedThisCall=' + phoneReadbackTurnCompletedThisCall
+                        + ' phoneReadbackAwaitingUserReply=' + phoneReadbackAwaitingUserReply
+                        + ' callbackAlreadyConfirmedThisCall=' + callbackAlreadyConfirmedThisCall
+                        + ' allowed=' + (!callbackAlreadyConfirmedThisCall && !gateWouldBlock)
+                        + ' reason=' + (callbackAlreadyConfirmedThisCall ? 'already_confirmed' : (gateWouldBlock ? 'phone_not_confirmed' : 'none')));
+                } catch (diagErr) {}
                 if (callbackAlreadyConfirmedThisCall) {
                     logEvent('request_callback: 既に確定済みのため再実行をスキップします');
                     pushTimelineEvent('CALLBACK_REQUEST_DEDUPED (reason=already_confirmed)');
@@ -5776,8 +6297,40 @@
                     callbackTerminalArmed = true;
                     pushTimelineEvent('CALLBACK_FINAL_DUPLICATE_BLOCKED (reason=request_callback_reinvoked_after_success)');
                     console.log('[CALLBACK_FINAL_DUPLICATE_BLOCKED]');
+                } else if (phoneConfirmationIncomplete || !phoneReadbackTurnCompletedThisCall || phoneReadbackAwaitingUserReply) {
+                    // CALLBACK FINAL QUALITY PASS（今回追加）: 上の
+                    // phoneConfirmationIncomplete（直近のPHONE発話が
+                    // 中断された）だけでなく、「そもそも完了したPHONE型
+                    // 発話が一度も無い」「発話後、お客様の返事をまだ一度も
+                    // 受け取っていない」の2条件も同じ安全側の失敗形で
+                    // ブロックする。
+                    // SMART INTERRUPTION / NOISE RESILIENCE HOTFIX（今回追加・
+                    // 最重要）: 直前のPHONE型AI発話（電話番号の復唱確認）が
+                    // 言い切れていない状態のまま、request_callbackが呼び
+                    // 出されようとしている。絶対条件（お客様指示STEP8）:
+                    // 「AIが電話番号を最後まで復唱する前にrequest_callback
+                    // へ進んではいけない」を、instructions頼みではなく
+                    // ここで構造的に強制する。バックエンドへは一切送信せず
+                    // （実際の折り返し登録は行わない）、安全な失敗形の
+                    // function_call_outputを返し、モデルへ電話番号の
+                    // 再確認を促す（reason_code=phone_not_confirmedの
+                    // 意味・対応はrequest_callback Tool descriptionに
+                    // 追記済み。システムエラー扱いの謝罪文言にはならない）。
+                    // PIIなし（customer_phone等の引数値はログに含めない）。
+                    logEvent('request_callback: 電話番号の復唱確認が未完了のためバックエンドへは送信せず拒否します');
+                    pushTimelineEvent('CALLBACK_PHONE_CONFIRMATION_GATE_BLOCKED');
+                    console.log('[CALLBACK_PHONE_CONFIRMATION_GATE_BLOCKED]');
+                    output = { success: false, reason_code: 'phone_not_confirmed' };
                 } else {
-                    logEvent('Tool呼び出し受信: request_callback ' + JSON.stringify(args));
+                    // PHONE CAPTURE DIAGNOSTIC PHASE 1（今回修正・既存PII leak是正）:
+                    // 従来はJSON.stringify(args)をそのままログへ出しており、
+                    // customer_phone/customer_name等のPIIが画面上のイベントログへ
+                    // 平文で残っていた。request_callback自体の挙動（引数の中身・
+                    // Tool呼び出し自体）は一切変更せず、ログに出す内容だけを
+                    // 真偽値（値の有無）のみへ置き換える。
+                    logEvent('Tool呼び出し受信: request_callback hasCustomerName=' + !!(args && args.customer_name)
+                        + ' hasCustomerPhone=' + !!(args && args.customer_phone)
+                        + ' hasInquiryText=' + !!(args && args.inquiry_text));
                     pushTimelineEvent('CALLBACK_ACTION_STARTED');
                     console.log('[CALLBACK_ACTION_STARTED]');
                     output = await callRequestCallbackTool(args || {}, callId);
@@ -5812,11 +6365,23 @@
                 // 引数のログもJSON.stringify(args)のみ（PIIを含まないenum値のみ）。
                 logEvent('Tool呼び出し受信: classify_intent ' + JSON.stringify(args));
                 output = await callClassifyIntentTool(args || {});
+                // ROUTING_TRACE（今回追加・観測専用）: この応答サイクル内で
+                // classify_intentが実際に呼ばれたことを記録する（enum等の
+                // 中身ではなく、呼ばれた事実のみ）。
+                classifyIntentCalledInCurrentResponse = true;
+            } else if (item.name === 'confirm_customer_name') {
+                // 会話品質改善フェーズ（2026年9月）追記: NAME phaseにのみ宣言
+                // される内部signal専用Tool（詳細はcallConfirmCustomerNameTool
+                // の直前のコメント参照）。引数を持たないためログにはTool名のみ
+                // 記録する（PIIなし）。
+                logEvent('Tool呼び出し受信: confirm_customer_name');
+                output = await callConfirmCustomerNameTool();
             } else {
                 // 現在宣言しているToolはcheck_availability / suggest_available_times /
                 // create_reservation / get_shop_info / find_customer /
                 // confirm_customer_identity / get_customer_context /
-                // set_conversation_language / request_callback / classify_intentの10個。
+                // set_conversation_language / request_callback / classify_intent /
+                // confirm_customer_nameの11個。
                 // 未知の関数名が来た場合も、応答せずに放置するとAIが待ち続けて
                 // しまうため、安全側の失敗として返す。
                 logEvent('未知のTool呼び出し: ' + item.name);
@@ -5915,9 +6480,33 @@
             // 確定後、必要な場合のみ追加のresponse.createを送る）がそのまま
             // 引き継ぐため、ここで送らなくても無応答にはならない。
             let toolContinuationResponseCreateSent;
-            if (item.name === 'classify_intent') {
+            if (item.name === 'classify_intent' || item.name === 'confirm_customer_name') {
+                // 会話品質改善フェーズ（2026年9月）追記: confirm_customer_nameは
+                // classify_intentと全く同じ理由（この時点でarmPhaseTransition
+                // AfterResponse()によりPhase遷移(routing)を「予約」しただけで、
+                // 実際のsession.update送信はまだ行われていない）でこの直後の
+                // 自動継続response.createをスキップする。理由の詳細は
+                // classify_intent側の直前のコメントを参照（同一のリスク・
+                // 同一の対策のため重複説明しない）。
                 toolContinuationResponseCreateSent = false;
-                pushTimelineEvent('TOOL_CONTINUATION_SKIPPED_INTENTIONAL (tool=classify_intent)');
+                pushTimelineEvent('TOOL_CONTINUATION_SKIPPED_INTENTIONAL (tool=' + item.name + ')');
+            } else if (item.name === 'request_callback' && callbackTerminalArmed && callbackFinalResponseAlreadyRequested) {
+                // CALLBACK FINAL EXACTLY-ONCE HOTFIX（今回追加・Task M・
+                // root cause fix・監査により判明した構造的原因への対処）:
+                // このrequest_callback呼び出しは（成功扱いで）terminal状態を
+                // 再armしたが、CALLBACK terminal応答用のresponse.createは
+                // この通話で既に一度送信済み（callbackFinalResponseAlready
+                // Requested===true）。従来はここで無条件にもう1回
+                // response.create送信（sendResponseCreate　関数）を呼んでおり、これが「最終案内フレーズが
+                // 複数回生成・発話される」実機症状のroot causeだった。ここでは
+                // 新しい応答は一切生成しない（生成source自体を止める。
+                // function_call_output自体は直前で既に送信済みのため、モデル
+                // 側のfunction_call itemは正常に解決される。callbackTerminal
+                // Armed/callbackAlreadyConfirmedThisCall等、他の既存メカニズムは
+                // 一切変更しない）。
+                toolContinuationResponseCreateSent = false;
+                pushTimelineEvent('CALLBACK_FINAL_RESPONSE_DEDUPED (reason=final_response_already_requested)');
+                console.log('[CALLBACK_FINAL_RESPONSE_DEDUPED]');
             } else {
                 // FAST TURN HOTFIX 16（今回追加・§19診断）: request_callbackの
                 // Tool結果継続だけは、この直後の応答がCALLBACK_TERMINAL優先
@@ -5933,6 +6522,16 @@
                 if (item.name === 'request_callback' && toolContinuationResponseCreateSent) {
                     pushTimelineEvent('CALLBACK_FINAL_CREATED');
                     console.log('[CALLBACK_FINAL_CREATED]');
+                    if (callbackTerminalArmed) {
+                        // CALLBACK FINAL EXACTLY-ONCE HOTFIX（今回追加・Task M）:
+                        // このresponse.createが、CALLBACK terminal（成功／既に
+                        // 確定済みのいずれか）を契機とした最終案内候補の送信で
+                        // あったことが確定した時点で初めて1回だけ立てる。以降、
+                        // 同じ通話中に再びrequest_callbackが（成功扱いで）呼ばれ
+                        // ても、上のCALLBACK_FINAL_RESPONSE_DEDUPED分岐が新しい
+                        // 応答生成そのものを止める。
+                        callbackFinalResponseAlreadyRequested = true;
+                    }
                 }
             }
             // sendResponseCreate()の戻り値（dc.readyState === 'open'だった場合のみ
@@ -6083,6 +6682,9 @@
                 // 発話の再生完了を検知する主経路（上と全く同じ理由・同じ
                 // イベントを再利用する）。
                 maybeHangUpAfterCallbackTerminal(callGeneration, 'ai_audio_stopped');
+                // NOISE_DIAG（今回追加・STEP6）: 雑音環境案内アナウンスの再生完了を
+                // 検知する主経路（上の2つと全く同じ理由・同じイベントを再利用する）。
+                maybeHangUpAfterNoisyEnvironmentGoodbye(callGeneration, 'ai_audio_stopped');
             } else if (type === 'output_audio_buffer.cleared') {
                 lastAiAudioEventAt = performance.now();
                 // 無言化調査用: サーバー側がAIの音声出力バッファを破棄した
@@ -6211,6 +6813,38 @@
                 // いない可能性があるため、両者を区別して記録する（PIIなし・
                 // イベント発生の事実のみ）。
                 pushTimelineEvent('USER_AUDIO_BUFFER_COMMITTED');
+                // PHASE ORDER HOTFIX（今回追加・root cause fix）: このイベントは
+                // 実際のお客様の発話がcommitされた場合にのみ発火する（AI生成の
+                // 強制follow-up応答からは絶対に発火しない）。ROUTING在中にこれを
+                // 観測した時点で初めて「ROUTINGでお客様の実際の新しい発話を
+                // 受け取った」とみなす。PIIなし（発生の事実とcurrentRealtimePhase
+                // の値のみ）。
+                if (currentRealtimePhase === 'routing') {
+                    routingHasReceivedUserTurn = true;
+                    try {
+                        const routingUserTurnLine = 'PHASE_ORDER_ROUTING_USER_TURN_RECEIVED (phase=routing)';
+                        pushTimelineEvent(routingUserTurnLine);
+                        console.log('[' + routingUserTurnLine + ']');
+                    } catch (diagErr) {}
+                }
+                // CALLBACK FINAL QUALITY PASS（今回追加）: 完了済みPHONE型
+                // 発話（電話番号の復唱確認）の後、お客様の実際の新しい発話を
+                // 受け取ったことを記録する。routingHasReceivedUserTurnと
+                // 全く同じイベント・同じ「AI生成の応答からは発火しない」
+                // 性質を再利用するのみで、新しい判定ロジックは追加しない。
+                if (phoneReadbackTurnCompletedThisCall) {
+                    // CALLBACK REAL-DEVICE VERIFICATION AUDIT（今回追加・
+                    // 一時診断・PIIなし）: このイベントで実際にawaitingUserReplyが
+                    // trueからfalseへ遷移したかどうかを、遷移前の値と併せて記録する。
+                    // 発話内容（「はい」か「違います」か）は判定していない旨を、
+                    // 構造的な正直な限界として監査報告に明記する（このログ自体は
+                    // 意味判定を追加するものではなく、遷移の事実のみを記録する）。
+                    try {
+                        console.log('[CALLBACK_PHONE_USER_REPLY] userTurnReceived=true'
+                            + ' awaitingUserReplyBeforeThisEvent=' + phoneReadbackAwaitingUserReply);
+                    } catch (diagErr) {}
+                    phoneReadbackAwaitingUserReply = false;
+                }
                 // FAST TURN HOTFIX 3（今回追加・観測専用）: CRITICAL QUESTION 2
                 // 監査結論により、通常ターンにはclient発の「response要求」
                 // イベントが存在しない（semantic_vad有効時はcommit後、サーバーが
@@ -6303,6 +6937,20 @@
                 // speech_stoppedになっているか」を判断できるようにするだけで、
                 // ここでノイズかどうかを自動判定・断定はしない）。
                 lastSpeechStartedAt = performance.now();
+                // NOISE_DIAG（今回追加・雑音誤検知対策 TASK D）: 新しい物理ターンが
+                // 開始したため、そのターン用のnameCaptureAttempts二重カウント
+                // 防止ガードをリセットする（このターンのcommitted/conversation.
+                // item.created/speech_stoppedのどれか最初の1回だけがカウント
+                // される）。
+                nameCaptureAttemptCountedThisTurn = false;
+                // ROUTING_TRACE（今回追加・観測専用）: 新しい物理的なユーザー
+                // ターンが始まったので通し番号を進め、このターン内のresponse.done
+                // カウンタをリセットする（診断専用。失敗しても既存の音声処理
+                // フローには一切影響させないためtry/catchで囲む）。
+                try {
+                    routingTraceUserTurnSeq += 1;
+                    routingTraceResponseSeqInTurn = 0;
+                } catch (diagErr) {}
                 speechStartedDuringAiOutput = aiAudioOutputActive;
                 if (aiAudioOutputActive) lastBargeInSpeechStartedAt = lastSpeechStartedAt;
                 logEvent('speech_started時点のマイク入力レベル: ' + (lastMicLevelPct === null ? '(未取得)' : lastMicLevelPct + '%')
@@ -6502,6 +7150,69 @@
                 subStatusText.textContent = 'AIが応答を準備しています…';
                 setStatus(stUserSpeakEl, '待機', null);
                 updateAudioDiagnosticsPanel();
+            } else if (type === 'conversation.item.input_audio_transcription.completed' || type === 'conversation.item.input_audio_transcription.failed') {
+                // PHONE CAPTURE DIAGNOSTIC PHASE 1（今回追加・観測専用）: バック
+                // エンドで新たに有効化したinput_audio_transcription（診断専用の
+                // 並行経路。app/services/realtime_voice_ai.py参照）のcompleted/
+                // failedイベント。ここで得られるtranscriptは、customer_phone・
+                // request_callback引数・phase transition判定・PHONE confirmation
+                // gate（phoneConfirmationIncomplete等）・VAD/Forced Commit判定の、
+                // いずれの既存ロジックにも一切使用しない。本番の会話フロー
+                // （既存のresponse.created/response.done/function_call処理等）とは
+                // 完全に独立した、並行するだけの観測経路である。
+                //
+                // PII厳禁（最重要）: transcript本文・msgイベント全体は絶対に
+                // console.log/logEvent/pushTimelineEventへ出力しない。
+                // JSON.stringify(msg)も行わない。ここで扱ってよいのは真偽値・
+                // 文字数・件数などの統計値のみ。
+                try {
+                    const isFailed = (type === 'conversation.item.input_audio_transcription.failed');
+                    const transcript = (!isFailed && msg && typeof msg.transcript === 'string') ? msg.transcript : '';
+                    const transcriptPresent = transcript.length > 0;
+                    const transcriptCharLength = transcript.length;
+                    // 数字らしいトークンの件数のみを数える観測用の簡易カウント
+                    // （実際の電話番号への変換・パースは今回のPhase 1では行わない。
+                    // 一般的な単語中の仮名と衝突しうる粗い目安であり、正確な
+                    // digit抽出を保証するものではない）。
+                    let digitLikeCount = 0;
+                    if (transcript) {
+                        const asciiDigitMatches = transcript.match(/[0-9]/g);
+                        if (asciiDigitMatches) digitLikeCount += asciiDigitMatches.length;
+                        const jpDigitWordMatches = transcript.match(/ゼロ|レイ|マル|イチ|ニ|サン|ヨン|シ|ゴ|ロク|ナナ|シチ|ハチ|キュウ|ク/g);
+                        if (jpDigitWordMatches) digitLikeCount += jpDigitWordMatches.length;
+                    }
+                    const phoneLike = digitLikeCount >= 10;
+
+                    const speechStartedElapsedMs = (typeof lastSpeechStartedAt === 'number') ? Math.round(performance.now() - lastSpeechStartedAt) : null;
+                    const speechStoppedElapsedMs = (typeof lastSpeechStoppedAt === 'number') ? Math.round(performance.now() - lastSpeechStoppedAt) : null;
+                    const committedElapsedMs = (typeof lastCommittedAtForLatency === 'number') ? Math.round(performance.now() - lastCommittedAtForLatency) : null;
+
+                    const traceLine = 'PHONE_TRANSCRIPTION_TRACE turnSeq=' + routingTraceUserTurnSeq
+                        + ' phase=' + currentRealtimePhase
+                        + ' event=' + (isFailed ? 'failed' : 'completed')
+                        + ' itemIdPresent=' + !!(msg && msg.item_id)
+                        + ' transcriptPresent=' + transcriptPresent
+                        + ' transcriptCharLength=' + transcriptCharLength
+                        + ' digitLikeCount=' + digitLikeCount
+                        + ' phoneLike=' + phoneLike
+                        + ' sinceSpeechStartedMs=' + (speechStartedElapsedMs === null ? 'null' : speechStartedElapsedMs)
+                        + ' sinceSpeechStoppedMs=' + (speechStoppedElapsedMs === null ? 'null' : speechStoppedElapsedMs)
+                        + ' sinceCommittedMs=' + (committedElapsedMs === null ? 'null' : committedElapsedMs)
+                        + ' source=input_audio_transcription';
+                    console.log('[' + traceLine + ']');
+                    pushTimelineEvent(traceLine);
+                } catch (diagErr) {
+                    // 失敗しても既存の会話フローには一切影響させない
+                    // （診断専用のtry/catchであり、握りつぶしてよい）。
+                    try { pushTimelineEvent('PHONE_TRANSCRIPTION_TRACE_MARKER_ERROR'); } catch (e2) {}
+                }
+                // STEP9（実装STOP・Phase 2以降の対象）: ここでtranscriptと
+                // customer_phone/request_callback引数との突合・比較・ブロックは
+                // 絶対に行わない。transcription失敗（failed）時もendCall/
+                // reconnect/response.cancel/phase変更/error banner表示の
+                // いずれも一切行わない（上のtry/catch内だけで完結し、これ以降に
+                // 追加の副作用を持つコードは存在しない＝非致命的であることを
+                // コード構造自体で保証する）。
             } else if (type === 'response.created') {
                 // [CALLBACK_DIAG] 観測専用（挙動変更なし）: このresponse.created
                 // がcallback terminal tail grace中に発生した「想定外の追加
@@ -6586,6 +7297,38 @@
                         + ', silenceStateAtArrival=' + silenceState + ')');
                     lastResponseCreateReason = null;
                 } catch (diagErr) {}
+                // RESPONSE ORIGIN TRACE（今回追加・診断専用・PIIなし）: 上の
+                // 既存相関（単一スカラー・カテゴリのみ）とは独立に、FIFO
+                // キューの先頭を1件だけ取り出し、この応答のresponseIdへ
+                // responseId単位で対応付ける。キューが空（＝直前に明示的な
+                // 応答生成要求が無い）場合は、OpenAI側のturn_detectionに
+                // よる自動応答である可能性が高いため、推測でreasonを
+                // 割り当てずserver_auto_or_unknownとして明示する。
+                try {
+                    const originRespId = (msg.response && msg.response.id)
+                        ? String(msg.response.id).slice(-8) : 'null';
+                    const originEntry = (responseOriginPendingQueue.length > 0)
+                        ? responseOriginPendingQueue.shift() : null;
+                    const originReason = originEntry ? originEntry.reason : 'server_auto_or_unknown';
+                    const originTrigger = originEntry ? originEntry.triggerSource : 'server_auto_or_unknown';
+                    const originPhase = originEntry ? originEntry.phase : currentRealtimePhase;
+                    const originTurnSeq = originEntry ? originEntry.turnSeq : routingTraceUserTurnSeq;
+                    if (originRespId !== 'null') {
+                        responseOriginById[originRespId] = {
+                            reason: originReason,
+                            trigger: originTrigger,
+                            phase: originPhase,
+                            turnSeq: originTurnSeq,
+                        };
+                    }
+                    const originCreatedLine = 'RESPONSE_ORIGIN_CREATED (responseId=' + originRespId
+                        + ', turnSeq=' + originTurnSeq
+                        + ', phase=' + originPhase
+                        + ', reason=' + originReason
+                        + ', trigger=' + originTrigger + ')';
+                    pushTimelineEvent(originCreatedLine);
+                    console.log('[' + originCreatedLine + ']');
+                } catch (diagErr) {}
                 // NAME Forced Commit Observation PoC（PHASE9/12）: 手動commit後に
                 // OpenAI側が自発的にresponse.createdを送ってきた場合、観測する
                 // だけで、こちらから追加のresponse.createは絶対に送らない。
@@ -6620,6 +7363,9 @@
                 // Silence Timeout: この回の応答にfunction_callが含まれるかどうかを
                 // 新しい応答サイクルの開始時点でリセットする（response.doneで判定に使う）。
                 responseHasFunctionCall = false;
+                // ROUTING_TRACE（今回追加・観測専用）: classify_intent呼び出し
+                // フラグも同じリセット規律で新しい応答サイクルへ持ち越さない。
+                classifyIntentCalledInCurrentResponse = false;
                 // FAST TURN EMERGENCY HOTFIX 12（今回追加）: 前の応答の
                 // 「AI_WORKING（処理宣言のみ）」判定を、新しい応答サイクルへ
                 // 持ち越さない（responseHasFunctionCallと同じリセット規律）。
@@ -6648,6 +7394,56 @@
                         + ' callbackTerminalArmedAtEntry=' + callbackTerminalArmed
                         + ' pendingCallbackTerminalHangup=' + pendingCallbackTerminalHangup
                         + ' tailGraceActive=' + diagTailGraceActive2);
+                } catch (diagErr) {}
+                // ROUTING_TRACE（TASK B HOTFIX 3・今回追加・観測専用・PIIなし）:
+                // 「ご用件を約3回聞く」症状の実機イベント追跡用。この応答が
+                // 直近のユーザーターン内で何個目のresponse.doneか、その時点の
+                // phase・function_call有無・classify_intent呼び出し有無・この
+                // 応答を要求した際のresponse.create送信理由（reason）を記録する。
+                // 用件本文・氏名・電話番号・raw transcriptはいずれも含まない。
+                try {
+                    routingTraceResponseSeqInTurn += 1;
+                    const routingTraceLine = 'ROUTING_TRACE_RESPONSE_DONE (turnSeq=' + routingTraceUserTurnSeq
+                        + ', responseSeqInTurn=' + routingTraceResponseSeqInTurn
+                        + ', phase=' + currentRealtimePhase
+                        + ', hasFunctionCall=' + responseHasFunctionCall
+                        + ', classifyIntentCalled=' + classifyIntentCalledInCurrentResponse
+                        + ', responseCreateReason=' + lastResponseCreateReason + ')';
+                    pushTimelineEvent(routingTraceLine);
+                    console.log('[' + routingTraceLine + ']');
+                } catch (diagErr) {}
+                // RESPONSE ORIGIN TRACE（今回追加・診断専用・PIIなし）: この
+                // 応答のresponseIdでresponseOriginByIdを引き、response.created
+                // 時点で記録しておいたorigin情報（送信時点のreason/phase/
+                // turnSeq/triggerSource）をそのまま記録する。上のphase=
+                // （currentRealtimePhase、＝このresponse.done到達時点の値）
+                // と、ここのphase（＝送信時点の値）を突き合わせることで、
+                // 「送信時点ではNAME phaseだったが、完了時点では既にROUTING
+                // phaseへ切り替わっていた」といったタイミングのズレを
+                // responseId単位で検証できるようにする。見つからない場合
+                // （対応するRESPONSE_ORIGIN_CREATEDが無い＝相関漏れ）は
+                // originReason=server_auto_or_unknownとして明示し、推測しない。
+                // 読み取り後はメモリを無限に増やさないためエントリを削除する。
+                try {
+                    const originRespIdForDone = (msg.response && msg.response.id)
+                        ? String(msg.response.id).slice(-8) : 'null';
+                    const originForDone = responseOriginById[originRespIdForDone];
+                    const originReasonForDone = originForDone ? originForDone.reason : 'server_auto_or_unknown';
+                    const originTriggerForDone = originForDone ? originForDone.trigger : 'server_auto_or_unknown';
+                    const originPhaseForDone = originForDone ? originForDone.phase : 'unknown';
+                    const originTurnSeqForDone = originForDone ? originForDone.turnSeq : 'unknown';
+                    const originDoneLine = 'RESPONSE_ORIGIN_DONE (responseId=' + originRespIdForDone
+                        + ', turnSeq=' + originTurnSeqForDone
+                        + ', responseSeqInTurn=' + routingTraceResponseSeqInTurn
+                        + ', sendTimePhase=' + originPhaseForDone
+                        + ', doneTimePhase=' + currentRealtimePhase
+                        + ', originReason=' + originReasonForDone
+                        + ', triggerSource=' + originTriggerForDone + ')';
+                    pushTimelineEvent(originDoneLine);
+                    console.log('[' + originDoneLine + ']');
+                    if (originRespIdForDone !== 'null') {
+                        delete responseOriginById[originRespIdForDone];
+                    }
                 } catch (diagErr) {}
                 lastAiAudioEventAt = performance.now();
                 // FAST TURN 3.6A（UI_STATE修正・UXのみ、latency/挙動は無変更）:
@@ -6925,12 +7721,78 @@
                 // - target='legacy_full': ユーザー承認済み設計により無条件で
                 //   forceFollowUp=true（既存フル機能へ即座にフォールバックし、
                 //   本番の会話継続を一切止めない）。
+                //
+                // PHASE ORDER HOTFIX（今回追加・root cause fix・最重要）: legacy_full
+                // への安全網は、ここで初めて条件付きで予約する（ROUTING突入時点の
+                // 即時予約はEdit2で廃止済み）。予約するのは、ROUTINGでお客様の
+                // 実際の新しい発話を既に受け取っており（routingHasReceivedUserTurn
+                // ===true）、かつ、その発話に対するこの応答がfunction_call（＝
+                // classify_intent呼び出し）を一切伴わずに終わった（＝本当に
+                // 分類できなかった）場合だけ。pendingPhaseTransitionTargetが
+                // 既に何か（classify_intentによる'reservation'/'callback'等）を
+                // 指している場合はここで上書きしない（安全側）。ROUTING突入直後の
+                // 強制follow-up応答自身（routingHasReceivedUserTurnがまだfalseの
+                // 段階）では、このブロックは一切発火しない＝お客様の回答を待たずに
+                // legacy_fullへ脱出することはもう無い。
+                if (currentRealtimePhase === 'routing'
+                    && routingHasReceivedUserTurn
+                    && !responseHasFunctionCall
+                    && pendingPhaseTransitionTarget === null
+                    && !phaseTransitionInProgress) {
+                    pendingPhaseTransitionTarget = 'legacy_full';
+                    try {
+                        const legacyFallbackArmLine = 'PHASE_ORDER_LEGACY_FULL_FALLBACK_ARMED '
+                            + '(reason=routing_answer_unclassified)';
+                        pushTimelineEvent(legacyFallbackArmLine);
+                        console.log('[' + legacyFallbackArmLine + ']');
+                    } catch (diagErr) {}
+                }
                 if (pendingPhaseTransitionTarget !== null && !phaseTransitionInProgress) {
                     const targetPhaseForTransition = pendingPhaseTransitionTarget;
                     pendingPhaseTransitionTarget = null;
-                    const forceFollowUpForTransition = (targetPhaseForTransition === 'routing')
-                        ? (expectedAnswerType !== 'VISIT_REASON')
-                        : true;
+                    // DUPLICATE RESPONSE HOTFIX（今回・root cause対策）: 実機ログ
+                    // （turnSeq/responseSeqInTurn単位で確認済み）により、
+                    // NAME確認/classify_intent呼び出しを含むこの応答
+                    // （server auto response）自身が、既に次のフェーズで
+                    // 尋ねるべき内容までを同じ発話で言い切っていた場合でも、
+                    // この直後に無条件でforce follow-upのresponse.createを
+                    // 送ってしまい、不要な2本目の応答が生成され得ることが
+                    // 分かった。
+                    // 旧実装はtargetPhase==='routing'の場合のみ「既に
+                    // VISIT_REASONを尋ねていればfollow-up不要」と判定し、
+                    // reservation/callbackへの遷移では無条件にtrue
+                    // （常にfollow-upを送る）だった。今回、同じ考え方を
+                    // reservation/callbackにも対称的に拡張する（新しい
+                    // 分類ロジックは追加せず、既存のexpectedAnswerType/
+                    // lastResponseTranscriptWasProcessNarrationOnly/
+                    // lastResponseTranscriptWasIncompleteAiTurnという3つの
+                    // 既存フラグをそのまま流用するのみ）。各targetPhaseで
+                    // 「これが言えていれば次の質問まで済んでいる」と判断する
+                    // 具体的な発話タイプ: routing→VISIT_REASON（来店目的の
+                    // 質問。既存の判定を維持）、reservation→SHORT_ANSWER
+                    // （日時/人数等、Fast Reservation Flowが次に尋ねる質問
+                    // タイプ）、callback→PHONE（折り返し先電話番号。
+                    // _PHASE2B_CALLBACK_ROLE_TEMPLATEが次に尋ねる質問
+                    // タイプ）。narration-only（「確認します」等の処理宣言
+                    // のみ）またはincomplete（質問を言い切っていない）の
+                    // 場合は、たとえtypeが一致していても「言い切れて
+                    // いない」とみなし、これまでどおりfollow-upを送る
+                    // （安全側）。legacy_fullは本当の分類不能フォール
+                    // バックであり、ここでの最適化対象外として既存どおり
+                    // 常にtrue（無条件でforce）のまま維持する（ユーザー
+                    // 指示: 「forceFollowUpForTransition = falseへ全面
+                    // 変更してはいけない」「legacy_full fallback保持」に
+                    // 従う）。
+                    const alreadyCompletedInlineForTransition = !lastResponseTranscriptWasProcessNarrationOnly
+                        && !lastResponseTranscriptWasIncompleteAiTurn
+                        && (
+                            (targetPhaseForTransition === 'routing' && expectedAnswerType === 'VISIT_REASON')
+                            || (targetPhaseForTransition === 'reservation' && expectedAnswerType === 'SHORT_ANSWER')
+                            || (targetPhaseForTransition === 'callback' && expectedAnswerType === 'PHONE')
+                        );
+                    const forceFollowUpForTransition = (targetPhaseForTransition === 'legacy_full')
+                        ? true
+                        : !alreadyCompletedInlineForTransition;
                     sendRealtimePhaseSessionUpdate(
                         targetPhaseForTransition,
                         'response_done_boundary',
@@ -7112,6 +7974,10 @@
                 // Silence Timeout: 終話案内アナウンスの再生完了検知の安全網
                 // （通常はoutput_audio_buffer.stoppedで既に処理済みのはず）。
                 maybeHangUpAfterSilenceGoodbye(callGeneration, 'response_done_fallback');
+                // NOISE_DIAG（今回追加・STEP6）: 雑音環境案内アナウンスの再生完了
+                // 検知の安全網（通常はoutput_audio_buffer.stoppedで既に処理済みのはず。
+                // 上のSilence Timeoutの安全網と全く同じ理由）。
+                maybeHangUpAfterNoisyEnvironmentGoodbye(callGeneration, 'response_done_fallback');
                 // FAST TURN HOTFIX 15（今回修正・最重要・root cause fix）:
                 // HOTFIX14はこのフォールバックをここで無条件・即時に呼んでいたが、
                 // これが実機の「最後に担当者の折り返し手配を確認しますね。」直後の
@@ -7728,6 +8594,14 @@
             silenceState = 'idle';
             responseHasFunctionCall = false;
             pendingSilenceGoodbyeHangup = false;
+            // ROUTING_TRACE（今回追加・観測専用）: 新しい通話ごとに必ず
+            // リセットする（前回通話のターン通し番号・分類フラグを持ち越さない）。
+            routingTraceUserTurnSeq = 0;
+            routingTraceResponseSeqInTurn = 0;
+            classifyIntentCalledInCurrentResponse = false;
+            // NOISE_DIAG（今回追加）: 新しい通話ごとに必ずリセットする（前回通話の
+            // 雑音環境案内待ち状態を持ち越さない）。
+            pendingNoisyEnvironmentGoodbyeHangup = false;
             // FAST TURN EMERGENCY HOTFIX 12: 新しい通話ごとに必ずリセットする
             // （前回通話のAI_WORKING判定・defer状態を持ち越さない）。
             lastResponseTranscriptWasProcessNarrationOnly = false;
@@ -7742,6 +8616,7 @@
             callbackTerminalArmed = false;
             pendingCallbackTerminalHangup = false;
             callbackAlreadyConfirmedThisCall = false;
+            callbackFinalResponseAlreadyRequested = false;
             // FAST TURN HOTFIX 18（今回追加・§13）: 前回通話のtail graceタイマーが
             // 万一残っていた場合の防御的cleanup（通常はcleanupConnection()側で
             // 既に破棄されているはずだが、二重の安全網として新しい通話開始時にも
@@ -7757,6 +8632,11 @@
             lastResponseReasonCategoryForDiag = 'unknown';
             lastFunctionCallNameForDiag = null;
             lastFunctionCallStartedAtForDiag = null;
+            // RESPONSE ORIGIN TRACE（今回追加）: 新しい通話ごとに必ず
+            // リセットする（前回通話のキュー在庫・responseId対応表を
+            // 持ち越さない）。
+            responseOriginPendingQueue = [];
+            responseOriginById = {};
             // NAME Forced Commit Observation PoC: 新しい通話ごとに必ずリセット
             // する（前回通話のPoC状態を持ち越さない）。
             nameAnswerGeneration = 0;
@@ -7790,6 +8670,11 @@
             phoneAnswerGeneration = 0;
             phoneCommitSentGeneration = null;
             phoneTurnNormalCompletionSeen = false;
+            // SMART INTERRUPTION / NOISE RESILIENCE HOTFIX（今回追加）: 前回
+            // 通話のPHONE確認未完了状態を持ち越さない。
+            phoneConfirmationIncomplete = false;
+            phoneReadbackTurnCompletedThisCall = false;
+            phoneReadbackAwaitingUserReply = false;
             phoneCommitSentAt = null;
             phoneCommitCallGeneration = null;
             phoneCommitPendingEvents = { committed: false, item: false, responseCreated: false, aiAudioStarted: false };
@@ -7849,12 +8734,19 @@
             // 開始する。realtimePhaseContexts自体はこの直後のfetchSession()の
             // 応答で毎回新しく上書きされる）。
             currentRealtimePhase = 'name';
+            nameCaptureAttempts = 0;
+            // NOISE_DIAG（今回追加）: 新しい通話ごとに必ずリセットする（前回通話の
+            // 雑音判定関連カウンタ・ガードを持ち越さない）。
+            nameCaptureAttemptCountedThisTurn = false;
+            nameCaptureShortTurnRejections = 0;
             realtimePhaseContexts = null;
             phaseTransitionInProgress = false;
             pendingPhaseTransitionTarget = null;
             pendingPhaseTransitionForceFollowUp = null;
             pendingPhaseTransitionReasonForFollowUp = null;
             phaseTransitionSessionUpdateSentAt = null;
+            // PHASE ORDER HOTFIX（今回追加）: stale stateを次の通話へ持ち越さない。
+            routingHasReceivedUserTurn = false;
             // PHASE20/22: 新しい通話を開始するタイミングでのみ、前回のFAILURE
             // SNAPSHOTと猶予タイマーをクリアする（cleanupConnection()側では
             // 意図的にクリアしない＝失敗直後もsnapshotを画面に残すため）。

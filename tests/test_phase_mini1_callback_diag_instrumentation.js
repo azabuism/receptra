@@ -281,11 +281,16 @@ test('C4) [output_audio_buffer.stopped側も同様] stoppedハンドラの診断
 // D) sendResponseCreate( の出現回数が今回の変更で増えていない
 // ============================================================
 
-test('D) [回帰・最重要] sendResponseCreate(の出現回数はHEAD（診断ログ追加前・保護済みベースライン）と今回の変更後で完全に一致する', () => {
+test('D) [回帰・最重要] sendResponseCreate(の出現回数はHEAD（診断ログ追加前・保護済みベースライン）と今回の変更後で、既知の意図的な差分（雑音誤検知対策 TASK D STEP6の1件）を除いて完全に一致する', () => {
     const before = countOccurrences(HEAD_SRC, 'sendResponseCreate(');
     const after = countOccurrences(SRC, 'sendResponseCreate(');
     console.log('    sendResponseCreate( count: before=' + before + ' after=' + after);
-    assert.strictEqual(after, before, 'no new sendResponseCreate( call may be introduced by diagnostics-only instrumentation');
+    // 雑音誤検知対策 TASK D（STEP6）で、NAME phase安全網が雑音の兆候を伴って
+    // 到達した場合の案内アナウンス用に、既存の一元化ラッパー経由で意図的に
+    // +1（詳細はtests/test_noisy_environment_turn_boundary.js参照）。phase_mini1
+    // 自体の診断ログ追加はこの後もsendResponseCreate(を一切追加していない
+    // ことに変わりはない。
+    assert.strictEqual(after, before + 1, 'sendResponseCreate( delta from HEAD must be exactly +1 (TASK D STEP6 noisy-environment goodbye only); no other new call may be introduced by diagnostics-only instrumentation');
 });
 
 // ============================================================
@@ -305,7 +310,7 @@ test('E) [回帰・最重要] dc.send(の出現回数はHEAD（診断ログ追�
 //    2箇所増えるが、それは呼び出しではないことをここで明示的に区別する）
 // ============================================================
 
-test('F) [回帰] endCall(の実際の呼び出し箇所（行頭//コメントを除く）はHEADと今回の変更後で完全に一致する', () => {
+test('F) [回帰] endCall(の実際の呼び出し箇所（行頭//コメントを除く）はHEADと今回の変更後で、既知の意図的な差分（雑音誤検知対策 TASK D STEP6の1件）を除いて完全に一致する', () => {
     function realCallLines(src) {
         return src.split('\n').filter((line) => {
             const trimmed = line.trim();
@@ -316,7 +321,11 @@ test('F) [回帰] endCall(の実際の呼び出し箇所（行頭//コメント�
     const before = realCallLines(HEAD_SRC);
     const after = realCallLines(SRC);
     console.log('    endCall( real-call lines: before=' + before + ' after=' + after);
-    assert.strictEqual(after, before, 'no new real endCall( invocation may be introduced (comment-only mentions of endCall() are fine and excluded here)');
+    // 雑音誤検知対策 TASK D（STEP6）のmaybeHangUpAfterNoisyEnvironmentGoodbye()が、
+    // 既存のmaybeHangUpAfterSilenceGoodbye()と全く同じ設計で新規に追加した
+    // endCall(呼び出し1箇所分（詳細はtests/test_noisy_environment_turn_boundary.js
+    // 参照）。
+    assert.strictEqual(after, before + 1, 'endCall( real-call delta from HEAD must be exactly +1 (TASK D STEP6 maybeHangUpAfterNoisyEnvironmentGoodbye only); no other new real endCall( invocation may be introduced');
 });
 
 // ============================================================

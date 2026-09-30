@@ -193,15 +193,17 @@ function buildGreetingSandbox(overrides) {
 
 (async () => {
 
-await testAsync('A) Zero-Wait成功（自己紹介のみ再生完了）→ stale/話し中でなければfollow-up response.createを1回だけ送る', async () => {
+await testAsync('A) 会話品質改善フェーズ（2026年9月）更新: Zero-Wait成功時、第一声（音声）に既にお名前の質問が含まれ会話履歴への注入も成功しているため、follow-up response.createはもう送らず、直接silence timerを開始する（旧: followupを送っていた。二重自己紹介の根本原因だったため廃止）', async () => {
     const built = buildGreetingSandbox({});
     await vm.runInContext('maybeSendInitialGreeting', built.context)();
-    assert.deepStrictEqual(built.sendResponseCreateCalls, ['initial_greeting_zero_wait_followup']);
-    assert.ok(built.events.some((e) => e.indexOf('INITIAL_GREETING_RECOVERY_SENT') === 0));
-    assert.ok(built.consoleLogs.some((l) => l === '[INITIAL_GREETING_RECOVERY_SENT]'));
+    assert.deepStrictEqual(built.sendResponseCreateCalls, [], 'no response.create should be generated when the greeting audio already asked the name and history injection succeeded');
+    assert.ok(built.events.some((e) => e.indexOf('INITIAL_GREETING_COMPLETE') === 0));
+    assert.ok(built.consoleLogs.some((l) => l === '[INITIAL_GREETING_COMPLETE]'));
+    assert.strictEqual(built.startSilenceTimerCalls.length, 1);
+    assert.strictEqual(built.startSilenceTimerCalls[0].reason, 'zero_wait_greeting_includes_name_question');
 });
 
-await testAsync('A2) follow-upの理由文字列は既存categorizeResponseReason()により自動的にgreetingカテゴリへ分類される（新規分類コード不要・一般化されている）', () => {
+await testAsync('A2) follow-upの理由文字列は既存categorizeResponseReason()により自動的にgreetingカテゴリへ分類される（新規分類コード不要・一般化されている。会話品質改善フェーズ後もinitial_greeting_zero_wait_followup自体はhistory注入失敗時のフォールバックとして現存する）', () => {
     const ctx = { console };
     vm.createContext(ctx);
     vm.runInContext(CATEGORIZE_REASON_FN, ctx);
@@ -209,17 +211,19 @@ await testAsync('A2) follow-upの理由文字列は既存categorizeResponseReaso
     assert.strictEqual(category, 'greeting');
 });
 
-await testAsync('B) 名乗りだけで発話終了しても、店舗名/AIスタッフ名に依存しない一般ロジックで検出される（transcript内容に一切依存しないfollow-up送信経路）', async () => {
+await testAsync('B) 会話品質改善フェーズ（2026年9月）更新: follow-up省略は店舗名/AIスタッフ名に依存しない一般ロジックで判定される（transcript内容に一切依存しない）', async () => {
     // Zero-Wait経路自体がtranscriptの文字列一致(endsWith等)を一切見ておらず、
-    // 「Zero-Wait Greetingが再生完了した」という事実のみをトリガーにしている
-    // ことを、店舗名・AIスタッフ名を変えたケースで確認する（値そのものは
-    // ロジックの分岐に一切使われないため、異なる値でも同じ結果になるはず）。
-    const built1 = buildGreetingSandbox({ zeroWaitGreetingText: '天ぷらデモ、AI受付の佐藤です。' });
+    // 「会話履歴への注入に成功した」という事実のみをトリガーにしていることを、
+    // 店舗名・AIスタッフ名を変えたケースで確認する（値そのものはロジックの
+    // 分岐に一切使われないため、異なる値でも同じ結果になるはず）。
+    const built1 = buildGreetingSandbox({ zeroWaitGreetingText: '天ぷらデモ、AI受付の佐藤です。お客様のお名前を教えていただけますか？' });
     await vm.runInContext('maybeSendInitialGreeting', built1.context)();
-    const built2 = buildGreetingSandbox({ zeroWaitGreetingText: 'すし処あかり、受付担当の鈴木です。' });
+    const built2 = buildGreetingSandbox({ zeroWaitGreetingText: 'すし処あかり、受付担当の鈴木です。お客様のお名前を教えていただけますか？' });
     await vm.runInContext('maybeSendInitialGreeting', built2.context)();
-    assert.deepStrictEqual(built1.sendResponseCreateCalls, ['initial_greeting_zero_wait_followup']);
-    assert.deepStrictEqual(built2.sendResponseCreateCalls, ['initial_greeting_zero_wait_followup']);
+    assert.deepStrictEqual(built1.sendResponseCreateCalls, []);
+    assert.deepStrictEqual(built2.sendResponseCreateCalls, []);
+    assert.strictEqual(built1.startSilenceTimerCalls.length, 1);
+    assert.strictEqual(built2.startSilenceTimerCalls.length, 1);
 });
 
 await testAsync('C) stale call（既に次の通話が始まっている）ならfollow-upを送らない', async () => {
@@ -236,18 +240,40 @@ await testAsync('D) 再生完了時点で既にお客様が話し始めている
     assert.ok(built.events.some((e) => e.indexOf('ZERO_WAIT_NAME_FOLLOWUP_SKIPPED (reason=user_already_speaking)') === 0));
 });
 
-await testAsync('E) follow-up成功時にstartSilenceTimerIfNeededは直接呼ばれない（silence timerは後続のresponse.done側に一本化）', async () => {
+await testAsync('E) 会話品質改善フェーズ（2026年9月）更新: 会話履歴への注入が成功した通常経路では、follow-upを送らずstartSilenceTimerIfNeededを直接1回だけ呼ぶ（旧仕様=0回だったが、follow-up自体を廃止したため直接armする設計に変更。理由文字列で他のarm経路と区別可能）', async () => {
     const built = buildGreetingSandbox({});
     await vm.runInContext('maybeSendInitialGreeting', built.context)();
-    assert.strictEqual(built.startSilenceTimerCalls.length, 0);
+    assert.strictEqual(built.startSilenceTimerCalls.length, 1);
+    assert.strictEqual(built.startSilenceTimerCalls[0].reason, 'zero_wait_greeting_includes_name_question');
 });
 
-await testAsync('F) follow-up送信自体が失敗（dc未接続等でsendResponseCreateがfalse）した場合のみ、安全網としてsilence timerを開始する', async () => {
-    const built = buildGreetingSandbox({ __sendResponseCreateReturns: false });
+await testAsync('F) 会話品質改善フェーズ（2026年9月）更新: 会話履歴への注入自体が失敗した場合（dc.send例外）はフォールバックのfollow-upを送り、そのfollow-up送信自体も失敗（sendResponseCreateがfalse）した場合のみ、安全網としてsilence timerを開始する', async () => {
+    const built = buildGreetingSandbox({
+        dc: { readyState: 'open', send: () => { throw new Error('dc send failed (simulated)'); } },
+        __sendResponseCreateReturns: false,
+    });
     await vm.runInContext('maybeSendInitialGreeting', built.context)();
+    assert.deepStrictEqual(built.sendResponseCreateCalls, ['initial_greeting_zero_wait_followup']);
     assert.ok(built.events.some((e) => e.indexOf('ZERO_WAIT_NAME_FOLLOWUP_SEND_FAILED') === 0));
     assert.strictEqual(built.startSilenceTimerCalls.length, 1);
     assert.strictEqual(built.startSilenceTimerCalls[0].reason, 'zero_wait_greeting_ended_followup_send_failed');
+});
+
+await testAsync('F2) 会話品質改善フェーズ（2026年9月）新規: 会話履歴への注入が失敗（dc.send例外）してもfollow-up自体の送信（sendResponseCreate）は成功する場合、通常どおりinitial_greeting_zero_wait_followupを送る（フォールバック経路が正しく機能する）', async () => {
+    const built = buildGreetingSandbox({
+        dc: { readyState: 'open', send: () => { throw new Error('dc send failed (simulated)'); } },
+    });
+    await vm.runInContext('maybeSendInitialGreeting', built.context)();
+    assert.deepStrictEqual(built.sendResponseCreateCalls, ['initial_greeting_zero_wait_followup']);
+    assert.ok(built.events.some((e) => e.indexOf('INITIAL_GREETING_RECOVERY_SENT') === 0));
+    assert.strictEqual(built.startSilenceTimerCalls.length, 0);
+});
+
+await testAsync('F3) 会話品質改善フェーズ（2026年9月）新規: 第一声テキスト未取得（zeroWaitGreetingTextが空）の場合も、会話履歴への注入は行われず、フォールバックのfollow-upを送る', async () => {
+    const built = buildGreetingSandbox({ zeroWaitGreetingText: '' });
+    await vm.runInContext('maybeSendInitialGreeting', built.context)();
+    assert.deepStrictEqual(built.sendResponseCreateCalls, ['initial_greeting_zero_wait_followup']);
+    assert.strictEqual(built.dcSendCalls.length, 0, 'conversation.item.create must not be sent when greeting text is unavailable');
 });
 
 await testAsync('G) 回帰: Zero-Wait対象外/失敗/タイムアウトの経路は変更されていない（従来通りinitial_greeting(_fallback)を送る）', async () => {
@@ -325,6 +351,12 @@ function buildCallbackBranchSandbox(overrides) {
     const toolCalls = [];
     const context = {
         callbackAlreadyConfirmedThisCall: false,
+        // SMART INTERRUPTION / NOISE RESILIENCE HOTFIX（今回追加）: request_callback
+        // 分岐がphoneConfirmationIncompleteを参照するようになったため、既存
+        // sandboxのデフォルトにも追加する（本番側のデフォルト値falseと同じ）。
+        phoneConfirmationIncomplete: false,
+        phoneReadbackTurnCompletedThisCall: true,
+        phoneReadbackAwaitingUserReply: false,
         callbackTerminalArmed: false,
         args: {},
         callId: 'call_abc123',
@@ -595,23 +627,34 @@ test('W) 構造確認: startCall()の通話ごとリセットブロックがcall
     assert.notStrictEqual(resetIdx, -1, 'per-call reset block for HOTFIX14 callback terminal state not found');
 });
 
-test('X) バックエンド契約: _HUMAN_HANDOFF_TEMPLATEは折り返し成功メッセージ(5-1/5-2)の直後に、追加の質問・確認・ご案内をせず会話を終えるよう明示的に指示している', () => {
+test('X) バックエンド契約: _HUMAN_HANDOFF_TEMPLATEは折り返し成功メッセージの直後に、追加の質問・確認・ご案内をせず会話を終えるよう明示的に指示している（RECEPTRA『CALLBACK最終案内文の固定』タスクにより、旧5-1/5-2の2分岐は単一の正式文言＋5-1のクロージング指示に統一された）', () => {
     const idx = PY_SRC.indexOf('_HUMAN_HANDOFF_TEMPLATE = """');
     assert.notStrictEqual(idx, -1);
     const endIdx = PY_SRC.indexOf('\n"""', idx);
     const template = PY_SRC.slice(idx, endIdx);
-    assert.ok(template.includes('5-3'), 'must add an explicit closing instruction after the success wording (5-1/5-2)');
+    assert.ok(template.includes('5-1. '), 'must add an explicit closing instruction after the success wording');
     assert.ok(template.includes('用件は完結します'));
     assert.ok(/続けて「ほかにご用件はありますか」等の追加の質問・\s*確認・ご案内は行わず/.test(template),
         'must explicitly forbid follow-up questions/offers as a NEGATIVE instruction (quoting the forbidden phrase only as an example not to say)');
 });
 
-test('X2) バックエンド契約: 5-3の追記はsuccessがfalseの場合の案内（6.）より前に置かれ、失敗時の既存フォールバック文言には一切影響しない', () => {
-    const idx = PY_SRC.indexOf('5-3. 5-1または5-2');
+test('X2) バックエンド契約: 成功時のクロージング指示(5-1)はsuccessがfalseの場合の案内（6.）より前に置かれ、失敗時の既存フォールバック文言には一切影響しない', () => {
+    const idx = PY_SRC.indexOf('5-1. 上記の文言を話し終えたら');
     const failureIdx = PY_SRC.indexOf('6. successがfalseの場合');
     assert.notStrictEqual(idx, -1);
     assert.notStrictEqual(failureIdx, -1);
-    assert.ok(idx < failureIdx, '5-3 (success-only closing instruction) must precede the failure-path instruction, never merge with it');
+    assert.ok(idx < failureIdx, '5-1 (success-only closing instruction) must precede the failure-path instruction, never merge with it');
+});
+
+test('X3) バックエンド契約: successがtrueの場合の最終案内は「担当者から折り返し連絡しますので、電話を切ってお待ちください。」に一言一句固定され、正式な最終案内文である旨が明示されている（RECEPTRA『CALLBACK最終案内文の固定』タスク＝旧・可変文言の撤廃）', () => {
+    const idx = PY_SRC.indexOf('_HUMAN_HANDOFF_TEMPLATE = """');
+    const endIdx = PY_SRC.indexOf('\n"""', idx);
+    const template = PY_SRC.slice(idx, endIdx);
+    assert.ok(template.includes('「担当者から折り返し連絡しますので、電話を切ってお待ちください。」'),
+        'the official fixed final phrase must be present verbatim');
+    assert.ok(template.includes('正式な最終案内文です'));
+    assert.ok(template.includes('「このままお待ちください」への言い換えは絶対にしないでください'),
+        'must explicitly ban the forbidden rewording 「このままお待ちください」 (the customer must be told to hang up, not to keep waiting on the line)');
 });
 
 test('Y) 回帰: dc.send(JSON.stringify(...))の生呼び出し箇所数は変更されていない（新しいresponse.create経路も既存のsendResponseCreate()一元化ラッパー経由）', () => {

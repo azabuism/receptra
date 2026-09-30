@@ -153,6 +153,18 @@ const ERROR_PHASE_HOOK_SRC = extractBlock(
     SRC.indexOf("pushTimelineEvent('サーバーerrorイベント受信")
 );
 
+// PHASE ORDER HOTFIX（今回追加）: legacy_fullへのフォールバックを条件付きで
+// armする新規ブロック（RESPONSE_DONE_PHASE_BLOCK_SRCの直前に配置されている
+// 実ソースをそのまま抜き出す）。
+const LEGACY_FULL_FALLBACK_ARM_BLOCK_SRC = extractBlock(
+    SRC,
+    "if (currentRealtimePhase === 'routing'\n"
+    + "                    && routingHasReceivedUserTurn\n"
+    + "                    && !responseHasFunctionCall\n"
+    + "                    && pendingPhaseTransitionTarget === null\n"
+    + "                    && !phaseTransitionInProgress) {"
+);
+
 // handleFunctionCallItem内、classify_intentのみ自動継続response.createを
 // スキップする分岐（T5〜T6）。if/elseの両方を1つのスニペットとして
 // 実行できるよう、if (item.name === 'classify_intent') { の開始から
@@ -168,7 +180,13 @@ const _T5_ANCHOR_IDX = SRC.indexOf(_T5_ANCHOR);
 assert.notStrictEqual(_T5_ANCHOR_IDX, -1, 'T5 anchor not found (has handleFunctionCallItem changed?)');
 const CONTINUATION_SKIP_SNIPPET_SRC = extractBetween(
     SRC,
-    "if (item.name === 'classify_intent') {",
+    // 会話品質改善フェーズ（2026年9月）追記: confirm_customer_name Tool導入に伴い、
+    // 実ソース側の開始マーカーが
+    // "if (item.name === 'classify_intent') {" から
+    // "if (item.name === 'classify_intent' || item.name === 'confirm_customer_name') {"
+    // に変わったため、それに合わせて更新した（スニペットの抽出範囲自体は
+    // 変わらず、if/else分岐の両方を含む点も従来どおり）。
+    "if (item.name === 'classify_intent' || item.name === 'confirm_customer_name') {",
     "lastToolLabel = (item.name || '(不明)') + ': continuation_requested';",
     _T5_ANCHOR_IDX
 );
@@ -206,6 +224,17 @@ function buildSandbox(overrides) {
         phaseTransitionInstructionsChars: null,
         phaseTransitionToolCount: null,
         expectedAnswerType: 'NONE',
+        // DUPLICATE RESPONSE HOTFIX（今回追加）: response.doneの
+        // phase-transition consumeブロックが、reservation/callback
+        // ターゲットについてもlastResponseTranscriptWasProcessNarrationOnly/
+        // lastResponseTranscriptWasIncompleteAiTurnを参照するようになった
+        // ため、既存のsandboxデフォルトにも追加する（本番側のデフォルト値
+        // falseと同じ）。
+        lastResponseTranscriptWasProcessNarrationOnly: false,
+        lastResponseTranscriptWasIncompleteAiTurn: false,
+        // PHASE ORDER HOTFIX（今回追加）
+        routingHasReceivedUserTurn: false,
+        responseHasFunctionCall: false,
     }, overrides || {});
     Object.assign(context, state);
     vm.createContext(context);
@@ -304,17 +333,24 @@ test('V: pendingPhaseTransitionTarget is a single scalar, so reservation and cal
 // =======================================================================
 function simulateRoutingThenClassify(intent) {
     const { ctx, dcSendCalls } = buildSandbox({ currentRealtimePhase: 'name' });
-    // NAME→ROUTINGへのsession.updateを送信（これによりPhase1既存設計どおり
-    // pendingPhaseTransitionTarget='legacy_full'が「安全網」として予約される）。
+    // NAME→ROUTINGへのsession.updateを送信。PHASE ORDER HOTFIXにより、この
+    // 時点ではlegacy_fullはもう即座には予約されない（お客様がまだ一度も
+    // ROUTINGで発話していないため）。
     vm.runInContext("sendRealtimePhaseSessionUpdate('routing', 'response_done_boundary', false)", ctx);
-    assert.strictEqual(ctx.pendingPhaseTransitionTarget, 'legacy_full', 'precondition: ROUTING送信時点でlegacy_fullが安全網として予約されている');
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, null, 'PHASE ORDER HOTFIX: entering routing must not arm legacy_full before the customer has spoken');
     // ROUTINGへのsession.updateがOpenAI側で確定（session.updated受信）。
     vm.runInContext("type = 'session.updated'; " + SESSION_UPDATED_PHASE_BLOCK_SRC, Object.assign(ctx, { type: null }));
     assert.strictEqual(ctx.phaseTransitionInProgress, false);
     assert.strictEqual(ctx.currentRealtimePhase, 'routing');
-    // モデルがROUTING応答内でclassify_intentを呼ぶ＝legacy_fullの予約を上書きする。
+    // お客様が実際に用件を発話し、モデルがROUTING応答内でclassify_intentを呼ぶ。
+    ctx.routingHasReceivedUserTurn = true;
+    ctx.responseHasFunctionCall = true;
     return vm.runInContext('callClassifyIntentTool({ intent: "' + intent + '" })', ctx).then(() => {
-        assert.strictEqual(ctx.pendingPhaseTransitionTarget, intent, 'classify_intentは予約済みのlegacy_fullを安全に上書きするはず');
+        assert.strictEqual(ctx.pendingPhaseTransitionTarget, intent);
+        // PHASE ORDER HOTFIXの新しい条件付きarmブロックも実行するが、
+        // pendingPhaseTransitionTarget!==nullガードによりno-opであることを確認する。
+        vm.runInContext(LEGACY_FULL_FALLBACK_ARM_BLOCK_SRC, ctx);
+        assert.strictEqual(ctx.pendingPhaseTransitionTarget, intent, 'the new conditional legacy_full arm must not overwrite an already-armed intent target');
         // このROUTING応答自体のresponse.done境界を消費する。
         vm.runInContext(RESPONSE_DONE_PHASE_BLOCK_SRC, ctx);
         return { ctx, dcSendCalls };
@@ -339,11 +375,29 @@ test('X: after classify_intent(callback), the response.done boundary sends sessi
     });
 });
 
-test('X2: OTHER/UNKNOWN safety net is preserved — if classify_intent is never called during ROUTING, legacy_full still fires (existing Phase 1 fallback, unmodified)', () => {
+test('X2a (PHASE ORDER HOTFIX): before the customer has spoken in ROUTING, legacy_full must NOT fire even if this response has no function_call (this used to be the root cause bug)', () => {
     const { ctx, dcSendCalls } = buildSandbox({ currentRealtimePhase: 'name' });
     vm.runInContext("sendRealtimePhaseSessionUpdate('routing', 'response_done_boundary', false)", ctx);
     vm.runInContext("type = 'session.updated'; " + SESSION_UPDATED_PHASE_BLOCK_SRC, Object.assign(ctx, { type: null }));
-    // classify_intentを一度も呼ばない（OTHER/UNKNOWNのまま）。
+    // classify_intentを一度も呼ばないが、お客様もまだROUTINGで一度も発話して
+    // いない（routingHasReceivedUserTurn===false, ROUTING突入直後の強制
+    // follow-up応答自身のresponse.done相当）。
+    vm.runInContext(LEGACY_FULL_FALLBACK_ARM_BLOCK_SRC, ctx);
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, null, 'ROOT CAUSE FIX: must not arm legacy_full before the customer has spoken in ROUTING');
+    vm.runInContext(RESPONSE_DONE_PHASE_BLOCK_SRC, ctx);
+    assert.strictEqual(ctx.currentRealtimePhase, 'routing', 'must remain in routing, waiting for the customer\'s real answer');
+});
+
+test('X2b: OTHER/UNKNOWN safety net is preserved — once the customer has genuinely spoken in ROUTING and classify_intent is never called, legacy_full still fires (existing Phase 1 fallback, now correctly gated on a real user turn)', () => {
+    const { ctx, dcSendCalls } = buildSandbox({ currentRealtimePhase: 'name' });
+    vm.runInContext("sendRealtimePhaseSessionUpdate('routing', 'response_done_boundary', false)", ctx);
+    vm.runInContext("type = 'session.updated'; " + SESSION_UPDATED_PHASE_BLOCK_SRC, Object.assign(ctx, { type: null }));
+    // お客様が実際に用件を発話したが、classify_intentを一度も呼ばない
+    // （OTHER/UNKNOWNのまま）。
+    ctx.routingHasReceivedUserTurn = true;
+    ctx.responseHasFunctionCall = false;
+    vm.runInContext(LEGACY_FULL_FALLBACK_ARM_BLOCK_SRC, ctx);
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, 'legacy_full', 'the legitimate safety net still arms once the customer has genuinely spoken and classification failed');
     vm.runInContext(RESPONSE_DONE_PHASE_BLOCK_SRC, ctx);
     assert.strictEqual(ctx.currentRealtimePhase, 'legacy_full');
     const lastPayload = JSON.parse(dcSendCalls[dcSendCalls.length - 1]);
@@ -466,6 +520,17 @@ test('AC: classify_intent skips the automatic tool-continuation response.create,
     vm.runInContext(CONTINUATION_SKIP_SNIPPET_SRC, ctxClassify);
     assert.strictEqual(sendResponseCreateCallCount, 0, 'classify_intent must not trigger the automatic response.create continuation');
     assert.strictEqual(ctxClassify.toolContinuationResponseCreateSent, false);
+    assert.ok(timelineEvents.some((e) => e.includes('TOOL_CONTINUATION_SKIPPED_INTENTIONAL')));
+
+    // confirm_customer_name（会話品質改善フェーズで新規追加）も、classify_intentと
+    // 全く同じ理由でsendResponseCreateがスキップされるはず。
+    sendResponseCreateCallCount = 0;
+    timelineEvents.length = 0;
+    const ctxConfirmName = Object.assign({}, baseCtx, { item: { name: 'confirm_customer_name' } });
+    vm.createContext(ctxConfirmName);
+    vm.runInContext(CONTINUATION_SKIP_SNIPPET_SRC, ctxConfirmName);
+    assert.strictEqual(sendResponseCreateCallCount, 0, 'confirm_customer_name must not trigger the automatic response.create continuation');
+    assert.strictEqual(ctxConfirmName.toolContinuationResponseCreateSent, false);
     assert.ok(timelineEvents.some((e) => e.includes('TOOL_CONTINUATION_SKIPPED_INTENTIONAL')));
 
     // 他の既存Tool（例: check_availability）は従来どおり無条件でsendResponseCreateが呼ばれる。

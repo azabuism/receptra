@@ -227,10 +227,19 @@ test('LIVE-WIRING(1)) tick()内のnowSpeaking遷移(false→true)で、他のUI�
 });
 
 test('LIVE-WIRING(2)) tick()内のnowSpeaking遷移(true→false)で、releaseAiSpeakingProtection(\'ai_audio_level_silent\')が呼ばれている', () => {
-    const anchor = "} else if (!nowSpeaking && aiSpeakingNow) {\n                    aiSpeakingNow = false;";
+    // SMART INTERRUPTION / NOISE RESILIENCE HOTFIX（今回追加）により、
+    // releaseAiSpeakingProtection('ai_audio_level_silent')の直接呼び出しは
+    // 「無音がAI_SPEAKING_LEVEL_SILENCE_HOLD_MS以上継続した場合」のみに
+    // なった（単語間の瞬間的な無音で即releaseしないための意図的な変更。
+    // 詳細はrealtime-voice-engine.js冒頭のAI_SPEAKING_LEVEL_SILENCE_HOLD_MS
+    // コメント参照）。アンカー自体はelse-ifの開始のみとし、その直後の
+    // ブロック内（hold判定のif文を含む）にreleaseAiSpeakingProtection
+    // 呼び出しが存在することを確認する（実測: 開始から呼び出しまでの
+    // 距離は約1133文字。マージンを見て1600文字まで許容する）。
+    const anchor = "} else if (!nowSpeaking && aiSpeakingNow) {";
     const idx = SRC.indexOf(anchor);
     assert.notStrictEqual(idx, -1, 'アンカーが見つからない（tick()の構造が変わった可能性）');
-    const block = SRC.slice(idx, idx + 1200);
+    const block = SRC.slice(idx, idx + 1600);
     assert.ok(block.includes("releaseAiSpeakingProtection('ai_audio_level_silent')"));
 });
 

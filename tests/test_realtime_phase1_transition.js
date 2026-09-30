@@ -94,6 +94,18 @@ const FN = {
     sendRealtimePhaseSessionUpdate: extractFunctionSource(SRC, 'sendRealtimePhaseSessionUpdate'),
 };
 
+function extractConstExpr(src, name) {
+    const re = new RegExp('const\\s+' + name + '\\s*=\\s*([^;]+);');
+    const m = src.match(re);
+    if (!m) throw new Error('const not found in source: ' + name);
+    return m[1].trim();
+}
+
+// NOISE_DIAG（今回追加・雑音誤検知対策 TASK D）: maybeRecordNameFirstAnswer()の
+// NAME分岐が新たに参照する、有効ターン最小継続時間のしきい値定数。未定義だと
+// ReferenceErrorになるため、実ソースからそのまま抽出して注入する。
+const MIN_VALID_TURN_MS_FOR_NAME_ATTEMPT_EXPR = extractConstExpr(SRC, 'MIN_VALID_TURN_MS_FOR_NAME_ATTEMPT');
+
 // response.done境界の消費ロジック（独立ifブロック。関数ではないためextractBlockで抽出）。
 const RESPONSE_DONE_PHASE_BLOCK_SRC = extractBlock(
     SRC,
@@ -124,6 +136,10 @@ function buildSandbox(overrides) {
         callStartedAt: Date.now() - 1234,
         dc: { readyState: 'open', send: (payload) => { dcSendCalls.push(payload); } },
         sendResponseCreate: () => true,
+        // NOISE_DIAG（今回追加）: maybeRecordNameFirstAnswer()のNAME分岐が
+        // NAME_CAPTURE_MAX_ATTEMPTS到達時に条件付きで呼ぶ関数のモック。
+        triggerNoisyEnvironmentGoodbye: () => {},
+        callGeneration: 0,
         // HOTFIX（今回追加）: ERROR_PHASE_HOOK_SRC・SESSION_UPDATED_PHASE_BLOCK_SRC
         // をvm.runInContextで直接実行するテスト用に、実ファイルのモジュール
         // スコープ変数debugMode・msgをサンドボックスにも用意しておく
@@ -134,6 +150,12 @@ function buildSandbox(overrides) {
     };
     const state = Object.assign({
         expectedAnswerType: 'NONE',
+        // DUPLICATE RESPONSE HOTFIX（今回追加）: response.doneのphase-
+        // transition consumeブロックがreservation/callbackターゲットに
+        // ついてもこれら2フラグを参照するようになったため、既存の
+        // sandboxデフォルトにも追加する（本番側のデフォルト値falseと同じ）。
+        lastResponseTranscriptWasProcessNarrationOnly: false,
+        lastResponseTranscriptWasIncompleteAiTurn: false,
         nameAnswerGeneration: 0,
         nameTurnNormalCompletionSeen: false,
         phoneAnswerGeneration: 0,
@@ -162,10 +184,29 @@ function buildSandbox(overrides) {
         // 実ファイル側のモジュールスコープ変数。既定値はnull（実ファイルと同じ）。
         phaseTransitionInstructionsChars: null,
         phaseTransitionToolCount: null,
+        // 会話品質改善フェーズ（2026年9月）追記: maybeRecordNameFirstAnswer()の
+        // 無限ループ防止カウンタ（実ファイルと同じ初期値）。
+        nameCaptureAttempts: 0,
+        NAME_CAPTURE_MAX_ATTEMPTS: 3,
+        // NOISE_DIAG（今回追加・雑音誤検知対策 TASK D）: 1ターンにつき1回だけ
+        // カウントするためのガードと、雑音判定関連の状態（実ファイルと同じ
+        // 初期値）。既定ではlastSpeechStartedAt/lastSpeechStoppedAtは共に
+        // nullとし、通常の「音声継続時間による短すぎるターン判定」は発火
+        // しない（＝この既存テストファイルの対象外のテストは全て従来どおり
+        // 「有効なターン」として扱われる）。雑音判定そのものの詳細な検証は
+        // tests/test_noisy_environment_turn_boundary.jsが専任で担当する。
+        nameCaptureAttemptCountedThisTurn: false,
+        nameCaptureShortTurnRejections: 0,
+        lastSpeechStartedAt: null,
+        lastSpeechStoppedAt: null,
     }, overrides || {});
     Object.assign(context, state);
     vm.createContext(context);
-    vm.runInContext(Object.values(FN).join('\n\n'), context);
+    vm.runInContext(
+        'const MIN_VALID_TURN_MS_FOR_NAME_ATTEMPT = ' + MIN_VALID_TURN_MS_FOR_NAME_ATTEMPT_EXPR + ';\n' +
+        Object.values(FN).join('\n\n'),
+        context
+    );
     return { ctx: context, timelineEvents, consoleLogs, dcSendCalls };
 }
 
@@ -185,28 +226,99 @@ function test(name, fn) {
 // =======================================================================
 // I. NAME first-answer behavior remains
 // =======================================================================
-test('I: existing NAME-FIRST-FLOW hasName/name_answer_received behavior is unaffected by the new arm call', () => {
+test('I: 会話品質改善フェーズ（2026年9月）更新: existing NAME-FIRST-FLOW hasName/name_answer_received diagnostics are unaffected, but maybeRecordNameFirstAnswer() alone no longer arms the ROUTING transition (that is now confirm_customer_name Tool\'s job)', () => {
+    // 根本対策: 「NAME質問への回答ターンが完了した」というイベント発火だけを
+    // 根拠にROUTINGへarmしていた旧ロジックは、ユーザーが名前ではない発話を
+    // した場合でも同じイベントが発火するため、実機で「名前を取得せずに
+    // ROUTINGへ進む」バグの直接原因だった。診断用のhasName/name_answer_received
+    // 記録自体は既存どおり変更しない。
     const { ctx, timelineEvents } = buildSandbox({ expectedAnswerType: 'NAME' });
     vm.runInContext('maybeRecordNameFirstAnswer()', ctx);
     assert.strictEqual(ctx.nameFirstFlowState.hasName, true);
     assert.ok(timelineEvents.some((e) => e.includes('stage=name_answer_received')));
-    // 新規のPhase1 arm処理もあわせて正しく実行されていること。
-    assert.strictEqual(ctx.pendingPhaseTransitionTarget, 'routing');
+    // 新契約: この呼び出し単独ではROUTINGへarmしない（1回目のため安全網の
+    // NAME_CAPTURE_MAX_ATTEMPTSにもまだ達していない）。
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, null);
+    assert.strictEqual(ctx.nameCaptureAttempts, 1);
 });
 
 // =======================================================================
 // J. after name, exactly one NAME→ROUTING transition
 // =======================================================================
-test('J: calling maybeRecordNameFirstAnswer twice for the same NAME turn does not double-arm the transition', () => {
-    // input_audio_buffer.committed / conversation.item.created の2箇所から
-    // 同じユーザーターンに対して呼ばれても、armは1回分のままであることを確認する。
+test('J: 会話品質改善フェーズ（2026年9月）更新・雑音誤検知対策 TASK Dで修正: calling maybeRecordNameFirstAnswer twice WITHOUT an intervening physical turn boundary (speech_started) must NOT double-count (root-cause fix; no bare arm); armPhaseTransitionAfterResponse is what actually arms', () => {
+    // 根本バグ修正の経緯（TASK D・実測で確認）: 呼び出し元はinput_audio_buffer.
+    // committed / conversation.item.created / input_audio_buffer.speech_stoppedの
+    // 3箇所あり、通常の1回の物理的なユーザーターンでこの3つ全てが発火する。
+    // 修正前は、この関数自体にターンの重複排除ガードが無かったため、1物理
+    // ターンにつきnameCaptureAttemptsが最大3ずつ進んでしまう深刻なバグが
+    // あった（TASK D STEP1監査で実測により確認）。修正後は、実ファイル側の
+    // input_audio_buffer.speech_startedハンドラでnameCaptureAttemptCountedThisTurn
+    // をfalseへリセットする設計とし、この関数自体は「そのフラグがまだfalseの
+    // 場合のみ1回だけカウントする」よう変更した。本テストはその場合分けの
+    // うち「フラグをリセットしないまま同じ関数を2回呼ぶ」＝同一物理ターン内で
+    // 複数イベントハンドラから呼ばれるケースを再現し、2回目が加算されない
+    // ことを確認する（別の物理ターンとして正しく2回進むケースはJ4で確認）。
     const { ctx } = buildSandbox({ expectedAnswerType: 'NAME' });
     vm.runInContext('maybeRecordNameFirstAnswer()', ctx);
     vm.runInContext('maybeRecordNameFirstAnswer()', ctx);
-    assert.strictEqual(ctx.pendingPhaseTransitionTarget, 'routing');
-    // 直接armPhaseTransitionAfterResponseを重ねて呼んでも状態は変化しない。
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, null, 'still under NAME_CAPTURE_MAX_ATTEMPTS, must not have armed yet');
+    assert.strictEqual(ctx.nameCaptureAttempts, 1, 'the second call within the same physical turn (no speech_started reset in between) must NOT double-count (root-cause fix)');
+    // confirm_customer_name Tool相当の直接armは、既存どおり正しく機能する。
     vm.runInContext("armPhaseTransitionAfterResponse('routing')", ctx);
     assert.strictEqual(ctx.pendingPhaseTransitionTarget, 'routing');
+    // 直後にもう一度armしても状態は変化しない（既存の多重arm防止ガード）。
+    vm.runInContext("armPhaseTransitionAfterResponse('routing')", ctx);
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, 'routing');
+});
+
+test('J6: 雑音誤検知対策 TASK D新規（根本バグの直接回帰防止テスト）: 3 calls to maybeRecordNameFirstAnswer() for the SAME physical turn (simulating committed + conversation.item.created + speech_stopped all firing for one turn, real or noise-triggered) still only count as 1 attempt', () => {
+    const { ctx } = buildSandbox({ expectedAnswerType: 'NAME' });
+    vm.runInContext('maybeRecordNameFirstAnswer()', ctx); // input_audio_buffer.committed相当
+    vm.runInContext('maybeRecordNameFirstAnswer()', ctx); // conversation.item.created相当
+    vm.runInContext('maybeRecordNameFirstAnswer()', ctx); // input_audio_buffer.speech_stopped相当
+    assert.strictEqual(ctx.nameCaptureAttempts, 1, 'all 3 same-turn call sites together must count as exactly 1 attempt, not 3');
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, null, 'must not reach NAME_CAPTURE_MAX_ATTEMPTS=3 from a single physical turn');
+});
+
+test('J3: 会話品質改善フェーズ（2026年9月）新規（根本バグの直接再現・回帰防止）: a non-name utterance (turn completes while expectedAnswerType===NAME, e.g. customer said something else) does NOT by itself arm ROUTING before the safety-net threshold', () => {
+    // 実機で観測されたバグの直接シナリオ: 「予約したいです」等、お名前を
+    // 含まない発話でも input_audio_buffer.committed 等のターン完了イベントは
+    // 同じく発火する。confirm_customer_nameが呼ばれていない限り、この
+    // イベント単独ではROUTINGへ進んではならない。
+    const { ctx } = buildSandbox({ expectedAnswerType: 'NAME' });
+    vm.runInContext('maybeRecordNameFirstAnswer()', ctx);
+    assert.strictEqual(ctx.currentRealtimePhase, 'name');
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, null);
+});
+
+test('J4: 会話品質改善フェーズ（2026年9月）新規（無限ループ防止・最小安全案）・雑音誤検知対策 TASK Dで更新: after NAME_CAPTURE_MAX_ATTEMPTS DISTINCT PHYSICAL TURN-completions without confirm_customer_name, maybeRecordNameFirstAnswer() forces the ROUTING transition as a safety net', () => {
+    // TASK D修正後の契約: 1回の安全網カウントは1回の「物理的なターン」
+    // （input_audio_buffer.speech_startedを境界とする）につき最大1回。
+    // ここでは実ファイル側のspeech_startedハンドラが行うのと同じリセット
+    // （nameCaptureAttemptCountedThisTurn = false）を各呼び出しの直前で
+    // シミュレートし、3回の「別々の物理ターン」で安全網に到達することを
+    // 確認する（同一ターン内での多重カウントをさせないことはJ・J6が担当）。
+    const { ctx, timelineEvents } = buildSandbox({ expectedAnswerType: 'NAME', NAME_CAPTURE_MAX_ATTEMPTS: 3 });
+    ctx.nameCaptureAttemptCountedThisTurn = false; // 1ターン目の開始（speech_started相当）
+    vm.runInContext('maybeRecordNameFirstAnswer()', ctx);
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, null);
+    assert.strictEqual(ctx.nameCaptureAttempts, 1);
+    ctx.nameCaptureAttemptCountedThisTurn = false; // 2ターン目の開始（speech_started相当）
+    vm.runInContext('maybeRecordNameFirstAnswer()', ctx);
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, null);
+    assert.strictEqual(ctx.nameCaptureAttempts, 2);
+    ctx.nameCaptureAttemptCountedThisTurn = false; // 3ターン目の開始（speech_started相当）
+    vm.runInContext('maybeRecordNameFirstAnswer()', ctx);
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, 'routing');
+    assert.strictEqual(ctx.nameCaptureAttempts, 3);
+    assert.ok(timelineEvents.some((e) => e.includes('NAME_CAPTURE_MAX_ATTEMPTS_REACHED')));
+});
+
+test('J5: 会話品質改善フェーズ（2026年9月）新規: the safety-net counter only increments while still in the NAME phase (does not fire once already transitioned)', () => {
+    const { ctx } = buildSandbox({ expectedAnswerType: 'NAME', currentRealtimePhase: 'routing' });
+    vm.runInContext('maybeRecordNameFirstAnswer()', ctx);
+    assert.strictEqual(ctx.nameCaptureAttempts, 0, 'counter must not increment once the phase has already moved on from name');
+    assert.strictEqual(ctx.pendingPhaseTransitionTarget, null);
 });
 
 test('J2: arming is a no-op once already in the target phase or a transition is in progress', () => {
@@ -473,13 +585,23 @@ test('HOTFIX-FAILED-DEBUG-ONLY: error.message reaches console.log only under the
     assert.ok(debugOnlyCall.includes(fakeMessage));
 });
 
-test('HOTFIX-PENDING-CLEARED (§9): a failed routing transition clears the optimistically-armed pendingPhaseTransitionTarget=legacy_full, so a subsequent response.done boundary does not prematurely start legacy_full', () => {
-    // 実機で観測された危険な挙動を再現する: sendRealtimePhaseSessionUpdate('routing', ...)
-    // が送信「時点」でpendingPhaseTransitionTarget='legacy_full'を楽観的にarmし、
-    // その直後にrouting用session.updateがerrorで失敗する、という状況を組み立てる。
-    const { ctx, timelineEvents } = buildSandbox({});
+test('HOTFIX-PENDING-CLEARED (§9, updated by PHASE ORDER HOTFIX): a failed phase transition clears ANY stale pendingPhaseTransitionTarget, so a subsequent response.done boundary does not act on state left over from before the failure', () => {
+    // PHASE ORDER HOTFIX（今回更新・重要な設計変更）: 旧設計は
+    // sendRealtimePhaseSessionUpdate('routing', ...)送信「時点」で無条件に
+    // pendingPhaseTransitionTarget='legacy_full'を楽観的にarmしていたが、
+    // この即時armはPHASE ORDER HOTFIXの根本原因修正により廃止した（ROUTINGへ
+    // 入っただけでlegacy_fullを予約してしまい、お客様がまだ一度も発話して
+    // いない段階でlegacy_fullへ脱出してしまう実機バグの直接原因だったため。
+    // 詳細は同ラウンドの最終報告を参照）。そのため、この用の「routing送信
+    // 時点でlegacy_fullがarmされている」という前提はもう成立しない。
+    // しかし、classify_intentによる'reservation'/'callback'のarm、または
+    // 新しい条件付きlegacy_full arm等、他の経路でpendingPhaseTransitionTarget
+    // が非nullになっている状態で、現在進行中のtransition自体がエラーで
+    // 失敗する可能性は今も残っているため、この汎用ガード（ERROR_PHASE_HOOK
+    // 内のif (pendingPhaseTransitionTarget !== null) { ...クリア... }、
+    // コード自体は今回無変更）の健全性は引き続き検証する。
+    const { ctx, timelineEvents } = buildSandbox({ pendingPhaseTransitionTarget: 'legacy_full' });
     vm.runInContext("sendRealtimePhaseSessionUpdate('routing', 'test_reason', false)", ctx);
-    assert.strictEqual(ctx.pendingPhaseTransitionTarget, 'legacy_full', 'precondition: routing送信時点でlegacy_fullがarmされている（既存設計どおり）');
     assert.strictEqual(ctx.phaseTransitionInProgress, true);
 
     // routingのsession.updateがOpenAI側でmissing_required_parameterとして拒否される。
@@ -488,7 +610,7 @@ test('HOTFIX-PENDING-CLEARED (§9): a failed routing transition clears the optim
 
     assert.strictEqual(ctx.phaseTransitionInProgress, false);
     assert.strictEqual(ctx.pendingPhaseTransitionTarget, null,
-        'HOTFIX: a failed routing transition must clear the optimistically-armed legacy_full target, otherwise the next response.done boundary would start legacy_full despite routing never having been confirmed');
+        'whatever stale target was pending at the moment of failure must be cleared, otherwise the next response.done boundary could act on it despite this transition never having been confirmed');
     const clearedLine = timelineEvents.find((e) => e.includes('REALTIME_PHASE_TRANSITION_PENDING_CLEARED'));
     assert.ok(clearedLine && clearedLine.includes('cleared_target=legacy_full'));
 

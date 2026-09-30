@@ -135,11 +135,48 @@ def test_e_protected_templates_not_relengthened():
     # 参照）。この意図的な増分を許容するため、このテンプレートのみベース
     # ラインをHOTFIX17後の実測値（3772）+5%へ更新する（他の3テンプレートは
     # HOTFIX17で一切変更していないため据え置き）。
+    #
+    # TASK B HOTFIX 2（2026年9月・意図的な追記）: 実機で「AIがご用件を
+    # 何度も聞く」ループが報告された。根本原因はROUTING phaseでclassify_
+    # intentが呼ばれなかった場合に無条件で発火するlegacy_fullへの安全網
+    # （forceFollowUp=true）が、新しいお客様の発話を待たずに
+    # _INTENT_CLASSIFICATION_TEMPLATE（legacy_fullが使用）から応答を強制
+    # 生成することで、既に話された用件を再度尋ねてしまうことだった
+    # （詳細はtests/test_hotfix2_routing_legacy_full_forced_continuation.js
+    # のR4テスト、およびtests/smoke_test_hotfix2_routing_no_repeat_purpose_
+    # question.py参照）。対策として、_PHASE2_ROUTING_ROLE_TEMPLATEに既に
+    # ある「強制継続でも会話全体を確認し、既に話された用件を再度尋ねない」
+    # 対策と同種の一文を、_INTENT_CLASSIFICATION_TEMPLATEにも追加した
+    # （「## 4つの分類」の直前・最優先の確認事項として配置）。実測でchar
+    # delta=+162（1970→2132、測定は上記smoke_test_hotfix2_routing_no_
+    # repeat_purpose_question.py参照）。この意図的な増分を許容するため、
+    # このテンプレートのみベースラインをTASK B HOTFIX 2後の実測値（2132）
+    # +5%へ更新する（他の3テンプレートは今回一切変更していないため据え置
+    # き）。
+    # RECEPTRA — CALLBACK FINAL QUALITY PASS（2026年9月・意図的な追記）:
+    # 実機で「CALLBACK受付時、AIが電話番号の復唱確認段階に入らず、確認前に
+    # request_callbackへ進んでしまう」症状が報告された。root causeは、手順3
+    # の「情報が揃ったら実況・返事待ちをせず即座にTool呼び出しへ進む」という
+    # 指示が、手順2の電話番号復唱確認（お客様の返事を待つことが本来必要）と
+    # 隣接しているため、モデルが両者を混同し、電話番号の復唱確認自体を
+    # 省略してしまうことだと判断した。対策として、電話番号の復唱確認を
+    # 「2-1」として独立した手順に分離し、(a) 必ずお客様の返事（肯定/訂正）
+    # を待つこと、(b) 手順3の「実況・返事待ち禁止」はこの確認には適用
+    # されないこと、(c) 訂正された場合はrequest_callbackへ進まず再度確認
+    # すること、(d) 同一通話内で確認済みなら再確認しないことを明記した
+    # （手順1・4・5-1/5-2/5-3・6は今回も一切変更していない。_PHASE2B_
+    # CALLBACK_ROLE_TEMPLATEは607文字のまま無変更。詳細は
+    # tests/test_fast_turn_hotfix19_callback_no_ack.jsのT参照）。実測で
+    # char delta=+496（3772→4268、測定は
+    # tests/test_fast_turn_hotfix16_callback_single_terminal.js参照）。
+    # この意図的な増分を許容するため、このテンプレートのみベースラインを
+    # 今回の実測値（4268）+5%へ更新する（他の3テンプレートは今回一切
+    # 変更していないため据え置き）。
     baselines_after_phase2 = {
-        "_HUMAN_HANDOFF_TEMPLATE": (_HUMAN_HANDOFF_TEMPLATE, round(3772 * 1.05)),
+        "_HUMAN_HANDOFF_TEMPLATE": (_HUMAN_HANDOFF_TEMPLATE, round(4268 * 1.05)),
         "_BOOKING_SAFETY_TEMPLATE": (_BOOKING_SAFETY_TEMPLATE, round(2077 * 1.05)),
         "_TIME_AMBIGUITY_TEMPLATE": (_TIME_AMBIGUITY_TEMPLATE, round(2061 * 1.05)),
-        "_INTENT_CLASSIFICATION_TEMPLATE": (_INTENT_CLASSIFICATION_TEMPLATE, round(1908 * 1.05)),
+        "_INTENT_CLASSIFICATION_TEMPLATE": (_INTENT_CLASSIFICATION_TEMPLATE, round(2132 * 1.05)),
     }
     for name, (tmpl, rough_ceiling) in baselines_after_phase2.items():
         assert len(tmpl) <= rough_ceiling, (

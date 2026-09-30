@@ -92,6 +92,13 @@ function extractConstExpr(src, name) {
 // ReferenceErrorになる。挙動には無関係・NAME-FIRST FLOW診断ロジック自体は
 // 一切変更していない）。
 const COMPLETE_QUESTION_ENDING_RE_EXPR = extractConstExpr(SRC, 'COMPLETE_QUESTION_ENDING_RE');
+// NOISE_DIAG（今回追加・雑音誤検知対策 TASK D）: maybeRecordNameFirstAnswer()の
+// NAME分岐が新たに参照する、有効ターン最小継続時間のしきい値定数。
+// 未定義だとReferenceErrorになるため、実ソースからそのまま抽出して注入する
+// （このファイルの対象＝NAME-FIRST FLOW診断ロジックには影響しない。雑音判定
+// そのものの詳細な検証はtests/test_noisy_environment_turn_boundary.jsが
+// 専任で担当する）。
+const MIN_VALID_TURN_MS_FOR_NAME_ATTEMPT_EXPR = extractConstExpr(SRC, 'MIN_VALID_TURN_MS_FOR_NAME_ATTEMPT');
 
 function buildSandbox(overrides) {
     const events = [];
@@ -100,6 +107,11 @@ function buildSandbox(overrides) {
         pushTimelineEvent: (text) => { events.push(text); },
         console: console,
         callStartedAt: Date.now() - 1234,
+        // NOISE_DIAG（今回追加）: maybeRecordNameFirstAnswer()のNAME分岐が
+        // NAME_CAPTURE_MAX_ATTEMPTS到達時に条件付きで呼ぶ関数のモック
+        // （このファイルの対象外。実際の終話案内トリガーの検証は
+        // tests/test_noisy_environment_turn_boundary.jsが専任で担当する）。
+        triggerNoisyEnvironmentGoodbye: () => {},
     };
     const state = Object.assign({
         expectedAnswerType: 'NONE',
@@ -122,6 +134,24 @@ function buildSandbox(overrides) {
         currentRealtimePhase: 'name',
         pendingPhaseTransitionTarget: null,
         phaseTransitionInProgress: false,
+        // Realtime Token Architecture Phase 1 NAME安全網（今回追加）:
+        // maybeRecordNameFirstAnswer()のNAME分岐が参照するリトライカウンタ。
+        // このファイルの対象（NAME-FIRST FLOW診断）には影響しないが、未定義だと
+        // ReferenceErrorになるため用意する。詳細はtests/test_realtime_phase1_
+        // transition.jsが専任で検証する。
+        nameCaptureAttempts: 0,
+        NAME_CAPTURE_MAX_ATTEMPTS: 3,
+        // NOISE_DIAG（今回追加・雑音誤検知対策 TASK D）: maybeRecordNameFirstAnswer()の
+        // NAME分岐が新たに参照する、1ターンにつき1回だけカウントするための
+        // ガードと、雑音の可能性がある短すぎるターンの回数。このファイルの対象
+        // （NAME-FIRST FLOW診断）には影響しないが、未定義だとReferenceErrorに
+        // なるため用意する。詳細はtests/test_noisy_environment_turn_boundary.js
+        // が専任で検証する。
+        nameCaptureAttemptCountedThisTurn: false,
+        nameCaptureShortTurnRejections: 0,
+        lastSpeechStartedAt: null,
+        lastSpeechStoppedAt: null,
+        callGeneration: 0,
         // FAST TURN EMERGENCY HOTFIX 12/13（今回追加）: classifyExpectedAnswerType()の
         // 末尾でAI_WORKING/INCOMPLETE AI TURN判定結果を書き込む先・greeting判定に
         // 使う値。このファイルの対象ではないが、未定義だとReferenceErrorになるため
@@ -134,6 +164,7 @@ function buildSandbox(overrides) {
     vm.createContext(context);
     vm.runInContext(
         'const COMPLETE_QUESTION_ENDING_RE = ' + COMPLETE_QUESTION_ENDING_RE_EXPR + ';\n' +
+        'const MIN_VALID_TURN_MS_FOR_NAME_ATTEMPT = ' + MIN_VALID_TURN_MS_FOR_NAME_ATTEMPT_EXPR + ';\n' +
         Object.values(FN).join('\n\n'),
         context
     );

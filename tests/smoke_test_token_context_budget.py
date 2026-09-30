@@ -271,7 +271,57 @@ import httpx
 # suggest_available_times単体（新規2062文字）。
 # instructions本体（system prompt）は本フェーズでは変更していない
 # （BASELINE_INSTRUCTIONS_CHARSはこの更新の対象外）。
-BASELINE_INSTRUCTIONS_CHARS = 19753
+# 【2026-09-30・RECEPTRA — CALLBACK FINAL QUALITY PASS（未commit時点での
+# 更新。commit時にcommit hashをここへ追記すること）】
+# 実機で「CALLBACK受付時、AIが電話番号の復唱確認段階に入らず、確認前に
+# request_callbackへ進んでしまう」症状が報告された。root causeは
+# _HUMAN_HANDOFF_TEMPLATE手順3の「情報が揃ったら実況・返事待ちをせず
+# 即座にTool呼び出しへ進む」という指示が、手順2の電話番号復唱確認
+# （お客様の返事を待つことが本来必要）と隣接しているため、モデルが両者を
+# 混同し、電話番号の復唱確認自体を省略してしまうことだと判断した。対策
+# として、電話番号の復唱確認を独立した手順「2-1」として分離し、返事待ち
+# の必須化・訂正時の再確認・重複確認防止を明記した（詳細は
+# tests/smoke_test_human_handoff_wording.py、
+# tests/test_fast_turn_hotfix16_callback_single_terminal.js、
+# tests/smoke_test_name_first_contract.py参照。_PHASE2B_CALLBACK_ROLE_
+# TEMPLATEは607文字のまま無変更）。
+# 実測: instructions全体（最小構成の新規登録店舗） 19753→22220文字
+# （+2467文字、+12.5%。ALLOWED_GROWTH_RATIO=1.10の許容枠をわずかに超過）。
+# tools schemaは変更なし。この超過は、電話番号確認を実際にお客様の返事を
+# 待つ独立した手順として明記する必要上、既存のBOOKING_SAFETY_TEMPLATEの
+# 電話番号確認パターンに準じた具体的な文例（「ゼロ・キュウ・ゼロ…で
+# よろしいでしょうか？」等）を含めた結果であり、削れば復唱確認の省略
+# バグが再発するリスクがあるため、10%枠を優先して内容を薄めることは
+# しなかった。BASELINE_TOOLS_JSON_CHARS更新時の precedent（22.6%超過を
+# 明示報告の上で受け入れた事例）と同じ考え方で、本超過もユーザーへの
+# 最終報告で明示的に報告する（黙ってbaselineを引き上げたものではない）。
+# 【2026-09-30・RECEPTRA — CALLBACK誤分類＋電話番号桁数判定バグの実機修正
+# （未commit時点での更新。commit時にcommit hashをここへ追記すること）】
+# 実機で(1)「担当者から折り返しが欲しい」がRESERVATIONへ誤分類される、
+# (2)正しい11桁携帯番号が桁数不一致として繰り返し拒否される、の2件が
+# 報告された。監査の結果、(1)はROUTINGでclassify_intentが呼ばれず
+# legacy_fullへフォールバックした場合の自由文分類（_INTENT_CLASSIFICATION_
+# TEMPLATE）がCALLBACK基準の具体例・反混同注記を欠いていたこと、(2)は
+# 電話番号の桁数事前確認（_PHONE_BLOCK_FORMAT_TEMPLATE）がLLM自身の
+# 桁数カウントのみに依存する強いブロックとして書かれており、実際の
+# 有効性判定を行う決定論的なバックエンドguard（request_callback内の
+# normalize_jp_phone_national()）より先に、AI自身の数え間違いだけで
+# 再入力ループへ戻り得る設計になっていたことが原因候補と判断した。
+# 対策として、(1)legacy_fullのCALLBACK分類基準に具体例と反混同注記を
+# 追加、(2)ROUTINGでclassify_intent呼び出し前に分類結果を断定的に
+# 話さないことを明記、(3)電話番号の事前確認をあくまで参考とし、最終判定は
+# 決定論的なツール呼び出し結果（reason_code=phone_invalid_digit_count）に
+# 委ねる旨を追記した。いずれも既存の決定論的guard・3-4-4ブロック読み・
+# CALLBACK/RESERVATION専用phaseの構造自体には一切手を加えていない。
+# 実測: instructions全体（最小構成の新規登録店舗） 22220→24631文字
+# （+2411文字、+10.85%。ALLOWED_GROWTH_RATIO=1.10の許容枠をわずかに
+# 超過）。上記2つの実機バグを再現なく修正するための最小限の追記であり、
+# 削れば同種の誤分類・再入力ループが再発するリスクがあるため、10%枠を
+# 優先して内容を薄めることはしなかった。過去の同種超過事例（FAST TURN
+# HOTFIX 14・CALLBACK FINAL QUALITY PASS）と同じ考え方で、本超過も
+# ユーザーへの最終報告で明示的に報告する（黙ってbaselineを引き上げた
+# ものではない）。
+BASELINE_INSTRUCTIONS_CHARS = 24631
 BASELINE_TOOLS_JSON_CHARS = 17500
 ALLOWED_GROWTH_RATIO = 1.10  # 10%までの増加は許容し、それを超えたら気づけるようにする
 

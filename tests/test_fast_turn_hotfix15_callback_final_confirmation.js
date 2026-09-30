@@ -349,6 +349,12 @@ function buildCallbackBranchSandbox(overrides) {
     const sendResponseCreateCalls = [];
     const context = {
         callbackAlreadyConfirmedThisCall: false,
+        // SMART INTERRUPTION / NOISE RESILIENCE HOTFIX（今回追加）: request_callback
+        // 分岐がphoneConfirmationIncompleteを参照するようになったため、既存
+        // sandboxのデフォルトにも追加する（本番側のデフォルト値falseと同じ）。
+        phoneConfirmationIncomplete: false,
+        phoneReadbackTurnCompletedThisCall: true,
+        phoneReadbackAwaitingUserReply: false,
         callbackTerminalArmed: false,
         args: {},
         callId: 'call_abc123',
@@ -399,27 +405,38 @@ test('9) request_callback成功時、tool継続response.createは(classify_inten
 });
 
 // ============================================================
-// バックエンド契約: 最終案内にお礼が含まれ、5-3がPRE_CALLBACK_NARRATIONを
-// 最終案内の代替として認めていないこと
+// バックエンド契約: 最終案内は単一の固定文言のみで完結し（お礼等の追加
+// 発話は今回明示的に禁止された）、5-1がPRE_CALLBACK_NARRATIONを最終案内
+// の代替として認めていないこと
+//
+// 【RECEPTRA『CALLBACK最終案内文の固定』タスクによる意図的な契約変更】
+// このファイルのテスト10は元々「5-1/5-2の成功案内の例文にお礼(ありがとう
+// ございました)が含まれていること」を要求していたが、実機テストで最終
+// 案内の文言が発話ごとに揺れる問題が確認されたため、successがtrueの場合
+// の最終案内は「担当者から折り返し連絡しますので、電話を切ってお待ち
+// ください。」の1文に固定され、「お電話ありがとうございました」等の
+// お礼を含む追加の一言は、この最終案内の直後に付け加えることを明示的に
+// 禁止する方針へ変更された。テスト10はこの新方針を検証する内容へ更新する。
 // ============================================================
 
-test('10) バックエンド契約: 5-1/5-2の成功案内の例文に、お礼(ありがとうございました)が含まれている（ユーザー指示§6: 最終案内は感謝を含むこと）', () => {
+test('10) バックエンド契約: successがtrueの場合の最終案内は単一の固定文言のみであり、「ありがとうございました」等のお礼を含む追加の一言をこの最終案内の直後に付け加えることを明示的に禁止している（RECEPTRA『CALLBACK最終案内文の固定』タスク＝旧・お礼を含む例文方針からの意図的な変更）', () => {
     const idx = PY_SRC.indexOf('_HUMAN_HANDOFF_TEMPLATE = """');
     const endIdx = PY_SRC.indexOf('\n"""', idx);
     const template = PY_SRC.slice(idx, endIdx);
-    const s51 = template.slice(template.indexOf('5-1.'), template.indexOf('5-2.'));
-    const s52 = template.slice(template.indexOf('5-2.'), template.indexOf('5-3.'));
-    assert.ok(s51.includes('ありがとうございました'), '5-1 example wording must include a closing thanks');
-    assert.ok(s52.includes('ありがとうございました'), '5-2 example wording must include a closing thanks');
+    const s5 = template.slice(template.indexOf('5. successがtrueになったら'), template.indexOf('6. successがfalseの場合'));
+    assert.ok(s5.includes('「担当者から折り返し連絡しますので、電話を切ってお待ちください。」'),
+        'the single official fixed final phrase must be present verbatim');
+    assert.ok(/「ありがとうございました」[^\n]*付け加えず/.test(s5),
+        'must explicitly forbid adding a trailing thanks phrase after the official final phrase');
 });
 
-test('11) バックエンド契約: 5-3が、PRE_CALLBACK_NARRATION的な処理中の言い回し（「最後に...確認しますね」）を最終案内の代わりとして認めていないことを明示している', () => {
+test('11) バックエンド契約: 5-1が、PRE_CALLBACK_NARRATION的な処理中の言い回し（「最後に...確認しますね」）を最終案内の代わりとして認めていないことを明示している', () => {
     const idx = PY_SRC.indexOf('_HUMAN_HANDOFF_TEMPLATE = """');
     const endIdx = PY_SRC.indexOf('\n"""', idx);
     const template = PY_SRC.slice(idx, endIdx);
-    const s53 = template.slice(template.indexOf('5-3.'), template.indexOf('6. successがfalseの場合'));
-    assert.ok(s53.includes('確認しますね'), 'must explicitly name the observed premature-narration phrasing as insufficient');
-    assert.ok(s53.includes('この最終案内の代わりにはなりません'));
+    const s51 = template.slice(template.indexOf('5-1.'), template.indexOf('6. successがfalseの場合'));
+    assert.ok(s51.includes('確認しますね'), 'must explicitly name the observed premature-narration phrasing as insufficient');
+    assert.ok(s51.includes('この最終案内の代わりにはなりません'));
 });
 
 test('12) 回帰: NAME/ROUTING/RESERVATION用instructions構築関数は_HUMAN_HANDOFF_TEMPLATEを一切参照していない（HOTFIX15の文言変更によるchar deltaはCALLBACK/legacy_fullのみに限定される＝ユーザー指示§22）', () => {

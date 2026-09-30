@@ -255,7 +255,15 @@ await test('E: UI_STATE) function_callを含む応答のresponse.doneでは「�
     // PHASE MINI-1（今回・観測専用instrumentation追加）: [CALLBACK_DIAG_RESPONSE_DONE]
     // 診断ログが追加され、対象文字列の実測位置が後退したため、ウィンドウを
     // 1200→2000へ拡張（余裕込み）。
-    const block = SRC.slice(idx, idx + 2000);
+    // TASK B HOTFIX 3（今回・観測専用instrumentation追加）: ROUTING_TRACE_
+    // RESPONSE_DONE診断ログが追加され、対象文字列の実測終端位置が2762文字
+    // まで伸びたため、ウィンドウを2000→3000へ再拡張（測定値+余裕分）。
+    // RESPONSE ORIGIN TRACE（今回・診断専用instrumentation追加）:
+    // ROUTING_TRACE_RESPONSE_DONEの直後にRESPONSE_ORIGIN_DONE診断ログが
+    // 追加され、対象文字列（待機中分岐）の実測終端位置が5055文字まで伸びた
+    // ため、ウィンドウを3000→5700へ再拡張（node -eでの実測スクリプトで
+    // 確認済み。測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 5700);
     assert.ok(/if\s*\(responseHasFunctionCall\)\s*\{\s*subStatusText\.textContent\s*=\s*'確認しています';/.test(block),
         'response.done must keep "確認しています" (PROCESSING) when this response contained a function_call');
     assert.ok(/\}\s*else\s*\{\s*subStatusText\.textContent\s*=\s*'待機中（お話しください）';/.test(block),
@@ -391,7 +399,27 @@ await test('Q: FAST TURN 3.6B) T10(CONTINUATION_RESPONSE_DONE)はfunction_call�
     // オフセットが31238文字・トレース終了確認の終端が31366文字まで伸びたため、
     // ウィンドウを30500→32200へ再拡張（測定値+余裕分。node -eでの実測
     // スクリプトで確認済み）。
-    const block = SRC.slice(idx, idx + 32200);
+    // TASK B HOTFIX 3（今回・観測専用instrumentation追加）: response.done
+    // ハンドラ冒頭にROUTING_TRACE_RESPONSE_DONE診断ログが追加され、T10
+    // マッチ終端の実測オフセットが32540文字まで伸びたため、ウィンドウを
+    // 32200→33000へ再拡張（測定値+余裕分。node -eでの実測スクリプトで
+    // 確認済み）。
+    // PHASE ORDER HOTFIX（今回・root cause fix）: response.doneハンドラ内、
+    // 既存のphase-transition consumeブロックの直前に、legacy_fullフォール
+    // バックを条件付きでarmする新規ブロックを追加したことで、T10マッチ終端の
+    // 実測オフセットが34004文字まで伸びたため、ウィンドウを33000→34700へ
+    // 再拡張（node -eでの実測スクリプトで確認済み。測定値+余裕分）。
+    // RESPONSE ORIGIN TRACE（今回・診断専用instrumentation追加）:
+    // ROUTING_TRACE_RESPONSE_DONEの直後にRESPONSE_ORIGIN_DONE診断ログが
+    // 追加され、T10マッチ終端の実測オフセットが36208文字まで伸びたため、
+    // ウィンドウを34700→37000へ再拡張（node -eでの実測スクリプトで確認済み。
+    // 測定値+余裕分）。
+    // DUPLICATE RESPONSE HOTFIX（今回・root cause対策）: phase-transition
+    // consumeブロックのforceFollowUp判定をreservation/callbackにも対称的に
+    // 拡張するコメント・ロジックが追加され、T10マッチ終端の実測オフセットが
+    // 38638文字まで伸びたため、ウィンドウを37000→39400へ再拡張（node -eでの
+    // 実測スクリプトで確認済み。測定値+余裕分）。
+    const block = SRC.slice(idx, idx + 39400);
     assert.ok(/if\s*\(!responseHasFunctionCall\)\s*\{\s*pushToolContinuationTrace\('T10_CONTINUATION_RESPONSE_DONE/.test(block),
         'T10 must only be recorded for the final response.done (no function_call), never for the intermediate function-call-only response.done');
     assert.ok(/T10_CONTINUATION_RESPONSE_DONE[\s\S]{0,200}toolContinuationTraceActive\s*=\s*false;/.test(block),
@@ -557,7 +585,25 @@ await test('L: FAST TURN 3.6B/STEP13) Silence Timeoutはfunction_callを含む�
     // 診断ログが追加され、最終else節のstartSilenceTimerIfNeeded呼び出し位置の
     // 実測オフセットが伸びたため、Qテストと同じくウィンドウを30500→32200へ
     // 再拡張する（測定値+余裕分。Qテストと揃えた）。
-    const block = SRC.slice(idx, idx + 32200);
+    // PHASE ORDER HOTFIX（今回・root cause fix）: response.doneハンドラ内、
+    // このガードより前に、legacy_fullフォールバックを条件付きでarmする新規
+    // ブロックが追加されたことで、最終else節のstartSilenceTimerIfNeeded呼び出し
+    // 位置の実測オフセットが33498文字まで伸びたため、Qテストと同じくウィンドウを
+    // 32200→34000へ再拡張する（node -eでの実測スクリプトで確認済み。測定値+
+    // 余裕分。Qテストと揃えた）。
+    // RESPONSE ORIGIN TRACE（今回・診断専用instrumentation追加）:
+    // ROUTING_TRACE_RESPONSE_DONEの直後にRESPONSE_ORIGIN_DONE診断ログが
+    // 追加され、最終else節のstartSilenceTimerIfNeeded呼び出し位置の実測
+    // オフセットが35661文字まで伸びたため、Qテストと同じくウィンドウを
+    // 34000→36400へ再拡張する（node -eでの実測スクリプトで確認済み。測定値+
+    // 余裕分。Qテストと揃えた）。
+    // DUPLICATE RESPONSE HOTFIX（今回・root cause対策）: phase-transition
+    // consumeブロックのforceFollowUp判定をreservation/callbackにも対称的に
+    // 拡張するコメント・ロジックが追加され、最終else節のstartSilenceTimer
+    // IfNeeded呼び出し位置の実測オフセットが38091文字まで伸びたため、
+    // Qテストと同じくウィンドウを36400→38800へ再拡張する（node -eでの
+    // 実測スクリプトで確認済み。測定値+余裕分。Qテストと揃えた）。
+    const block = SRC.slice(idx, idx + 38800);
     // PHASE O5.6診断: startSilenceTimerIfNeeded()に診断専用の第2引数
     // （armReasonForDiag、例: 'response_done_no_function_call'）が追加された。
     // ガード条件(!responseHasFunctionCall)自体・呼び出し自体（第1引数は

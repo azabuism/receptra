@@ -274,10 +274,10 @@ test('D) [root cause修正の確認] 手順1は、request_callbackをまだ呼�
     assert.ok(s1.includes('5.のsuccess確定後にのみ使ってください'), 'step 1 must defer the outcome-announcing phrase to step 5 (post-success) only');
 });
 
-test('E) 回帰: 手順5(5-1/5-2/5-3)・6はHOTFIX16で変更されていない（smoke_test_human_handoff_wording.pyの文言契約を壊さないため、意図的にスコープ外とした）', () => {
+test('E) 回帰: 手順5・6の構造（successがtrueの場合は固定文言＋クロージング指示、falseの場合の既存フォールバック）はHOTFIX16で変更されていない（この5-1/5-2/5-3の厳密な文言そのものは、後続のRECEPTRA『CALLBACK最終案内文の固定』タスクで意図的に単一の正式文言＋5-1のクロージング指示へ更新された。smoke_test_human_handoff_wording.pyの現行の文言契約を壊さないため、その最新契約に追随する）', () => {
     const t = getHandoffTemplateBody();
-    assert.ok(t.includes('確認が必要なため、担当者にお伝えします。業務の状況により、\n   折り返しまでお時間をいただく場合がございます。お問い合わせいただき\n   ありがとうございました。'), '5-1 wording must remain byte-identical to the HOTFIX15 baseline');
-    assert.ok(t.includes('「最後に担当者の折り返し手配を確認しますね」のような、これから確認する'), '5-3 wording must remain byte-identical to the HOTFIX15 baseline');
+    assert.ok(t.includes('「担当者から折り返し連絡しますので、電話を切ってお待ちください。」'), 'the official fixed final phrase (post RECEPTRA callback-final-wording task) must be present verbatim');
+    assert.ok(t.includes('「最後に担当者の折り返し手配を確認しますね」のような、これから確認する'), 'the closing-instruction wording banning PRE_CALLBACK_NARRATION-style phrasing as a substitute must remain byte-identical to the HOTFIX15 baseline');
 });
 
 test('F) 回帰: NAME/ROUTING/RESERVATION用instructions構築関数は_HUMAN_HANDOFF_TEMPLATEを一切参照していない（HOTFIX16の文言変更によるchar deltaはCALLBACK/legacy_fullのみに限定される＝ユーザー指示§23、期待delta=0）', () => {
@@ -316,6 +316,12 @@ function buildCallbackBranchSandbox(overrides) {
     const toolCalls = [];
     const context = {
         callbackAlreadyConfirmedThisCall: false,
+        // SMART INTERRUPTION / NOISE RESILIENCE HOTFIX（今回追加）: request_callback
+        // 分岐がphoneConfirmationIncompleteを参照するようになったため、既存
+        // sandboxのデフォルトにも追加する（本番側のデフォルト値falseと同じ）。
+        phoneConfirmationIncomplete: false,
+        phoneReadbackTurnCompletedThisCall: true,
+        phoneReadbackAwaitingUserReply: false,
         callbackTerminalArmed: false,
         args: {},
         callId: 'call_abc123',
@@ -394,13 +400,25 @@ test('L) request_callback分岐自体はsendResponseCreate()を直接呼ばな�
 // CALLBACK_FINAL_CREATEDが正しいタイミングで(request_callbackのみ)記録される
 // ============================================================
 
-function runToolContinuationSend(itemName, sendResult) {
+// CALLBACK FINAL EXACTLY-ONCE HOTFIX（今回更新・Task M）: このスニペットは
+// handleFunctionCallItem内のTool継続ディスパッチをそのまま抜き出しているため、
+// Task Mで追加されたcallbackTerminalArmed/callbackFinalResponseAlready
+// Requestedの参照もこのVMサンドボックスへ供給する必要がある
+// （供給しないとReferenceErrorでテストごと落ちる）。デフォルト値は
+// HOTFIX16時点の既存テストの意図（＝request_callbackの「1回目・まだ
+// 最終応答をリクエストしていない」通常成功パス）をそのまま保つよう、
+// callbackTerminalArmed=trueかつcallbackFinalResponseAlreadyRequested=false
+// とする。新しい重複抑制パス自体のテストはtests/smoke_test_callback_final_
+// exactly_once.jsに専用で用意する。
+function runToolContinuationSend(itemName, sendResult, callbackTerminalArmed, callbackFinalResponseAlreadyRequested) {
     const events = [];
     const consoleLogs = [];
     const sendCalls = [];
     const context = {
         item: { name: itemName },
         functionCallOutputSendFailed: false,
+        callbackTerminalArmed: (callbackTerminalArmed === undefined) ? true : callbackTerminalArmed,
+        callbackFinalResponseAlreadyRequested: (callbackFinalResponseAlreadyRequested === undefined) ? false : callbackFinalResponseAlreadyRequested,
         pushTimelineEvent: (t) => events.push(t),
         pushToolContinuationTrace: () => {},
         console: { log: (l) => consoleLogs.push(l) },
@@ -429,6 +447,28 @@ test('O) [送信失敗時] sendResponseCreateがfalseを返した場合、CALLBA
     const r = runToolContinuationSend('request_callback', false);
     assert.strictEqual(r.events.filter((e) => e === 'CALLBACK_FINAL_REQUESTED').length, 1, 'REQUESTEDは試行時点で記録される');
     assert.strictEqual(r.events.filter((e) => e === 'CALLBACK_FINAL_CREATED').length, 0, 'CREATEDは実際に送信できた場合のみ記録される');
+});
+
+test('O2) [Task M・CALLBACK FINAL EXACTLY-ONCE] callbackFinalResponseAlreadyRequested===trueの状態でrequest_callbackが（成功/dedup扱いで）再度呼ばれても、sendResponseCreateは一切呼ばれず、CALLBACK_FINAL_RESPONSE_DEDUPEDのみが記録される（新しい応答生成そのものが1通話につき最大1回に制限されることの直接証拠）', () => {
+    const r = runToolContinuationSend('request_callback', true, true, true);
+    assert.strictEqual(r.sendCalls.length, 0, 'sendResponseCreate must NOT be invoked when a terminal response was already requested');
+    assert.strictEqual(r.events.filter((e) => e === 'CALLBACK_FINAL_RESPONSE_DEDUPED (reason=final_response_already_requested)').length, 1);
+    assert.strictEqual(r.events.filter((e) => e === 'CALLBACK_FINAL_REQUESTED').length, 0);
+    assert.strictEqual(r.events.filter((e) => e === 'CALLBACK_FINAL_CREATED').length, 0);
+    // 注: context.toolContinuationResponseCreateSentはvm.runInContext内の
+    // トップレベルlet宣言のため、context自体のプロパティとしては反映されない
+    // （node:vmの既知の挙動。既存のtest M/N/Oもこのフィールドには依存して
+    // いない）。sendCalls.length===0（=sendResponseCreateが一切呼ばれて
+    // いない）ことと、CALLBACK_FINAL_RESPONSE_DEDUPEDイベントの記録こそが
+    // 本テストの直接的な証拠であるため、上の3つのassertで十分。
+});
+
+test('O3) [Task M・非回帰] callbackFinalResponseAlreadyRequested===falseの通常成功パスでは、従来どおりsendResponseCreateが1回だけ呼ばれ、CALLBACK_FINAL_REQUESTED/CALLBACK_FINAL_CREATEDが記録される（O2の抑制がこの通常パスを一切妨げないことの確認）', () => {
+    const r = runToolContinuationSend('request_callback', true, true, false);
+    assert.strictEqual(r.sendCalls.length, 1);
+    assert.strictEqual(r.sendCalls[0], 'tool_result:request_callback');
+    assert.strictEqual(r.events.filter((e) => e === 'CALLBACK_FINAL_REQUESTED').length, 1);
+    assert.strictEqual(r.events.filter((e) => e === 'CALLBACK_FINAL_CREATED').length, 1);
 });
 
 // ============================================================
@@ -648,11 +688,11 @@ test('AB) bounded: HOTFIX16の変更はループ構文を一切含まない（�
 // §22: response.create/dc.send呼び出し箇所数の回帰ガード（AM/AN）
 // ============================================================
 
-test('AC) [AM/AN: 呼び出し箇所数の不要な増加が無いこと] sendResponseCreate(の総出現数=25、dc.send(JSON.stringify(の総出現数=10（HOTFIX15時点の実測ベースラインと完全一致。HOTFIX16は新しいresponse.create経路もdc.send経路も一切追加していない＝診断ログ追加のみ）。setTimeout(はHOTFIX18でCALLBACK FINAL専用のbounded tail grace 1個分のみ意図的に+1（19→20）、Phase Cでplayback-aware teardown用に+2（20→22）、Phase C監査でconfirm-window用にさらに+1（22→23、詳細はtests/test_fast_turn_hotfix18_callback_audio_tail.js参照）', () => {
+test('AC) [AM/AN: 呼び出し箇所数の不要な増加が無いこと] sendResponseCreate(の総出現数=26、dc.send(JSON.stringify(の総出現数=10（HOTFIX15時点の実測ベースラインと完全一致。HOTFIX16は新しいresponse.create経路もdc.send経路も一切追加していない＝診断ログ追加のみ）。setTimeout(はHOTFIX18でCALLBACK FINAL専用のbounded tail grace 1個分のみ意図的に+1（19→20）、Phase Cでplayback-aware teardown用に+2（20→22）、Phase C監査でconfirm-window用にさらに+1（22→23、詳細はtests/test_fast_turn_hotfix18_callback_audio_tail.js参照）。sendResponseCreate(は雑音誤検知対策 TASK D（STEP6・NAME phase安全網が雑音の兆候を伴って到達した場合の案内アナウンス）で意図的に+1（25→26。新しいdc.send経路は追加していない＝既存の一元化ラッパー経由のまま。詳細はtests/test_noisy_environment_turn_boundary.js参照）', () => {
     const sendResponseCreateCount = (SRC.match(/sendResponseCreate\(/g) || []).length;
     const dcSendCount = (SRC.match(/dc\.send\(JSON\.stringify\(/g) || []).length;
     const setTimeoutCount = (SRC.match(/setTimeout\(/g) || []).length;
-    assert.strictEqual(sendResponseCreateCount, 25, 'sendResponseCreate( occurrence count must be unchanged from the HOTFIX15 baseline');
+    assert.strictEqual(sendResponseCreateCount, 26, 'sendResponseCreate( occurrence count must be exactly +1 from the HOTFIX15 baseline of 25 (TASK D STEP6 noisy-environment goodbye, via the existing sendResponseCreate wrapper — no new dc.send path)');
     assert.strictEqual(dcSendCount, 10, 'dc.send(JSON.stringify( occurrence count must be unchanged from the HOTFIX15 baseline');
     assert.strictEqual(setTimeoutCount, 23, 'setTimeout( occurrence count must be exactly +3 from the HOTFIX18 baseline of 20 (Phase C: playback-aware max-wait timer + settle margin timer, plus Phase C audit: settle-confirm timer, no new response.create/dc.send)');
 });

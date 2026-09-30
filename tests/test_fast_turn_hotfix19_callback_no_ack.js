@@ -209,18 +209,19 @@ test('I. callbackTerminalArmed（terminal機構）がJS側で変更されてい�
     assert.ok(SRC.includes('callbackTerminalArmed'), 'callbackTerminalArmedが見つかりません');
 });
 
-// ===== J/K. 成功後の最終案内は質問形ではない（既存の5-1/5-2文言に疑問符が無い） =====
-test('J. 折り返し確定時（5-1）の最終案内文言に疑問符（？/?）が含まれない', () => {
-    const m = PY_SRC.match(/「確認が必要なため、担当者にお伝えします。業務の状況により、\s*\n\s*折り返しまでお時間をいただく場合がございます。お問い合わせいただき\s*\n\s*ありがとうございました。」/);
-    assert.ok(m, '5-1の最終案内文言が見つかりません');
-    assert.ok(!m[0].includes('？') && !m[0].includes('?'), '5-1の最終案内文言に疑問符が含まれています: ' + m[0]);
+// ===== J/K. 成功後の最終案内は質問形ではない（RECEPTRA『CALLBACK最終案内文
+// の固定』タスクにより、旧・5-1(確定時)/5-2(未確定時)の2文言分岐は撤廃され、
+// 単一の正式固定文言に統一された。以下はその新文言に対する同じ契約の再検証） =====
+test('J. successがtrueの場合の正式な最終案内文言に疑問符（？/?）が含まれない', () => {
+    const idx = PY_SRC.indexOf('「担当者から折り返し連絡しますので、電話を切ってお待ちください。」');
+    assert.ok(idx !== -1, '正式な最終案内文言が見つかりません');
+    const phrase = '「担当者から折り返し連絡しますので、電話を切ってお待ちください。」';
+    assert.ok(!phrase.includes('？') && !phrase.includes('?'), '最終案内文言に疑問符が含まれています: ' + phrase);
 });
 
-test('K. 折り返し未確定時（5-2）の最終案内文言に疑問符（？/?）が含まれない', () => {
-    const idx = PY_SRC.indexOf('「確認が必要なため、担当者にお伝えします。必要に応じてこちらから');
-    assert.ok(idx !== -1, '5-2の最終案内文言が見つかりません');
-    const snippet = PY_SRC.slice(idx, idx + 200);
-    assert.ok(!snippet.includes('？') && !snippet.includes('?'), '5-2の最終案内文言に疑問符が含まれている可能性: ' + snippet);
+test('K. 旧・確定/未確定(5-1/5-2)の2文言分岐は撤廃され、successがtrueの場合の文言は単一の正式固定文言のみである（旧・未確定時専用文言「必要に応じてこちらからご連絡いたします」は存在しない）', () => {
+    const idx = PY_SRC.indexOf('確認が必要なため、担当者にお伝えします。必要に応じてこちらから');
+    assert.strictEqual(idx, -1, '旧・5-2(未確定時)の文言が残っています（統一されたはずの分岐が復活しています）');
 });
 
 // ===== L. 最終案内後にUSER_WAITへ戻らない（HOTFIX14の分岐が変更されていない） =====
@@ -323,9 +324,9 @@ test('AB. FIRST ANSWER MUST COUNT関連（Forced Commit系関数）が変更さ�
     assert.ok(SRC.includes('ANSWER_WINDOW_LIMITS_MS'), 'ANSWER_WINDOW_LIMITS_MSが見つかりません');
 });
 
-test('AC. sendResponseCreate(の出現回数が25のまま変化していない（§19: 新しいresponse.create経路を追加していない）', () => {
+test('AC. sendResponseCreate(の出現回数が26（25+雑音誤検知対策 TASK D STEP6の意図的な+1）のまま変化していない（§19: 新しいresponse.create経路を追加していない）', () => {
     const count = (SRC.match(/sendResponseCreate\(/g) || []).length;
-    assert.strictEqual(count, 25, 'sendResponseCreate(の出現回数が変化しています: ' + count);
+    assert.strictEqual(count, 26, 'sendResponseCreate(の出現回数が変化しています: ' + count);
 });
 
 test('AD. dc.send(JSON.stringify(の出現回数が10のまま変化していない（§19）。setTimeout(の出現回数はHOTFIX18の20から、Phase Cのplayback-aware teardown用に+2（22）、さらにPhase C監査のconfirm-window用に+1（23）へ意図的に変化（詳細はtests/test_fast_turn_hotfix18_callback_audio_tail.js参照）', () => {

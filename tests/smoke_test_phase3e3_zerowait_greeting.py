@@ -46,26 +46,52 @@ def _test_resolve_greeting_text():
             self.staff_name = staff_name
             self.greeting = greeting
 
-    # 1. 設定なし: 名乗らない汎用フォールバック
-    assert _resolve_greeting_text(None, "テスト店") == "お電話ありがとうございます。テスト店でございます。"
+    # 会話品質改善フェーズ（2026年9月）更新: _resolve_greeting_text()は
+    # 二重自己紹介バグ（FAST TURN HOTFIX14のZero-Wait follow-up方式に起因）
+    # の根本対策として、常に末尾へお客様のお名前を伺う質問
+    # 「お客様のお名前を教えていただけますか？」を含めるよう改修された
+    # （「お名前」という文言が既に含まれる場合は追加しない）。
+    # 以下のアサーションはこの新しい契約に合わせて更新している。
 
-    # 2. staff_nameのみ設定・カスタムgreeting未設定: 名前入りフォールバック
+    # 1. 設定なし: 名乗らない汎用フォールバック + お名前の質問
+    assert _resolve_greeting_text(None, "テスト店") == (
+        "お電話ありがとうございます。テスト店でございます。"
+        "お客様のお名前を教えていただけますか？"
+    )
+
+    # 2. staff_nameのみ設定・カスタムgreeting未設定: 名前入りフォールバック + お名前の質問
     s = FakeSettings(staff_name="さくら")
     text = _resolve_greeting_text(s, "テスト店")
     assert "さくら" in text, f"expected staff_name in greeting: {text}"
+    assert "お名前" in text, f"expected name question appended: {text}"
 
-    # 3. staff_name設定 + カスタムgreetingに名前が含まれない: 名乗りを補う
+    # 3. staff_name設定 + カスタムgreetingに名前が含まれない: 名乗りを補い、お名前の質問も補う
     s = FakeSettings(staff_name="さくら", greeting="本日もご予約ありがとうございます！")
     text = _resolve_greeting_text(s, "テスト店")
     assert "さくら" in text, f"expected staff_name prepended: {text}"
     assert text.count("さくら") == 1, f"expected exactly one mention: {text}"
     assert "本日もご予約ありがとうございます" in text, f"expected custom text preserved: {text}"
+    assert "お名前" in text, f"expected name question appended: {text}"
 
-    # 4. staff_name設定 + カスタムgreetingに既に名前が含まれる: 二重に名乗らない
+    # 4. staff_name設定 + カスタムgreetingに既に名前が含まれる: 二重に名乗らない。
+    #    ただしこのカスタムgreetingは「お名前」を伺っていないため、お名前の
+    #    質問は新たに補われる（旧テストでは「完全に不変」を期待していたが、
+    #    会話品質改善フェーズの目的（お客様の名前を最初に聞く）に伴う
+    #    意図的な仕様変更）。
     s = FakeSettings(staff_name="さくら", greeting="さくらです。本日もよろしくお願いします！")
     text = _resolve_greeting_text(s, "テスト店")
     assert text.count("さくら") == 1, f"expected no duplicate mention: {text}"
-    assert text == "さくらです。本日もよろしくお願いします！", f"expected unchanged custom text: {text}"
+    assert text == (
+        "さくらです。本日もよろしくお願いします！"
+        "お客様のお名前を教えていただけますか？"
+    ), f"expected custom text preserved with name question appended: {text}"
+
+    # 5. 会話品質改善フェーズ（2026年9月）新規: カスタムgreetingが既に
+    #    お名前を伺っている場合は、重複して追加しない。
+    s = FakeSettings(staff_name="さくら", greeting="さくらです。お名前をお伺いできますか？")
+    text = _resolve_greeting_text(s, "テスト店")
+    assert text == "さくらです。お名前をお伺いできますか？", f"expected unchanged when greeting already asks for the name: {text}"
+    assert text.count("お名前") == 1
 
     print("1-2. _resolve_greeting_text: OK")
 

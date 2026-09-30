@@ -165,10 +165,15 @@ async def main():
                 session_config, result = await _create_session_with_ratio_setting(
                     db_session, shop, "0.8", return_result=True
                 )
-                assert session_config.get("tools") == [], (
-                    "初回セッション作成時点でtoolsが空リストではありません"
-                    "（Realtime Token Architecture Phase 1のname phase最小化が効いていません）: "
-                    f"{session_config.get('tools')}"
+                # 会話品質改善フェーズ（2026年9月）で、NAME phaseにconfirm_customer_name
+                # Tool（1個のみ）が意図的に追加されたため、tools==[]ではなく
+                # 「confirm_customer_nameのみ」であることを確認する
+                # （tests/smoke_test_realtime_phase1_name.py A/B参照）。
+                initial_tool_names = sorted(t.get("name") for t in (session_config.get("tools") or []))
+                assert initial_tool_names == ["confirm_customer_name"], (
+                    "初回セッション作成時点でtoolsがconfirm_customer_nameのみではありません"
+                    "（Realtime Token Architecture Phase 1のname phase最小化+会話品質改善フェーズの契約に反する可能性）: "
+                    f"{initial_tool_names}"
                 )
                 legacy_full = (result.get("realtime_phase_contexts") or {}).get("legacy_full") or {}
                 assert "通話冒頭のご用件把握" in legacy_full.get("instructions", ""), (

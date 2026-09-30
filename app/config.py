@@ -100,6 +100,21 @@ class Settings(BaseSettings):
     # 強制的に打ち切ることはない（判定の踏み込みの速さが変わるのみ）。
     # 環境変数OPENAI_REALTIME_VAD_EAGERNESSで従来のauto/lowにいつでも戻せる。
     OPENAI_REALTIME_VAD_EAGERNESS: str = "high"
+    # PHONE CAPTURE DIAGNOSTIC PHASE 1（今回追加）: input_audio_transcriptionを
+    # 診断目的のみで有効化するための設定。この文字起こし結果はcustomer_phone等の
+    # 既存の会話ロジック（request_callback・phase transition・VAD判定・
+    # confirmation gate等）には一切使用せず、PII-freeな診断ログ
+    # （PHONE_TRANSCRIPTION_TRACE。桁数・ターン数等の統計値のみ）の観測にのみ
+    # 用いる。環境変数OPENAI_REALTIME_TRANSCRIPTION_DIAGNOSTIC_ENABLEDをfalseに
+    # することで、コード変更・再デプロイなしにいつでも無効化できる（既存の
+    # OPENAI_REALTIME_VAD_EAGERNESS等と同じ、env切り替え可能な設計）。
+    OPENAI_REALTIME_TRANSCRIPTION_DIAGNOSTIC_ENABLED: bool = True
+    # transcription.model: OpenAI公式SDK(openai==1.109.1)の型定義
+    # (openai.types.realtime.audio_transcription_param.AudioTranscriptionParam)を
+    # 直接確認して選択肢が"whisper-1"/"gpt-4o-transcribe-latest"/
+    # "gpt-4o-mini-transcribe"/"gpt-4o-transcribe"の4つであることを確認済み。
+    # 診断目的のため精度を優先し、既定値をgpt-4o-transcribeとする。
+    OPENAI_REALTIME_TRANSCRIPTION_MODEL: str = "gpt-4o-transcribe"
     # reasoning.effort: 上げるほどレイテンシ・トークン使用量が増えると
     # 公式ドキュメントに明記されているため、単純な受付対話向けに低めに設定。
     OPENAI_REALTIME_REASONING_EFFORT: str = "low"

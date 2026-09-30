@@ -717,7 +717,12 @@ class RequestCallbackToolRequest(BaseModel):
 class RequestCallbackToolResponse(BaseModel):
     """Realtime AIへ返す最小レスポンス"""
     success: bool
-    # success=Falseの場合のみ設定。候補: invalid_request / temporarily_unavailable
+    # success=Falseの場合のみ設定。候補: invalid_request / temporarily_unavailable /
+    # phone_invalid_digit_count（JAPAN PHONE NUMBER LENGTH GUARD・今回追加。
+    # customer_phoneが日本国内電話番号として10桁・11桁のいずれの桁数にも
+    # 一致しない場合。AI側は桁を自動修正せず、お客様へ電話番号を再度
+    # 尋ね直す。request_callback_tool()のnormalize_jp_phone_national()に
+    # よる決定論的チェックを参照）
     reason_code: Optional[str] = None
 
 
