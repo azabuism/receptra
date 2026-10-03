@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>アクセス分析</title>
+<!--
+  Phase O4: Owner Console Analytics page (Storefront Analytics Foundation).
+
+  Section-hybrid-analytics (repeated throughout the O4 spec): every number
+  on this page is either
+    (a) a Web-behavior count sourced from AnalyticsEvent via
+        app.services.storefront_analytics (page views, impressions, detail
+        views, add-to-cart, SNS clicks), or
+    (b) a business-outcome number read LIVE from the existing authoritative
+        domain tables (Order/OrderItem/Reservation) by that same service --
+        this page never computes or caches a business metric of its own.
+
+  Absolute non-goals enforced in this file specifically:
+  - No staff ranking/scoring/"best-worst" comparison anywhere (the Staff
+    table below renders each row independently, in the API's own
+    name/sort_order -- it is never sorted or styled by its own numbers).
+  - No revenue/sales/profit/COGS wording anywhere on this page -- this
+    page shows ONLY behavior counts and existing order/reservation counts,
+    never money.
+  - No Featured Menu section -- Phase O4's audit confirmed no Featured
+    Menu domain exists anywhere in this codebase (app.models.promotion.
+    Promotion is dead code), so a Featured tab here would be fictional UI.
+  - No ad-network / GA / Meta Pixel integration of any kind.
+
+  Auth/isolation: identical convention to shop-ingredients.html /
+  shop-inventory.html (receptra_token from localStorage/sessionStorage,
+  ?shop_id= query param, authFetch()/escapeHtml()/extractErrorMessage()
+  helpers copied verbatim rather than reinvented).
+
+  Charting: a deliberately LIGHTWEIGHT inline-SVG single-hue (teal,
+  matching --primary / store.html's own brand color) line-chart
+  implementation, informed by the `dataviz` skill's non-negotiables
+  (always pair a chart with its numeric values, dedicated empty-state,
+  loading-skeleton, mobile-responsive, no dual-axis/rainbow) but NOT
+  running that skill's full multi-series categorical-palette validator,
+  since every chart here is a single time-series metric, not a
+  multi-category comparison. Documented as a scope decision in the
+  Phase O4 final report.
+-->
+<style>
+    * { box-sizing: border-box; }
+    :root { --primary: #2f7d6f; --bg: #f7f6f2; --ink: #2a2a28; --muted: #8a8780; --border: #e7e4dc; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif; background: var(--bg); margin: 0; padding: 14px; color: var(--ink); }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    h2 { font-size: 14px; margin: 18px 0 8px; color: var(--ink); }
+    .sub { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .scope-note { font-size: 11px; color: var(--muted); background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; line-height: 1.6; }
+
+    .period-bar { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 10px; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+    .period-chip { flex: 0 0 auto; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border); background: #fff; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .period-chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .period-label { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+    .custom-range { display: none; gap: 8px; margin-bottom: 14px; }
+    .custom-range.visible { display: flex; }
+    .custom-range input { flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+    .custom-range button { padding: 8px 14px; border-radius: 8px; border: none; background: var(--primary); color: #fff; font-weight: 700; font-size: 13px; }
+
+    .section-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+    .loading-state, .empty-state { color: var(--muted); padding: 20px; text-align: center; font-size: 13px; }
+    .error-text { color: #b3473c; font-size: 12px; }
+
+    .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+    .summary-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+    .summary-card .num { font-size: 20px; font-weight: 800; line-height: 1.1; }
+    .summary-card .sub-num { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .summary-card .label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    .funnel-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid #f0efe9; font-size: 13px; }
+    .funnel-row:last-child { border-bottom: none; }
+    .funnel-row .funnel-metric { flex: 1; color: var(--ink); }
+    .funnel-row .funnel-count { font-weight: 700; min-width: 64px; text-align: right; }
+    .funnel-row .funnel-rate { min-width: 56px; text-align: right; color: var(--muted); font-size: 12px; }
+
+    .chart-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    @media (min-width: 640px) { .chart-grid { grid-template-columns: 1fr 1fr; } }
+    .chart-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px; position: relative; background: #fff; }
+    .chart-title { font-size: 12.5px; font-weight: 700; margin-bottom: 2px; }
+    .chart-summary { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+    .chart-svg-wrap { position: relative; width: 100%; }
+    .chart-svg-wrap svg { width: 100%; height: auto; display: block; }
+    .chart-tooltip {
+        position: absolute; pointer-events: none; background: #2a2a28; color: #fff; font-size: 11px;
+        padding: 4px 8px; border-radius: 6px; white-space: nowrap; transform: translate(-50%, -100%);
+        opacity: 0; transition: opacity 0.1s; z-index: 5;
+    }
+    .chart-tooltip.visible { opacity: 1; }
+    .chart-skeleton { height: 120px; border-radius: 8px; background: linear-gradient(90deg, #f0efe9 25%, #e7e4dc 37%, #f0efe9 63%); background-size: 400% 100%; animation: chart-skel-pulse 1.4s ease infinite; }
+    @keyframes chart-skel-pulse { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+    .chart-empty { height: 120px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; text-align: center; padding: 0 10px; }
+    details.chart-data-table { margin-top: 6px; font-size: 11px; }
+    details.chart-data-table summary { cursor: pointer; color: var(--primary); font-weight: 600; }
+    details.chart-data-table table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    details.chart-data-table td, details.chart-data-table th { padding: 3px 4px; border-bottom: 1px solid #f0efe9; text-align: right; }
+    details.chart-data-table th:first-child, details.chart-data-table td:first-child { text-align: left; }
+
+    table.analytics-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    table.analytics-table th { text-align: right; font-size: 11px; color: var(--muted); font-weight: 600; padding: 6px 4px; border-bottom: 2px solid var(--border); white-space: nowrap; }
+    table.analytics-table th:first-child { text-align: left; }
+    table.analytics-table td { padding: 7px 4px; border-bottom: 1px solid #f0efe9; text-align: right; white-space: nowrap; }
+    table.analytics-table td:first-child { text-align: left; white-space: normal; }
+    table.analytics-table .unavailable-badge { font-size: 10px; color: var(--muted); }
+    .table-scroll { overflow-x: auto; }
+    .detail-toggle-btn { font-size: 11px; color: var(--primary); background: none; border: none; font-weight: 700; cursor: pointer; padding: 0; }
+    .detail-row-panel { background: #fafaf7; }
+    .note-text { font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<div id="receptra-owner-nav-root"></div>
+
+<h1>アクセス分析</h1>
+<div class="sub">ページ閲覧・商品詳細表示・カート追加・スタッフプロフィール閲覧などの行動分析（オーナー専用）</div>
+<div class="scope-note">
+    匿名のセッション単位で集計しており、氏名・電話番号・メールアドレス等の個人情報は一切記録していません。
+    注文件数・予約件数などの実績値は、このページ専用の数値ではなく既存の注文・予約記録から都度計算しています。
+    スタッフの数値は人事評価・ランキングではなく、各スタッフ個別の行動分析としてのみ表示しています。
+</div>
+
+<div class="period-bar" id="period-bar">
+    <div class="period-chip active" data-range="today">本日</div>
+    <div class="period-chip" data-range="7d">過去7日間</div>
+    <div class="period-chip" data-range="30d">過去30日間</div>
+    <div class="period-chip" data-range="month">今月</div>
+    <div class="period-chip" data-range="previous_month">先月</div>
+    <div class="period-chip" data-range="custom">カスタム</div>
+</div>
+<div class="custom-range" id="custom-range">
+    <input type="date" id="custom-start">
+    <input type="date" id="custom-end">
+    <button type="button" id="custom-apply-btn">適用</button>
+</div>
+<div class="period-label" id="period-label" aria-live="polite"></div>
+
+<h2>概要</h2>
+<div class="section-card" id="overview-summary-root"><div class="loading-state">読み込み中...</div></div>
+<div class="section-card" id="overview-funnel-root"></div>
+<div class="section-card" id="overview-trend-root"></div>
+
+<h2>メニュー別アクセス分析</h2>
+<div class="section-card" id="menu-analytics-root"><div class="loading-state">読み込み中...</div></div>
+
+<h2>スタッフ別アクセス分析</h2>
+<div class="section-card" id="staff-analytics-root">
+    <div class="note-text" style="margin-top:0;">勤務評価・ランキングではありません。各スタッフの行動分析のみを、個別に表示しています。</div>
+    <div class="loading-state">読み込み中...</div>
+</div>
+
+<script src="/js/owner-console-nav.js"></script>
+<script>
+    const params = new URLSearchParams(window.location.search);
+    const shopId = params.get('shop_id');
+    let currentRange = 'today';
+    let customStart = null;
+    let customEnd = null;
+
+    if (window.ReceptraOwnerNav) { window.ReceptraOwnerNav.render('receptra-owner-nav-root', 'analytics', shopId); }
+
+    function authHeaders() {
+        const token = localStorage.getItem('receptra_token') || sessionStorage.getItem('receptra_token') || '';
+        return { Authorization: 'Bearer ' + token };
+    }
+    async function authFetch(url, opts) {
+        opts = opts || {};
+        opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {}, authHeaders());
+        return fetch(url, opts);
+    }
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+    function extractErrorMessage(data, fallback) {
+        if (data && data.detail && typeof data.detail === 'object') return data.detail.message || fallback;
+        return (data && data.detail) || fallback;
+    }
+
+    function buildQuery() {
+        const q = new URLSearchParams();
+        q.set('range', currentRange);
+        if (currentRange === 'custom' && customStart && customEnd) {
+            q.set('start_date', customStart);
+            q.set('end_date', customEnd);
+        }
+        return q.toString();
+    }
+
+    const METRIC_LABELS = {
+        page_view: 'ページ閲覧',
+        menu_detail_view: '商品詳細表示',
+        add_to_cart: 'カート追加',
+        orders: '注文件数',
+        menu_impression: '商品閲覧（一覧）',
+        ordered_quantity: '注文数量',
+        staff_profile_impression: 'プロフィール閲覧（一覧）',
+        staff_profile_view: 'プロフィール詳細閲覧',
+        staff_social_click: 'SNSクリック',
+    };
+    function metricLabel(key) { return METRIC_LABELS[key] || key; }
+
+    // ---------------------------------------------------------------
+    // Lightweight inline-SVG single-hue line chart (dataviz-skill-informed
+    // non-negotiables: numeric values always shown alongside the chart,
+    // dedicated empty-state, loading-skeleton, mobile-responsive via
+    // viewBox, single consistent hue -- never a rainbow/dual-axis chart).
+    // ---------------------------------------------------------------
+    let _chartSeq = 0;
+    const _chartDataStore = {};
+
+    function chartSkeletonHtml() {
+        return '<div class="chart-skeleton" role="status" aria-label="読み込み中"></div>';
+    }
+
+    function renderMetricChartCard(metricKey, points) {
+        const label = metricLabel(metricKey);
+        const total = points.reduce(function (sum, p) { return sum + p.value; }, 0);
+        const latest = points.length ? points[points.length - 1] : null;
+        const summaryText = points.length <= 1
+            ? '値: ' + (latest ? latest.value : 0) + '件'
+            : '期間合計: ' + total + '件 ・ 最新（' + (latest ? latest.date : '') + '）: ' + (latest ? latest.value : 0) + '件';
+
+        if (total === 0) {
+            return '<div class="chart-card">' +
+                '<div class="chart-title">' + escapeHtml(label) + '</div>' +
+                '<div class="chart-empty">この期間のデータはありません</div>' +
+                '</div>';
+        }
+
+        const id = 'chart-' + (_chartSeq++);
+        _chartDataStore[id] = { points: points, label: label };
+
+        return '<div class="chart-card">' +
+            '<div class="chart-title">' + escapeHtml(label) + '</div>' +
+            '<div class="chart-summary">' + escapeHtml(summaryText) + '</div>' +
+            '<div class="chart-svg-wrap" id="' + id + '-wrap"></div>' +
+            buildDataTableHtml(label, points) +
+            '</div>';
+    }
+
+    function buildDataTableHtml(label, points) {
+        if (!points.length) return '';
+        const rows = points.map(function (p) {
+            return '<tr><td>' + escapeHtml(p.date) + '</td><td>' + p.value + '件</td></tr>';
+        }).join('');
+        return '<details class="chart-data-table"><summary>数値を表で見る（' + escapeHtml(label) + '）</summary>' +
+            '<table><thead><tr><th scope="col">日付</th><th scope="col">件数</th></tr></thead><tbody>' + rows + '</tbody></table></details>';
+    }
+
+    // Builds and wires the actual <svg> for a chart that was rendered via
+    // renderMetricChartCard (called AFTER the HTML above is inserted into
+    // the DOM, since it needs a live container element to attach to).
+    function mountChart(id) {
+        const data = _chartDataStore[id];
+        const wrap = document.getElementById(id + '-wrap');
+        if (!data || !wrap) return;
+        const points = data.points;
+
+        const W = 320, H = 120, padL = 32, padR = 10, padT = 10, padB = 20;
+        const maxRaw = Math.max.apply(null, points.map(function (p) { return p.value; }));
+        const niceMax = maxRaw <= 0 ? 1 : Math.ceil(maxRaw * 1.15);
+        const innerW = W - padL - padR;
+        const innerH = H - padT - padB;
+        const stepX = points.length > 1 ? innerW / (points.length - 1) : 0;
+
+        function xAt(i) { return padL + i * stepX; }
+        function yAt(v) { return padT + innerH - (v / niceMax) * innerH; }
+
+        const coords = points.map(function (p, i) { return { x: xAt(i), y: yAt(p.value), v: p.value, date: p.date }; });
+        const pathD = coords.map(function (c, i) { return (i === 0 ? 'M' : 'L') + c.x.toFixed(1) + ',' + c.y.toFixed(1); }).join(' ');
+
+        let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + escapeHtml(data.label) + 'の推移グラフ">';
+        // gridlines (0%, 50%, 100%) -- recessive gray, never the series hue
+        [0, 0.5, 1].forEach(function (frac) {
+            const y = padT + innerH * (1 - frac);
+            const val = Math.round(niceMax * frac);
+            svg += '<line x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + y.toFixed(1) + '" stroke="#ece9e1" stroke-width="1"/>';
+            svg += '<text x="' + (padL - 4) + '" y="' + (y + 3).toFixed(1) + '" font-size="9" fill="#8a8780" text-anchor="end">' + val + '</text>';
+        });
+        // x-axis: first / last date labels only (avoid overlap on 30d range)
+        svg += '<text x="' + padL + '" y="' + (H - 4) + '" font-size="9" fill="#8a8780" text-anchor="start">' + escapeHtml(points[0].date.slice(5)) + '</text>';
+        svg += '<text x="' + (W - padR) + '" y="' + (H - 4) + '" font-size="9" fill="#8a8780" text-anchor="end">' + escapeHtml(points[points.length - 1].date.slice(5)) + '</text>';
+        // the line itself -- single hue, 2px, rounded joins
+        svg += '<path d="' + pathD + '" fill="none" stroke="#2f7d6f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+        // data-end marker on the last point
+        const lastC = coords[coords.length - 1];
+        svg += '<circle cx="' + lastC.x.toFixed(1) + '" cy="' + lastC.y.toFixed(1) + '" r="3.5" fill="#2f7d6f"/>';
+        // invisible hover hit-targets, one per point (bigger than the visual mark)
+        coords.forEach(function (c, i) {
+            svg += '<circle class="chart-hit" data-i="' + i + '" cx="' + c.x.toFixed(1) + '" cy="' + c.y.toFixed(1) + '" r="9" fill="transparent"/>';
+        });
+        svg += '</svg>';
+
+        wrap.innerHTML = svg;
+        const tooltip = document.createElement('div');
+        tooltip.className = 'chart-tooltip';
+        wrap.appendChild(tooltip);
+
+        const svgEl = wrap.querySelector('svg');
+        function showTooltip(i) {
+            const c = coords[i];
+            const rect = svgEl.getBoundingClientRect();
+            const scaleX = rect.width / W, scaleY = rect.height / H;
+            tooltip.style.left = (c.x * scaleX) + 'px';
+            tooltip.style.top = (c.y * scaleY - 6) + 'px';
+            tooltip.textContent = c.date + '：' + c.v + '件';
+            tooltip.classList.add('visible');
+        }
+        function hideTooltip() { tooltip.classList.remove('visible'); }
+
+        wrap.querySelectorAll('.chart-hit').forEach(function (hit) {
+            hit.addEventListener('mouseenter', function () { showTooltip(parseInt(hit.dataset.i, 10)); });
+            hit.addEventListener('focus', function () { showTooltip(parseInt(hit.dataset.i, 10)); });
+            hit.addEventListener('mouseleave', hideTooltip);
+            hit.addEventListener('blur', hideTooltip);
+        });
+    }
+
+    function renderChartGrid(containerEl, series) {
+        containerEl.innerHTML = '<div class="chart-grid">' +
+            series.map(function (s) { return renderMetricChartCard(s.metric, s.points); }).join('') +
+            '</div>';
+        // renderMetricChartCard only allocates a chart id (and a "-wrap" div)
+        // for a non-empty series; an empty one renders a dedicated empty-state
+        // message instead, so this loop naturally skips those via the
+        // getElementById guard rather than needing a separate empty check.
+        Object.keys(_chartDataStore).forEach(function (id) {
+            if (document.getElementById(id + '-wrap')) mountChart(id);
+        });
+    }
+
+    // ---------------------------------------------------------------
+    // Overview
+    // ---------------------------------------------------------------
+    async function loadOverview() {
+        const summaryRoot = document.getElementById('overview-summary-root');
+        const funnelRoot = document.getElementById('overview-funnel-root');
+        const trendRoot = document.getElementById('overview-trend-root');
+        summaryRoot.innerHTML = '<div class="loading-state">読み込み中...</div>';
+        funnelRoot.innerHTML = '';
+        trendRoot.innerHTML = chartSkeletonHtml();
+        try {
+            const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/analytics/overview?' + buildQuery());
+            if (!res.ok) {
+                const data = await res.json().catch(function () { return {}; });
+                const message = extractErrorMessage(data, '読み込みに失敗しました');
+                summaryRoot.innerHTML = '<div class="empty-state">' + escapeHtml(message) + '</div>';
+                trendRoot.innerHTML = '';
+                return;
+            }
+            const data = await res.json();
+            document.getElementById('period-label').textContent = data.range_label;
+            renderOverviewSummary(summaryRoot, data.totals);
+            renderOverviewFunnel(funnelRoot, data.funnel);
+        } catch (e) {
+            summaryRoot.innerHTML = '<div class="empty-state">通信エラーが発生しました</div>';
+            trendRoot.innerHTML = '';
+        }
+
+        try {
+            const res2 = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/analytics/trends?' + buildQuery());
+            if (!res2.ok) { trendRoot.innerHTML = ''; return; }
+            const data2 = await res2.json();
+            renderChartGrid(trendRoot, data2.series);
+        } catch (e) {
+            trendRoot.innerHTML = '<div class="empty-state">推移グラフの読み込みに失敗しました</div>';
+        }
+    }
+
+    function renderOverviewSummary(root, totals) {
+        root.innerHTML =
+            '<div class="summary-grid">' +
+            '<div class="summary-card"><div class="num">' + totals.page_views + '件</div><div class="label">ページ閲覧</div>' +
+                '<div class="sub-num">ユニークセッション ' + totals.page_view_sessions + '</div></div>' +
+            '<div class="summary-card"><div class="num">' + totals.menu_detail_views + '件</div><div class="label">商品詳細表示</div>' +
+                '<div class="sub-num">ユニークセッション ' + totals.menu_detail_view_sessions + '</div></div>' +
+            '<div class="summary-card"><div class="num">' + totals.add_to_cart_events + '件</div><div class="label">カート追加</div>' +
+                '<div class="sub-num">ユニークセッション ' + totals.add_to_cart_sessions + '</div></div>' +
+            '<div class="summary-card"><div class="num">' + totals.orders + '件</div><div class="label">注文件数</div>' +
+                '<div class="sub-num">既存の注文記録から計算</div></div>' +
+            '</div>';
+    }
+
+    function renderOverviewFunnel(root, funnel) {
+        if (!funnel || !funnel.length) { root.innerHTML = ''; return; }
+        root.innerHTML = '<h2 style="margin-top:0;">行動ファネル</h2>' +
+            funnel.map(function (step) {
+                const rate = step.rate_from_previous == null ? '—' : (step.rate_from_previous * 100).toFixed(1) + '%';
+                return '<div class="funnel-row">' +
+                    '<div class="funnel-metric">' + escapeHtml(metricLabel(step.metric)) + '</div>' +
+                    '<div class="funnel-count">' + step.unique_sessions + '件</div>' +
+                    '<div class="funnel-rate">' + rate + '</div>' +
+                    '</div>';
+            }).join('') +
+            '<div class="note-text">件数はすべてユニークセッション数です。割合は直前のステップに対する遷移率で、計算できない場合は「—」と表示します。</div>';
+    }
+
+    // ---------------------------------------------------------------
+    // Menu analytics
+    // ---------------------------------------------------------------
+    async function loadMenuAnalytics() {
+        const root = document.getElementById('menu-analytics-root');
+        root.innerHTML = '<div class="loading-state">読み込み中...</div>';
+        try {
+            const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/analytics/menu-items?' + buildQuery());
+            if (!res.ok) {
+                const data = await res.json().catch(function () { return {}; });
+                root.innerHTML = '<div class="empty-state">' + escapeHtml(extractErrorMessage(data, '読み込みに失敗しました')) + '</div>';
+                return;
+            }
+            const data = await res.json();
+            renderMenuAnalyticsTable(root, data.items);
+        } catch (e) {
+            root.innerHTML = '<div class="empty-state">通信エラーが発生しました</div>';
+        }
+    }
+
+    function renderMenuAnalyticsTable(root, items) {
+        if (!items || !items.length) {
+            root.innerHTML = '<div class="empty-state">この期間のメニューアクセスデータはありません</div>';
+            return;
+        }
+        root.innerHTML = '<div class="table-scroll"><table class="analytics-table">' +
+            '<thead><tr>' +
+            '<th scope="col">商品名</th><th scope="col">閲覧（一覧）</th><th scope="col">詳細表示</th>' +
+            '<th scope="col">カート追加</th><th scope="col">注文件数</th><th scope="col">注文数量</th><th scope="col"></th>' +
+            '</tr></thead><tbody>' +
+            items.map(function (item, idx) {
+                const availBadge = item.is_available ? '' : ' <span class="unavailable-badge">（売り切れ中）</span>';
+                return '<tr>' +
+                    '<td>' + escapeHtml(item.name) + availBadge + '</td>' +
+                    '<td>' + item.impressions + '</td>' +
+                    '<td>' + item.detail_views + '</td>' +
+                    '<td>' + item.add_to_cart + '</td>' +
+                    '<td>' + item.orders + '</td>' +
+                    '<td>' + item.ordered_quantity + '</td>' +
+                    '<td><button type="button" class="detail-toggle-btn" data-menu-item-id="' + item.menu_item_id + '" data-row="menu-detail-' + idx + '">推移 ▾</button></td>' +
+                    '</tr>' +
+                    '<tr class="detail-row-panel" id="menu-detail-' + idx + '" style="display:none;"><td colspan="7"></td></tr>';
+            }).join('') +
+            '</tbody></table></div>' +
+            '<div class="note-text">「注文件数」「注文数量」は既存の注文記録（Order/OrderItem）から計算した実績値です。「閲覧」「詳細表示」「カート追加」はこのページ専用の行動分析イベントから集計しています。</div>';
+
+        root.querySelectorAll('.detail-toggle-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () { toggleMenuDetail(btn); });
+        });
+    }
+
+    async function toggleMenuDetail(btn) {
+        const row = document.getElementById(btn.dataset.row);
+        const cell = row.querySelector('td');
+        if (row.style.display !== 'none') { row.style.display = 'none'; btn.textContent = '推移 ▾'; return; }
+        row.style.display = '';
+        btn.textContent = '推移 ▴';
+        if (cell.dataset.loaded === '1') return;
+        cell.innerHTML = chartSkeletonHtml();
+        try {
+            const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/analytics/menu-items/' + encodeURIComponent(btn.dataset.menuItemId) + '?' + buildQuery());
+            if (!res.ok) { cell.innerHTML = '<div class="empty-state">読み込みに失敗しました</div>'; return; }
+            const data = await res.json();
+            renderChartGrid(cell, data.trend);
+            cell.dataset.loaded = '1';
+        } catch (e) {
+            cell.innerHTML = '<div class="empty-state">通信エラーが発生しました</div>';
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Staff analytics -- Section43-45/116: rendered strictly in the API's
+    // own order (name/sort_order), NEVER sorted or highlighted by any
+    // numeric column here. This is a read-only behavior-analytics view,
+    // not a performance evaluation / ranking screen.
+    // ---------------------------------------------------------------
+    async function loadStaffAnalytics() {
+        const root = document.getElementById('staff-analytics-root');
+        const noteHtml = '<div class="note-text" style="margin-top:0;">勤務評価・ランキングではありません。各スタッフの行動分析のみを、個別に表示しています。</div>';
+        root.innerHTML = noteHtml + '<div class="loading-state">読み込み中...</div>';
+        try {
+            const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/analytics/staff?' + buildQuery());
+            if (!res.ok) {
+                const data = await res.json().catch(function () { return {}; });
+                root.innerHTML = noteHtml + '<div class="empty-state">' + escapeHtml(extractErrorMessage(data, '読み込みに失敗しました')) + '</div>';
+                return;
+            }
+            const data = await res.json();
+            renderStaffAnalyticsTable(root, data.items, noteHtml);
+        } catch (e) {
+            root.innerHTML = noteHtml + '<div class="empty-state">通信エラーが発生しました</div>';
+        }
+    }
+
+    function renderStaffAnalyticsTable(root, items, noteHtml) {
+        if (!items || !items.length) {
+            root.innerHTML = noteHtml + '<div class="empty-state">この期間のスタッフアクセスデータはありません</div>';
+            return;
+        }
+        root.innerHTML = noteHtml + '<div class="table-scroll"><table class="analytics-table">' +
+            '<thead><tr>' +
+            '<th scope="col">スタッフ</th><th scope="col">プロフィール閲覧（一覧）</th><th scope="col">プロフィール詳細閲覧</th>' +
+            '<th scope="col">SNSクリック</th><th scope="col">指名・問い合わせ</th><th scope="col">指名予約件数</th><th scope="col"></th>' +
+            '</tr></thead><tbody>' +
+            items.map(function (st, idx) {
+                return '<tr>' +
+                    '<td>' + escapeHtml(st.name) + '</td>' +
+                    '<td>' + st.profile_impressions + '</td>' +
+                    '<td>' + st.profile_views + '</td>' +
+                    '<td>' + st.social_clicks + '</td>' +
+                    '<td>' + st.targeted_contacts + '</td>' +
+                    '<td>' + st.assigned_reservations + '</td>' +
+                    '<td><button type="button" class="detail-toggle-btn" data-staff-id="' + st.staff_id + '" data-row="staff-detail-' + idx + '">推移 ▾</button></td>' +
+                    '</tr>' +
+                    '<tr class="detail-row-panel" id="staff-detail-' + idx + '" style="display:none;"><td colspan="7"></td></tr>';
+            }).join('') +
+            '</tbody></table></div>' +
+            '<div class="note-text">「指名予約件数」は既存の予約記録（Reservation）から計算した実績値です。このページでスタッフ同士を比較・順位付けする機能は意図的に設けていません。</div>';
+
+        root.querySelectorAll('.detail-toggle-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () { toggleStaffDetail(btn); });
+        });
+    }
+
+    async function toggleStaffDetail(btn) {
+        const row = document.getElementById(btn.dataset.row);
+        const cell = row.querySelector('td');
+        if (row.style.display !== 'none') { row.style.display = 'none'; btn.textContent = '推移 ▾'; return; }
+        row.style.display = '';
+        btn.textContent = '推移 ▴';
+        if (cell.dataset.loaded === '1') return;
+        cell.innerHTML = chartSkeletonHtml();
+        try {
+            const res = await authFetch('/api/v1/shops/' + encodeURIComponent(shopId) + '/analytics/staff/' + encodeURIComponent(btn.dataset.staffId) + '?' + buildQuery());
+            if (!res.ok) { cell.innerHTML = '<div class="empty-state">読み込みに失敗しました</div>'; return; }
+            const data = await res.json();
+            renderChartGrid(cell, data.trend);
+            cell.dataset.loaded = '1';
+        } catch (e) {
+            cell.innerHTML = '<div class="empty-state">通信エラーが発生しました</div>';
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Section80: each widget loads and fails independently -- a failure
+    // in one (e.g. staff analytics disabled) never blocks the others.
+    // ---------------------------------------------------------------
+    function loadAll() {
+        loadOverview();
+        loadMenuAnalytics();
+        loadStaffAnalytics();
+    }
+
+    document.getElementById('period-bar').addEventListener('click', function (e) {
+        const chip = e.target.closest('.period-chip');
+        if (!chip) return;
+        document.querySelectorAll('.period-chip').forEach(function (c) { c.classList.remove('active'); });
+        chip.classList.add('active');
+        currentRange = chip.dataset.range;
+        const customRangeEl = document.getElementById('custom-range');
+        if (currentRange === 'custom') {
+            customRangeEl.classList.add('visible');
+        } else {
+            customRangeEl.classList.remove('visible');
+            loadAll();
+        }
+    });
+
+    document.getElementById('custom-apply-btn').addEventListener('click', function () {
+        customStart = document.getElementById('custom-start').value;
+        customEnd = document.getElementById('custom-end').value;
+        if (!customStart || !customEnd) return;
+        loadAll();
+    });
+
+    loadAll();
+</script>
+</body>
+</html>
